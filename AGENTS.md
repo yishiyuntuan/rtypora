@@ -4,7 +4,7 @@
 
 ## 项目概览
 
-这是一个使用 **Tauri 2 + Vue 3** 构建的桌面 Markdown 编辑器（窗口标题为 `tauri-editor`，应用标识符 `com.apple.tauri-app`）。已实现基于 Block 模型的 Markdown 编辑与渲染：支持所见即所得（WYSIWYG）与 Markdown 原文编辑双模式，解析在 Rust 端用 pulldown-cmark 完成。
+这是一个使用 **Tauri 2 + Vue 3** 构建的桌面 Markdown 编辑器（窗口标题为 `tauri-editor`，应用标识符 `com.apple.tauri-app`）。已实现基于 Block 模型的 Markdown 编辑与渲染：支持所见即所得（Typora 式就地编辑）与 Markdown 原文编辑双模式，解析在 Rust 端用 pulldown-cmark 完成。
 
 - 前端界面文案使用中文（如「开始写作...」「目录」「大纲」），Rust 代码注释也以中文为主，提交代码时请保持中文注释习惯。
 - 包管理器为 **pnpm**（存在 `pnpm-lock.yaml`）。
@@ -53,10 +53,12 @@ src/
 └── component/         # 注意：目录名是 component 而非 components
     ├── TitleBar.vue   # 自定义标题栏（data-tauri-drag-region 拖拽、最小化/最大化/关闭，经 @tauri-apps/api/window 的 Window('main') 控制）
     ├── Sidebar.vue    # 侧边栏，「目录/大纲」两个占位标签页，v-model:visible 控制显隐
-    ├── Editor.vue     # 双模式编辑区：持有全文 Markdown（唯一数据源），源码模式为 textarea，WYSIWYG 模式渲染块树并支持逐块编辑/任务列表勾选
+    ├── Editor.vue     # 双模式编辑区：持有全文 Markdown（唯一数据源）；源码模式为 textarea，WYSIWYG 模式渲染块树，点击块进入 contenteditable 就地编辑
     ├── BlockView.vue  # 递归块渲染器（段落/标题/代码块/引用/列表/表格/分割线/HTML）
     ├── InlineView.vue # 递归行内渲染器（粗斜体/删除线/行内代码/链接/图片/换行）
     └── StatusBar.vue  # 状态栏，显示 Ln/Col、行/词/字符数，emit 切换侧边栏与源码模式
+└── utils/
+    └── wysiwyg.js     # 就地编辑转换层：Block→可编辑 HTML、DOM→Markdown 序列化、Markdown 快捷输入即时转换（类名与 BlockView 保持一致，需同步修改）
 src-tauri/
 ├── src/main.rs        # 薄入口
 ├── src/lib.rs         # Tauri Builder、插件注册、invoke_handler 注册

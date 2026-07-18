@@ -2,10 +2,20 @@
 import { ref, computed, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import BlockView from './BlockView.vue';
+import {
+  blockToHtml,
+  editableToMarkdown,
+  emptyParagraphHtml,
+  applyMarkdownShortcuts,
+  placeCursorAtEnd,
+  insertTextAtCursor,
+  insertLineBreakAtCursor,
+} from '../utils/wysiwyg.js';
 
-// 双模式编辑器：sourceMode 为 Markdown 原文编辑，否则为所见即所得（逐块编辑）。
-// 全文 Markdown 字符串是唯一数据源；块树由 Rust 命令 parse_markdown 解析得到，
-// 每个块带 start/end（UTF-16 码元偏移），块编辑 = 对全文做区间替换后重新解析。
+// 双模式编辑器：sourceMode 为 Markdown 原文编辑，否则为所见即所得（Typora 式就地编辑）。
+// 全文 Markdown 字符串是唯一数据源；块树由 Rust 命令 parse_markdown 解析得到。
+// 点击块进入编辑：块以渲染后的 HTML 放入 contenteditable 就地编辑，
+// 输入 Markdown 标记（#、-、>、** 等）即时转换，提交时把 DOM 序列化回 Markdown。
 const props = defineProps({
   sourceMode: { type: Boolean, default: false },
 });
@@ -16,12 +26,13 @@ const content = ref('');
 const blocks = ref([]);
 // 正在编辑的块 id；'__append__' 表示在文末追加新块
 const editingId = ref(null);
-const draft = ref('');
 // 提交/重解析进行中时忽略点击，避免用过期的块区间切片
 const syncing = ref(false);
 const cursorLine = ref(1);
 const cursorColumn = ref(1);
 let parseSeq = 0;
+// 当前 contenteditable 编辑容器元素
+let editableEl = null;
 
 const wordCount = computed(() => {
   const text = content.value.trim();
@@ -66,35 +77,44 @@ function onInput(e) {
   cursorColumn.value = text.length - text.lastIndexOf('\n');
 }
 
+// 编辑容器挂载时：填充渲染好的 HTML 并聚焦到内容末尾
+function setEditableEl(el) {
+  editableEl = el;
+  if (!el) return;
+  const block = blocks.value.find((b) => b.id === editingId.value);
+  el.innerHTML = editingId.value === '__append__' || !block ? emptyParagraphHtml() : blockToHtml(block);
+  el.focus();
+  placeCursorAtEnd(el);
+}
+
 function startEdit(block) {
   if (syncing.value || editingId.value !== null) return;
   editingId.value = block.id;
-  draft.value = content.value.slice(block.start, block.end);
 }
 
 function startAppend() {
   if (syncing.value || editingId.value !== null) return;
   editingId.value = '__append__';
-  draft.value = '';
 }
 
 async function commitEdit() {
-  if (editingId.value === null) return;
+  if (editingId.value === null || !editableEl) return;
   syncing.value = true;
   try {
+    const md = editableToMarkdown(editableEl);
+    editableEl = null;
     if (editingId.value === '__append__') {
-      const text = draft.value.trim();
+      const text = md.trim();
       if (text) {
         content.value = content.value ? content.value.replace(/\s*$/, '') + '\n\n' + text : text;
       }
     } else {
       const block = blocks.value.find((b) => b.id === editingId.value);
       if (block) {
-        content.value = content.value.slice(0, block.start) + draft.value + content.value.slice(block.end);
+        content.value = content.value.slice(0, block.start) + md + content.value.slice(block.end);
       }
     }
     editingId.value = null;
-    draft.value = '';
     await reparse();
   } finally {
     syncing.value = false;
@@ -103,7 +123,40 @@ async function commitEdit() {
 
 function cancelEdit() {
   editingId.value = null;
-  draft.value = '';
+  editableEl = null;
+}
+
+// 输入时应用 Markdown 快捷转换（输入法组合期间跳过）
+function onEditableInput(e) {
+  if (e.isComposing || e.inputType === 'insertCompositionText') return;
+  applyMarkdownShortcuts();
+}
+
+function onEditableKeydown(e) {
+  if (e.isComposing) return;
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      commitEdit();
+      return;
+    }
+    const sel = window.getSelection();
+    const anchor = sel.rangeCount ? sel.anchorNode : null;
+    const el = anchor ? (anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor) : null;
+    // 代码块内换行插入换行符；其余块 Shift+Enter 软换行，Enter 提交
+    if (el && el.closest('pre')) {
+      insertTextAtCursor('\n');
+      return;
+    }
+    if (e.shiftKey) {
+      insertLineBreakAtCursor();
+      return;
+    }
+    commitEdit();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    cancelEdit();
+  }
 }
 
 // 任务列表勾选：把 markerOffset 处的 [ ]/[x] 替换后重新解析
@@ -113,11 +166,6 @@ async function toggleTask(item) {
   content.value = content.value.slice(0, offset) + (item.checked ? '[ ]' : '[x]') + content.value.slice(offset + 3);
   await reparse();
 }
-
-// 编辑框自动聚焦
-const vFocus = {
-  mounted: (el) => el.focus(),
-};
 </script>
 
 <template>
@@ -134,17 +182,17 @@ const vFocus = {
 
     <div v-else class="flex-1 overflow-y-auto p-4 text-[14px] leading-relaxed">
       <template v-for="block in blocks" :key="block.id">
-        <textarea
+        <!-- Typora 式就地编辑：渲染后的内容直接在 contenteditable 中编辑 -->
+        <div
           v-if="editingId === block.id"
-          v-focus
-          v-model="draft"
-          class="w-full resize-none rounded border border-black/15 bg-black/[0.03] p-2 font-mono text-[13px] leading-relaxed outline-none dark:border-white/20 dark:bg-white/5"
-          :rows="Math.max(2, draft.split('\n').length)"
-          placeholder="输入 Markdown..."
+          :ref="setEditableEl"
+          class="rounded bg-black/[0.02] px-1 outline-none dark:bg-white/[0.03]"
+          contenteditable="true"
+          spellcheck="false"
+          @input="onEditableInput"
+          @keydown="onEditableKeydown"
           @blur="commitEdit"
-          @keydown.ctrl.enter="commitEdit"
-          @keydown.esc="cancelEdit"
-        ></textarea>
+        ></div>
         <div
           v-else
           class="cursor-text rounded px-1 transition-[background] duration-[0.08s] hover:bg-black/[0.03] dark:hover:bg-white/[0.04]"
@@ -154,17 +202,16 @@ const vFocus = {
         </div>
       </template>
 
-      <textarea
+      <div
         v-if="editingId === '__append__'"
-        v-focus
-        v-model="draft"
-        class="w-full resize-none rounded border border-black/15 bg-black/[0.03] p-2 font-mono text-[13px] leading-relaxed outline-none dark:border-white/20 dark:bg-white/5"
-        :rows="Math.max(2, draft.split('\n').length)"
-        placeholder="输入 Markdown..."
+        :ref="setEditableEl"
+        class="rounded bg-black/[0.02] px-1 outline-none dark:bg-white/[0.03]"
+        contenteditable="true"
+        spellcheck="false"
+        @input="onEditableInput"
+        @keydown="onEditableKeydown"
         @blur="commitEdit"
-        @keydown.ctrl.enter="commitEdit"
-        @keydown.esc="cancelEdit"
-      ></textarea>
+      ></div>
       <div v-else class="min-h-24 cursor-text" @click="startAppend">
         <span v-if="blocks.length === 0" class="px-1 text-[#999] dark:text-[#777]">开始写作...</span>
       </div>
