@@ -23,8 +23,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+pulldown-cmark = { version = "0.10", features = ["html"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.6", features = ["serde", "v4"] }
+im = "15.1" # 持久化不可变树，高效undo/redo
+
+
+
+
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
