@@ -1,2 +1,194 @@
 @import "tailwindcss";
 @plugin "daisyui";
+
+/* ---------- 主题语义层 ----------
+   颜色/字号全部来自 JS 主题系统（src/themes/）写入的 --t-* CSS 变量，
+   组件只引用这里的语义类，不写死颜色。变量由 applyTheme() 在挂载前注入 documentElement。 */
+
+/* 应用外壳（背景/正文色随主题） */
+.t-app {
+  background: var(--t-editor-background);
+  color: var(--t-text-default);
+  font-family: var(--t-font-family);
+}
+
+/* 编辑区根：背景、正文、字号、行高、光标、选区 */
+.t-root {
+  background: var(--t-editor-background);
+  color: var(--t-text-default);
+  font-family: var(--t-font-family);
+  font-size: var(--t-text-size);
+  line-height: var(--t-text-line-height);
+  caret-color: var(--t-cursor);
+  padding: var(--t-editor-padding);
+}
+.t-root ::selection {
+  background: var(--t-selection);
+}
+/* 滚动条 */
+.t-root::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.t-root::-webkit-scrollbar-track {
+  background: transparent;
+}
+.t-root::-webkit-scrollbar-thumb {
+  background: var(--t-scrollbar-thumb);
+  border-radius: 999px;
+}
+/* 行内强调色 */
+.t-root strong { color: var(--t-text-strong); }
+.t-root em { color: var(--t-text-em); }
+.t-root s { color: var(--t-text-strikethrough); }
+/* 内容列宽（dimensions.content_max_width，默认 none 即全宽） */
+.t-root .t-measure {
+  max-width: var(--t-content-max-width);
+  margin-inline: auto;
+}
+
+.t-root h1 { color: var(--t-text-h1); font-size: var(--t-h1-size); font-weight: var(--t-h1-weight); }
+.t-root h2 { color: var(--t-text-h2); font-size: var(--t-h2-size); font-weight: var(--t-h2-weight); }
+.t-root h3 { color: var(--t-text-h3); font-size: var(--t-h3-size); font-weight: var(--t-h3-weight); }
+.t-root h4 { color: var(--t-text-h4); font-size: var(--t-h4-size); font-weight: var(--t-h4-weight); }
+.t-root h5 { color: var(--t-text-h5); font-size: var(--t-h5-size); font-weight: var(--t-h5-weight); }
+.t-root h6 { color: var(--t-text-h6); font-size: var(--t-h6-size); font-weight: var(--t-h6-weight); }
+
+.t-root a,
+.t-root .md-footnote-ref {
+  color: var(--t-text-link);
+}
+
+.t-root blockquote {
+  color: var(--t-text-quote);
+  border-color: var(--t-border-quote);
+  border-left-width: var(--t-quote-border-width);
+}
+
+.t-root hr {
+  border-color: var(--t-separator-color);
+}
+
+/* 行内代码与代码块 */
+.t-root .md-code {
+  background: var(--t-code-bg);
+  color: var(--t-code-text);
+  border-radius: var(--t-code-bg-radius);
+  font-family: var(--t-code-font-family);
+  font-size: var(--t-code-size);
+}
+.t-root .md-pre {
+  background: var(--t-code-bg);
+  color: var(--t-code-text);
+  font-family: var(--t-code-font-family);
+  font-size: var(--t-code-size);
+}
+.t-root .md-pre code {
+  background: transparent;
+}
+
+/* 列表标记与任务勾选框 */
+.t-root .md-marker {
+  color: var(--t-list-marker);
+}
+.t-root input[type="checkbox"] {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  background: var(--t-task-checkbox-bg);
+  border: 2px solid var(--t-task-checkbox-border);
+  border-radius: 4px;
+  position: relative;
+}
+.t-root input[type="checkbox"]:checked {
+  background: var(--t-task-checkbox-checked-bg);
+  border-color: var(--t-task-checkbox-checked-bg);
+}
+.t-root input[type="checkbox"]:checked::after {
+  content: "";
+  position: absolute;
+  left: 3.5px;
+  top: 0.5px;
+  width: 4px;
+  height: 8px;
+  border: solid var(--t-task-checkbox-check);
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+.t-root input[type="checkbox"]:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* 表格 */
+.t-root table th,
+.t-root table td {
+  border-color: var(--t-table-border);
+}
+.t-root table th {
+  background: var(--t-table-header-bg);
+  color: var(--t-table-header-text);
+}
+.t-root table td {
+  background: var(--t-table-cell-bg);
+}
+
+/* callout 五变体 */
+.t-root .callout-note { background: var(--t-callout-note-bg); border-color: var(--t-callout-note-border); }
+.t-root .callout-tip { background: var(--t-callout-tip-bg); border-color: var(--t-callout-tip-border); }
+.t-root .callout-important { background: var(--t-callout-important-bg); border-color: var(--t-callout-important-border); }
+.t-root .callout-warning { background: var(--t-callout-warning-bg); border-color: var(--t-callout-warning-border); }
+.t-root .callout-caution { background: var(--t-callout-caution-bg); border-color: var(--t-callout-caution-border); }
+.t-root [class^="callout-"], .t-root [class*=" callout-"] {
+  border-radius: var(--t-callout-radius);
+}
+
+/* 可见注释块 */
+.t-root .md-comment {
+  background: var(--t-comment-bg);
+}
+
+/* 数学公式 / Mermaid 占位块 */
+.t-root .md-placeholder {
+  background: var(--t-image-placeholder-bg);
+  border-color: var(--t-image-placeholder-border);
+  color: var(--t-image-placeholder-text);
+}
+
+/* 块悬停与编辑中（source_mode_block_bg 语义与 velotype 一致） */
+.t-root .md-block {
+  border-radius: 4px;
+  transition: background 0.08s;
+}
+.t-root .md-block:hover {
+  background: color-mix(in srgb, var(--t-text-default) 5%, transparent);
+}
+.t-root .md-editing {
+  background: var(--t-source-mode-block-bg);
+  border-radius: 4px;
+}
+
+/* 大纲点击定位后的闪烁高亮 */
+.t-root .md-flash {
+  background: var(--t-source-mode-block-bg);
+  transition: background 0.3s;
+}
+
+/* 状态栏 */
+.t-statusbar {
+  background: var(--t-status-bar-background);
+  color: var(--t-status-bar-text);
+}
+.t-statusbar .t-btn {
+  transition: background 0.08s;
+}
+.t-statusbar .t-btn:hover,
+.t-statusbar .t-btn.active {
+  background: var(--t-status-bar-button-hover);
+}
+
+/* 通用弱化文字（占位提示、列表标记、脚注等） */
+.t-dim {
+  color: var(--t-text-placeholder);
+}

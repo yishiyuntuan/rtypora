@@ -11,7 +11,7 @@ const appWindow = new Window('main');
   >
     <div
       id="titlebar-menu"
-      class="inline-flex h-full w-[46px] items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-black/15 active:bg-black/25 dark:hover:bg-white/10 dark:active:bg-white/20"
+      class="inline-flex h-full w-[46px] items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-(--t-status-bar-button-hover)"
     >
       <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]">
         <line x1="2" y1="4" x2="14" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
@@ -25,7 +25,7 @@ const appWindow = new Window('main');
     <div class="flex h-full">
       <div
         id="titlebar-minimize"
-        class="inline-flex h-full w-[46px] items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-black/15 active:bg-black/25 dark:hover:bg-white/10 dark:active:bg-white/20"
+        class="inline-flex h-full w-[46px] items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-(--t-status-bar-button-hover)"
         @click="appWindow.minimize()"
       >
         <svg viewBox="0 0 10 10" aria-hidden="true" class="size-[10px]">
@@ -34,7 +34,7 @@ const appWindow = new Window('main');
       </div>
       <div
         id="titlebar-maximize"
-        class="inline-flex h-full w-[46px] items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-black/15 active:bg-black/25 dark:hover:bg-white/10 dark:active:bg-white/20"
+        class="inline-flex h-full w-[46px] items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-(--t-status-bar-button-hover)"
         @click="appWindow.toggleMaximize()"
       >
         <svg viewBox="0 0 10 10" aria-hidden="true" class="size-[10px]">

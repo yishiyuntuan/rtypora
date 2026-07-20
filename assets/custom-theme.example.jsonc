@@ -1,0 +1,108 @@
+// 自定义主题包示例（参照 velotype assets/custom-theme.example.jsonc）。
+//
+// 复制本文件为 .json 或 .jsonc，只填写你想覆盖的字段，
+// 然后在状态栏主题菜单选择「导入主题…」导入。
+// null 与空字符串会被忽略，缺失字段继承 baseThemeId 指定的内置主题；
+// baseThemeId 缺省时继承当前主题的内置基主题（"velotype" 暗色 / "velotype-light" 亮色）。
+{
+  // 必填：主题显示名（状态栏主题菜单中展示）
+  "name": "我的主题",
+  // 可选：作者，菜单中可显示为 "<name> - <creator>"
+  "creator": "",
+  // 可选：缺失字段继承的内置主题，"velotype"（暗色）或 "velotype-light"（亮色）
+  "baseThemeId": "velotype-light",
+  // 可选元数据
+  "description": "",
+  "version": "1.0.0",
+  "homepage": "",
+  "license": "",
+
+  "theme": {
+    // 颜色：任意 CSS 颜色值（#rgb/#rrggbb/#rrggbbaa/rgba()/具名色）。
+    // 以下为全部可用 token（与内置主题同名，按需覆盖）：
+    "colors": {
+      "editor_background": null,        // 编辑区背景
+      "source_mode_block_bg": null,     // 编辑中块的背景
+      "comment_bg": null,               // 可见注释块背景
+      "text_default": null,             // 正文颜色
+      "text_link": null,                // 链接/脚注引用颜色
+      "text_placeholder": null,         // 弱化文字（占位提示、列表标记、脚注）
+      "text_h1": null, "text_h2": null, "text_h3": null,
+      "text_h4": null, "text_h5": null, "text_h6": null,
+      "text_quote": null,               // 引用块文字
+      "border_quote": null,             // 引用块左边框
+      "callout_note_bg": null, "callout_note_border": null,
+      "callout_tip_bg": null, "callout_tip_border": null,
+      "callout_important_bg": null, "callout_important_border": null,
+      "callout_warning_bg": null, "callout_warning_border": null,
+      "callout_caution_bg": null, "callout_caution_border": null,
+      "footnote_badge_text": null,      // 脚注定义文字
+      "separator_color": null,          // 分割线颜色
+      "code_bg": null,                  // 行内代码与代码块背景
+      "code_text": null,                // 代码文字
+      "text_strong": null,              // 粗体文字颜色
+      "text_em": null,                  // 斜体文字颜色
+      "text_strikethrough": null,       // 删除线文字颜色
+      "list_marker": null,              // 列表标记（•、序号）颜色
+      "table_header_text": null,        // 表头文字颜色
+      "task_checkbox_border": null,     // 任务勾选框边框
+      "task_checkbox_bg": null,         // 任务勾选框背景（未勾选）
+      "task_checkbox_checked_bg": null, // 任务勾选框背景（已勾选）
+      "task_checkbox_check": null,      // 勾选标记颜色
+      "scrollbar_thumb": null,          // 滚动条滑块
+      "table_border": null,             // 表格边框（兼作通用边框色）
+      "table_header_bg": null,          // 表头背景
+      "table_cell_bg": null,            // 表格单元格背景
+      "image_placeholder_bg": null,     // 数学/Mermaid 占位块背景
+      "image_placeholder_border": null,
+      "image_placeholder_text": null,
+      "cursor": null,                   // 光标颜色
+      "selection": null,                // 选区高亮
+      "status_bar_background": null,    // 状态栏背景
+      "status_bar_text": null,          // 状态栏文字
+      "status_bar_text_dim": null,      // 状态栏弱化文字
+      "status_bar_button_hover": null   // 状态栏按钮悬停（兼作通用悬停色）
+    },
+    // 字号：数值（px）；字重：thin|light|normal|medium|semibold|bold|extrabold|black；字体：CSS font-family 栈
+    "typography": {
+      "font_family": "",                // 正文字体栈
+      "code_font_family": "",           // 代码字体栈
+      "text_size": null,                // 正文字号
+      "text_line_height": null,         // 正文行高（倍数）
+      "h1_size": null, "h1_weight": "",
+      "h2_size": null, "h2_weight": "",
+      "h3_size": null, "h3_weight": "",
+      "h4_size": null, "h4_weight": "",
+      "h5_size": null, "h5_weight": "",
+      "h6_size": null, "h6_weight": "",
+      "code_size": null                 // 代码字号
+    },
+    // 尺寸：数值（px）；content_max_width 为 null 表示全宽
+    "dimensions": {
+      "editor_padding": null,           // 编辑区内边距
+      "content_max_width": null,        // 内容列最大宽度（居中）
+      "quote_border_width": null,       // 引用块左边框宽度
+      "callout_radius": null,           // callout 圆角
+      "code_bg_radius": null            // 行内代码圆角
+    },
+    // 按块类型自定义样式：键为块类型，值为任意 CSS 属性表（camelCase/kebab 均可，
+    // 数值自动补 px；fontWeight/lineHeight/opacity 等无单位属性除外）。
+    // heading 的值里可再嵌 h1~h6 子表做分级覆盖。
+    // 除 16 种块类型外，还支持行内键：link / inlineCode / strong / em /
+    // strikethrough / footnoteRef / listMarker / taskCheckbox。
+    // ":" 开头的键为伪类/伪元素（:hover、::after 等）；
+    // 含空白/括号/组合器的键为后代选择器（如 "tbody tr:nth-child(even) td" 斑马纹）。
+    "blocks": {
+      // "paragraph": { "letterSpacing": "0.02em" },
+      // "heading": {
+      //   "color": "#b45309",
+      //   "h1": { "::after": { "content": "\"\"", "display": "block", "height": "4px", "background": "#b45309" } }
+      // },
+      // "link": { ":hover": { "color": "#fff", "background": "#2563eb" } },
+      // "table": { "tbody tr:nth-child(even) td": { "background": "#00000008" } },
+      // "quote": { "background": "#00000008", "borderRadius": 6, "padding": "4px 12px" },
+      // "codeBlock": { "borderRadius": 10, "border": "1px solid #00000014" },
+      // "mathBlock": { "textAlign": "center" }
+    }
+  }
+}

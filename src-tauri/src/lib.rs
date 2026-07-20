@@ -2,7 +2,6 @@
 
 pub mod markdown;
 
-use tauri::Manager;
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
 
@@ -15,7 +14,15 @@ pub fn run() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--flag1", "--flag2"]),
         ))
-        .invoke_handler(tauri::generate_handler![markdown::parse_markdown])
+        .invoke_handler(tauri::generate_handler![
+            markdown::parse_markdown,
+            markdown::parse_blocks,
+            markdown::serialize_markdown,
+            markdown::toggle_task_markdown,
+            markdown::text_stats,
+            markdown::detect_block_shortcut,
+            markdown::inline_shortcut
+        ])
         .setup(|app| {
             // 获取自动启动管理器
             let autostart_manager = app.autolaunch();

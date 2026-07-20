@@ -1,0 +1,229 @@
+// Animal Island（日间版）— 移植自 Typora 主题 animal-island
+// 来源：https://github.com/YanyingWei1997/typora-theme-animal-island（MIT License）
+// 风格：动物森友会 —— 奶油纸面、薄荷点缀、3D 软枕阴影。
+// 导入方式：状态栏主题下拉 →「导入主题…」选择本文件。
+{
+  "name": "Animal Island",
+  "creator": "YanyingWei1997（Typora 主题移植）",
+  "baseThemeId": "velotype-light",
+  "description": "动物森友会风格：奶油纸面 + 薄荷绿点缀 + 3D 软枕阴影（日间版）",
+  "version": "1.0.0",
+  "homepage": "https://github.com/YanyingWei1997/typora-theme-animal-island",
+  "license": "MIT",
+
+  "theme": {
+    "colors": {
+      // 纸面白 + 奶油画布
+      "editor_background": "#ffffff",
+      "source_mode_block_bg": "#f7f5ec",
+      "comment_bg": "#efe9d680",
+      // 暖棕文字体系
+      "text_default": "#725d42",
+      "text_link": "#11a89b",
+      "text_placeholder": "#9f927d",
+      "text_h1": "#794f27",
+      "text_h2": "#794f27",
+      "text_h3": "#794f27",
+      "text_h4": "#794f27",
+      "text_h5": "#794f27",
+      "text_h6": "#794f27",
+      "text_strong": "#794f27",
+      "text_em": "#794f27",
+      "text_strikethrough": "#c4b89e",
+      "list_marker": "#19c8b9",
+      "text_quote": "#725d42",
+      "border_quote": "#19c8b9",
+      // callout：薄荷/叶绿/焦糖/鹅黄/珊瑚
+      "callout_note_bg": "#e6f9f6",
+      "callout_note_border": "#19c8b9",
+      "callout_tip_bg": "#6fba2c14",
+      "callout_tip_border": "#6fba2c",
+      "callout_important_bg": "#c97d1c14",
+      "callout_important_border": "#c97d1c",
+      "callout_warning_bg": "#f5c31c1f",
+      "callout_warning_border": "#f5c31c",
+      "callout_caution_bg": "#e05a5a14",
+      "callout_caution_border": "#e05a5a",
+      "footnote_badge_text": "#9f927d",
+      "separator_color": "#19c8b9",
+      // 代码块为米色软枕；行内代码为薄荷底（经 blocks.inlineCode 覆盖）
+      "code_bg": "#efe9d6",
+      "code_text": "#725d42",
+      "table_border": "#c9bea4",
+      "table_header_bg": "#19c8b9",
+      "table_header_text": "#ffffff",
+      "table_cell_bg": "#ffffff",
+      "image_placeholder_bg": "#f7f5ec",
+      "image_placeholder_border": "#c9bea4",
+      "image_placeholder_text": "#9f927d",
+      "cursor": "#11a89b",
+      "selection": "#ffcc00",
+      "status_bar_background": "#faf9f3",
+      "status_bar_text": "#725d42",
+      "status_bar_text_dim": "#9f927d",
+      "status_bar_button_hover": "#efe9d6",
+      "task_checkbox_border": "#c9bea4",
+      "task_checkbox_bg": "#f7f5ec",
+      "task_checkbox_checked_bg": "#6fba2c",
+      "task_checkbox_check": "#ffffff",
+      "scrollbar_thumb": "#c9bea4"
+    },
+    "typography": {
+      "font_family": "-apple-system, BlinkMacSystemFont, \"Hiragino Sans\", \"Hiragino Kaku Gothic ProN\", \"PingFang SC\", \"Noto Sans SC\", \"Noto Sans JP\", \"Microsoft YaHei\", \"Helvetica Neue\", sans-serif",
+      "code_font_family": "\"JetBrains Mono\", \"Fira Code\", \"Cascadia Code\", \"SF Mono\", Consolas, Menlo, monospace",
+      "text_size": 16,
+      "text_line_height": 1.8,
+      "h1_size": 36, "h1_weight": "black",
+      "h2_size": 27, "h2_weight": "extrabold",
+      "h3_size": 21, "h3_weight": "bold",
+      "h4_size": 18, "h4_weight": "extrabold",
+      "h5_size": 16, "h5_weight": "extrabold",
+      "h6_size": 13, "h6_weight": "extrabold",
+      "code_size": 15
+    },
+    "dimensions": {
+      "editor_padding": 40,
+      "content_max_width": 860,
+      "quote_border_width": 6,
+      "callout_radius": 18,
+      "code_bg_radius": 6
+    },
+    "blocks": {
+      // 6 级标题各有特色（对齐原主题招牌样式）
+      "heading": {
+        "letterSpacing": "0.02em",
+        "lineHeight": 1.35,
+        // H1：居中勋章 + 三色胶囊下划线（::after 伪元素，与原主题一致）
+        "h1": {
+          "textAlign": "center",
+          "margin": "1.3em 0 1.1em",
+          "paddingBottom": "0.5em",
+          "::after": {
+            "content": "\"\"",
+            "display": "block",
+            "width": "110px",
+            "height": "8px",
+            "margin": "0.55em auto 0",
+            "borderRadius": "999px",
+            "background": "linear-gradient(to right, #19c8b9 0%, #19c8b9 40%, #f5c31c 40%, #f5c31c 60%, #19c8b9 60%, #19c8b9 100%)",
+            "boxShadow": "0 2px 0 0 #d4c9b4"
+          }
+        },
+        // H2：薄荷渐变卡片 + 左厚竖块
+        "h2": {
+          "margin": "1.8em 0 0.9em",
+          "padding": "12px 20px 12px 22px",
+          "background": "linear-gradient(to right, #e6f9f6 0%, #efe9d6 55%, transparent 100%)",
+          "borderLeft": "8px solid #19c8b9",
+          "borderRadius": "0 18px 18px 0",
+          "boxShadow": "0 2px 0 0 #d4c9b4"
+        },
+        // H3：左竖线 + 底部虚线
+        "h3": {
+          "margin": "1.5em 0 0.7em",
+          "padding": "4px 0 8px 14px",
+          "borderLeft": "5px solid #19c8b9",
+          "borderBottom": "2px dashed #d8cdb2"
+        },
+        // H4：薄荷文字 + 短记号笔下划线
+        "h4": {
+          "color": "#11a89b",
+          "margin": "1.3em 0 0.5em",
+          "paddingBottom": "6px",
+          "backgroundImage": "linear-gradient(to right, #19c8b9 0, #19c8b9 36px, transparent 36px)",
+          "backgroundSize": "100% 3px",
+          "backgroundRepeat": "no-repeat",
+          "backgroundPosition": "0 100%"
+        },
+        // H5：米色胶囊贴纸
+        "h5": {
+          "display": "inline-block",
+          "margin": "1.1em 0 0.4em",
+          "padding": "3px 14px",
+          "background": "#efe9d6",
+          "border": "1.5px solid #d8cdb2",
+          "borderRadius": "999px"
+        },
+        // H6：大写微标签
+        "h6": {
+          "color": "#8a7b66",
+          "textTransform": "uppercase",
+          "letterSpacing": "2px",
+          "margin": "1em 0 0.3em"
+        }
+      },
+      // 引用块：3D 软枕卡片
+      "quote": {
+        "background": "#efe9d6",
+        "borderLeft": "6px solid #19c8b9",
+        "borderRadius": "18px",
+        "padding": "12px 20px",
+        "boxShadow": "0 3px 0 0 #d4c9b4"
+      },
+      // 代码块：米色软枕
+      "codeBlock": {
+        "background": "#efe9d6",
+        "border": "2px solid #c9bea4",
+        "borderRadius": "18px",
+        "padding": "16px 20px",
+        "boxShadow": "0 3px 0 0 #d4c9b4"
+      },
+      // 行内代码：薄荷底胶囊
+      "inlineCode": {
+        "background": "#e6f9f6",
+        "color": "#11a89b",
+        "border": "1.5px solid #cdeeea",
+        "borderRadius": "6px",
+        "padding": "2px 8px"
+      },
+      // 链接：薄荷虚线下划线，悬停反白
+      "link": {
+        "textDecoration": "none",
+        "borderBottom": "2px dotted #19c8b9",
+        "padding": "0 2px",
+        ":hover": {
+          "color": "#ffffff",
+          "background": "#19c8b9",
+          "borderBottomColor": "transparent",
+          "borderRadius": "5px"
+        }
+      },
+      // 小动物脚印分隔线（SVG data URI，薄荷色）
+      "separator": {
+        "border": "none",
+        "height": "18px",
+        "width": "70%",
+        "margin": "2.4em auto",
+        "backgroundImage": "url('data:image/svg+xml;utf8,<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 32 18\"><ellipse cx=\"16\" cy=\"13\" rx=\"5\" ry=\"3.8\" fill=\"%2319c8b9\"/><circle cx=\"9\" cy=\"6\" r=\"2.3\" fill=\"%2319c8b9\"/><circle cx=\"14\" cy=\"3\" r=\"2.3\" fill=\"%2319c8b9\"/><circle cx=\"19\" cy=\"3\" r=\"2.3\" fill=\"%2319c8b9\"/><circle cx=\"24\" cy=\"6\" r=\"2.3\" fill=\"%2319c8b9\"/></svg>')",
+        "backgroundSize": "80px 18px",
+        "backgroundRepeat": "repeat-x",
+        "backgroundPosition": "center"
+      },
+      // 表格：薄荷表头 + 圆角卡片 + 斑马纹/悬停行
+      "table": {
+        "borderCollapse": "separate",
+        "borderSpacing": "0",
+        "border": "2px solid #c9bea4",
+        "borderRadius": "18px",
+        "overflow": "hidden",
+        "boxShadow": "0 3px 10px 0 rgba(61, 52, 40, 0.10)",
+        "tbody tr:nth-child(even) td": {
+          "background": "#efe9d6"
+        },
+        "tbody tr:hover td": {
+          "background": "#e6f9f6"
+        }
+      },
+      // 任务勾选框：3D 软枕
+      "taskCheckbox": {
+        "width": "18px",
+        "height": "18px",
+        "borderRadius": "6px",
+        "border": "2.5px solid #c9bea4",
+        "boxShadow": "0 2px 0 0 #d4c9b4"
+      },
+      "mathBlock": { "borderRadius": "18px", "textAlign": "center" },
+      "mermaidBlock": { "borderRadius": "18px" }
+    }
+  }
+}

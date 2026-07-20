@@ -3,7 +3,7 @@ name = "tauri-app"
 version = "0.1.0"
 description = "A Tauri App"
 authors = ["you"]
-edition = "2021"
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -15,6 +15,10 @@ name = "tauri_app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 # 关键：仅导出 Tauri 必需符号，不导出全部内部函数
 export = ["_*"]
+# cargo 的 rustc-link-arg-tests（见 build.rs 的清单资源补链）不会应用到 lib 单元测试目标，
+# 导致 `cargo test` 的 lib 测试程序缺 comctl32 v6 清单、启动即 0xc0000139。
+# 本 crate 测试全部走 tests/ 集成测试，故关闭 lib 单元测试目标。
+test = false
 
 
 [build-dependencies]
@@ -23,7 +27,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-pulldown-cmark = { version = "0.10", features = ["html"] }
+cssparser = "0.37"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.6", features = ["serde", "v4"] }
