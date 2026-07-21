@@ -3,7 +3,7 @@
 //! 原始 Markdown 被解析为可安全编辑的原生块结构（BlockNode 树）。
 //! 超出当前运行时模型能力的语法以 RawMarkdown 块原样保留，可无损往返。
 
-use super::math::parse_display_math_source;
+use super::math::{is_math_info_string, parse_display_math_source};
 use super::mermaid::is_mermaid_info_string;
 use super::state::{BlockKind, BlockRecord, CalloutVariant, CodeFenceOpening};
 use crate::markdown::inline::footnote::parse_footnote_definition_head;
@@ -512,20 +512,25 @@ fn collect_footnote_definition_region(lines: &[String], start: usize) -> usize {
 fn is_display_math_start(line: &str) -> bool {
     strip_fence_indent(line)
         .map(str::trim_end)
-        .is_some_and(|rest| rest.starts_with("$$"))
+        .is_some_and(|rest| rest.starts_with("$$") || rest.starts_with("\\["))
 }
 
 fn collect_display_math_region(lines: &[String], start: usize) -> usize {
     let opener = strip_fence_indent(&lines[start])
         .map(str::trim_end)
         .unwrap_or_default();
-    if opener != "$$" && opener[2..].contains("$$") {
+    // 单行闭合（$$...$$ 或 \[...\]）：区域仅一行
+    if opener.starts_with("$$") && opener != "$$" && opener[2..].contains("$$") {
+        return start + 1;
+    }
+    if opener.starts_with("\\[") && opener != "\\[" && opener[2..].contains("\\]") {
         return start + 1;
     }
 
+    let close_marker = if opener.starts_with("\\[") { "\\]" } else { "$$" };
     let mut index = start + 1;
     while index < lines.len() {
-        if lines[index].trim() == "$$" {
+        if lines[index].trim() == close_marker {
             return index + 1;
         }
 
@@ -748,6 +753,14 @@ fn collect_fenced_code_block(
             closing_index + 1,
         ));
     }
+    // `math`/`latex` info 的围栏按展示公式块处理（Typora 风格）
+    if is_math_info_string(fence.language.as_ref().map(|language| language.as_ref())) {
+        let raw = lines[start..=closing_index].join("\n");
+        return Some((
+            BlockNode::leaf(BlockRecord::math(raw)),
+            closing_index + 1,
+        ));
+    }
 
     // Length is known: closing_index - (start + 1). slice.to_vec()
     // allocates the exact capacity in one shot, vs Vec::new() + while-push
@@ -806,10 +819,18 @@ fn html_or_raw_block( markdown: String) -> BlockNode {
 
 fn math_or_raw_block( markdown: String) -> BlockNode {
     if parse_display_math_source(&markdown).is_some() {
-        BlockNode::leaf(BlockRecord::math(markdown))
-    } else {
-        raw_block(markdown)
+        return BlockNode::leaf(BlockRecord::math(markdown));
     }
+    // 单行展示公式候选解析失败（如 `$$ 文本 $$ $$ 公式 $$` 同行多段）：
+    // 回退为段落走行内解析（行内 $$ 公式仍可渲染、内容不丢）；
+    // 多行失败保持 RawMarkdown 无损保留。
+    if !markdown.contains('\n') {
+        return BlockNode::leaf(BlockRecord::new(
+            BlockKind::Paragraph,
+            InlineTextTree::from_markdown(&markdown),
+        ));
+    }
+    raw_block(markdown)
 }
 
 fn collect_comment_block(

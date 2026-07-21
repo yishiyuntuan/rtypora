@@ -21,7 +21,11 @@
 
 ### 后端（`src-tauri/`，Rust）
 - `src/main.rs`：入口，仅调用 `tauri_app_lib::run()`。保留 `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]`，勿删除。
-- `src/lib.rs`：`run()` 中构建 Tauri 应用，已注册 `tauri-plugin-opener` 和 `tauri-plugin-autostart`（含 `MacosLauncher::LaunchAgent`，仅桌面平台依赖，见 `Cargo.toml` 的 `[target.'cfg(not(any(target_os = "android", target_os = "ios")))'...]` 段）。Tauri 命令经 `.invoke_handler(tauri::generate_handler![...])` 注册，自有命令无需 capabilities 配置。
+- `src/lib.rs`：`run()` 中构建 Tauri 应用，已注册 `tauri-plugin-opener`、`tauri-plugin-dialog` 和 `tauri-plugin-autostart`（含 `MacosLauncher::LaunchAgent`，仅桌面平台依赖，见 `Cargo.toml` 的 `[target.'cfg(not(any(target_os = "android", target_os = "ios")))'...]` 段）。Tauri 命令经 `.invoke_handler(tauri::generate_handler![...])` 注册，自有命令无需 capabilities 配置。
+- `src/files.rs`：文件操作命令（`open_markdown_file` 弹框选读、`read_markdown_file` 按路径读、`list_dir` 列目录、`read_image_data_url` 本地图片读为 data URL、`save_file`/`save_file_as`/`save_html_as` 保存与导出、`save_pasted_image` 粘贴图片落盘）；文件对话框仅经 Rust 端 `tauri-plugin-dialog` 的 `DialogExt` 使用，前端无插件权限需求。
+- `src/highlight.rs`：代码块语法高亮，移植自 velotype `code_highlight.rs`（tree-sitter + 20 种官方语法 + yaml/toml）。命令 `highlight_code(language, code)` 返回扁平 span（UTF-16 区间 + 11 个规范类名，与主题 `code_syntax_*` token 后缀一致）；语言未知/纯文本返回空数组。注意 tree-sitter 语法为 C 构建，全量编译耗时明显增加。
+- `src/mermaid.rs`：Mermaid 图表渲染，移植自 velotype 渲染管线（`mermaid-rs-renderer`，Rust 端 SVG）。命令 `render_mermaid(source)` 返回 SVG 文本（类型校验 + 错误标记检测 + 进程内缓存；webview 按 CSS 定尺寸，故省略 velotype 的磁盘缓存与缩放副本）。
+- `src/latex.rs`：LaTeX 公式渲染，移植自 velotype 管线（ratex parser→layout→svg，自包含 SVG 内嵌字形）。命令 `render_display_math`（`$$`/`\[...\]`/````math` 围栏原文）/`render_inline_math`（LaTeX 正文，含 `\(...\)`）返回 SVG；`set_math_unicode_font` 设置公式中文回落字体（主题 `math_cjk_font` 驱动）。**physics 包宏在解析前展开**（`\dv`/`\pdv`（含 `[n]` 阶数）/`\abs`/`\norm`/`\bra`/`\ket`/`\braket`/`\qty`/`\eval`/`\dd`）；非标准宏别名容错（`\part`→`\partial`）；颜色/字号由前端按当前主题传入，缩放 1.25/1.12 与 velotype 一致。
 - `src/markdown/`：Markdown 核心，移植自 velotype（GPUI 依赖已全部剥离）。`mod.rs` 暴露七个命令：`parse_markdown`（全文 → 块树 JSON）、`parse_blocks`（片段 → 块树 JSON，偏移相对片段起点，用于增量更新）、`serialize_markdown`（块树 JSON → 规范 Markdown，前端提交编辑时调用）、`toggle_task_markdown`（任务勾选标记替换）、`text_stats`（行/词/字符统计，CJK 感知词数）、`detect_block_shortcut`（块级快捷输入检测，含 fence 与分割线）、`inline_shortcut`（行内快捷输入检测：链接/图片/粗斜体/删除线/行内代码）。`model.rs` 是对外 DTO（`BlockDto`/`BlockKindDto`，嵌套 children + UTF-16 偏移）；`inline/` 为行内引擎（`InlineTextTree` 解析/序列化、链接/HTML/脚注/图片）；`table.rs` 为表格数据与解析；`block/` 为块模型（`state.rs` 的 `BlockRecord`/`BlockKind`）、逐行解析器（`document.rs`，输出 `RootBlock{node,start_line,end_line}`）与序列化器（`tree.rs`）。Rust 端无状态，文档全文由前端持有。
 - `Cargo.toml`：`edition = "2024"`（velotype 源码使用 let-chain）；`cssparser`（行内 HTML 样式解析）、`serde`/`serde_json`、`uuid`（v4，生成块 id）已投入使用；`im`（持久化不可变树，用于规划的 undo/redo）尚未使用。
 - lib 目标名 `tauri_app_lib`，crate-type 含 `staticlib`/`cdylib`（为移动端预留），`export = ["_*"]` 仅导出 Tauri 必需符号；`test = false`（cargo 的 `rustc-link-arg-tests` 不应用于 lib 单测目标，会缺 Windows 清单，本 crate 测试全部走 tests/ 集成测试）。
@@ -56,14 +60,21 @@ src/
 │   ├── velotype.js    # 内置暗色主题（id: velotype）
 │   └── velotype-light.js # 内置亮色主题（id: velotype-light，默认）
 └── component/         # 注意：目录名是 component 而非 components
-    ├── TitleBar.vue   # 自定义标题栏（data-tauri-drag-region 拖拽、最小化/最大化/关闭，经 @tauri-apps/api/window 的 Window('main') 控制）
-    ├── Sidebar.vue    # 侧边栏：「目录」（标题平铺缩进）与「大纲」（标题嵌套树），数据来自 Editor 上报的 blocks（props），点击 emit select-block 滚动定位，activeHeadingId 高亮当前标题
+    ├── TitleBar.vue   # 自定义标题栏（拖拽区、菜单按钮（打开滑出菜单）、文件名显示、窗口控制）
+    ├── MenuDrawer.vue # 一体化菜单（Typora 风格）：左侧深色菜单列 + 右侧内容面板（打开[含最近文件]/导出/主题/偏好设置/关于），动作项直接执行
+    ├── PrefsDialog.vue # 偏好设置对话框：编辑器(字号/行高/列宽/内边距)、图像(粘贴行为)、Markdown(渲染开关)、外观
+    ├── AboutDialog.vue # 关于对话框
+    ├── ConfirmDialog.vue # 未保存更改确认（保存/不保存/取消）
+    ├── Sidebar.vue    # 侧边栏：「目录」（当前文件所在文件夹的文件树，Rust list_dir 懒加载）与「大纲」（标题嵌套树），v-model:visible 控制显隐
     ├── Editor.vue     # 双模式编辑区：持有全文 Markdown（唯一数据源）；源码模式为 textarea，WYSIWYG 模式渲染块树，点击块进入 contenteditable 就地编辑；emit update:blocks/update:active-heading，defineExpose 暴露 scrollToBlock
     ├── BlockView.vue  # 递归块渲染器（16 种块类型：段落/标题/分割线/三种列表项/引用/callout/脚注定义/表格/代码块/注释/HTML/数学/Mermaid/Raw）
     ├── InlineView.vue # 行内渲染器：按 fragment 样式标志递归包裹（粗/斜/删/下划线/行内代码/上下标/链接/脚注引用/行内公式占位）
-    └── StatusBar.vue  # 状态栏，显示 Ln/Col、行/词/字符数，emit 切换侧边栏与源码模式
+    └── StatusBar.vue  # 状态栏，显示 Ln/Col、行/词/字符数，主题选择与导入，emit 切换侧边栏与源码模式
 └── utils/
-    └── wysiwyg.js     # 就地编辑转换层：Block→可编辑 HTML、DOM→BlockDto JSON、Markdown 快捷输入（判定全部经 Rust 命令，JS 只做 DOM 替换；类名与 BlockView 保持一致，需同步修改）
+    ├── wysiwyg.js     # 就地编辑转换层：Block→可编辑 HTML、DOM→BlockDto JSON、Markdown 快捷输入（判定全部经 Rust 命令，JS 只做 DOM 替换；类名与 BlockView 保持一致，需同步修改）
+    ├── highlight.js   # 高亮客户端：调 Rust highlight_code 取 span 拼 HTML（结果缓存 200 条），ts-* 类名映射 code_syntax_* token
+    ├── image.js       # 图片源解析：远程直出，本地经 read_image_data_url 转 data URL（缓存）
+    └── prefs.js       # 偏好设置存取（localStorage）：编辑器排版覆盖（主题后应用）、图像粘贴行为、Markdown 渲染开关、prefsVersion 响应式版本号
 src-tauri/
 ├── src/main.rs        # 薄入口
 ├── src/lib.rs         # Tauri Builder、插件注册、invoke_handler 注册

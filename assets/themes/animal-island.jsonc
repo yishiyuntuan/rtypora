@@ -30,6 +30,11 @@
       "text_strong": "#794f27",
       "text_em": "#794f27",
       "text_strikethrough": "#c4b89e",
+      "mark_bg": "#ffcc00",
+      "mark_text": "#794f27",
+      "kbd_bg": "#f7f5ec",
+      "kbd_text": "#794f27",
+      "kbd_border": "#c9bea4",
       "list_marker": "#19c8b9",
       "text_quote": "#725d42",
       "border_quote": "#19c8b9",
@@ -66,12 +71,23 @@
       "task_checkbox_bg": "#f7f5ec",
       "task_checkbox_checked_bg": "#6fba2c",
       "task_checkbox_check": "#ffffff",
-      "scrollbar_thumb": "#c9bea4"
+      "scrollbar_thumb": "#c9bea4",
+      "code_syntax_comment": "#c4b89e",
+      "code_syntax_keyword": "#c94444",
+      "code_syntax_string": "#5a9e1e",
+      "code_syntax_number": "#dba90e",
+      "code_syntax_type": "#c94444",
+      "code_syntax_function": "#11a89b",
+      "code_syntax_constant": "#dba90e",
+      "code_syntax_variable": "#794f27",
+      "code_syntax_property": "#11a89b",
+      "code_syntax_operator": "#794f27",
+      "code_syntax_punctuation": "#9f927d"
     },
     "typography": {
       "font_family": "-apple-system, BlinkMacSystemFont, \"Hiragino Sans\", \"Hiragino Kaku Gothic ProN\", \"PingFang SC\", \"Noto Sans SC\", \"Noto Sans JP\", \"Microsoft YaHei\", \"Helvetica Neue\", sans-serif",
       "code_font_family": "\"JetBrains Mono\", \"Fira Code\", \"Cascadia Code\", \"SF Mono\", Consolas, Menlo, monospace",
-      "text_size": 16,
+      "text_size": 17,
       "text_line_height": 1.8,
       "h1_size": 36, "h1_weight": "black",
       "h2_size": 27, "h2_weight": "extrabold",
@@ -220,6 +236,10 @@
         "height": "18px",
         "borderRadius": "6px",
         "border": "2.5px solid #c9bea4",
+        "boxShadow": "0 2px 0 0 #d4c9b4"
+      },
+      // 键盘按键：3D 软枕
+      "kbd": {
         "boxShadow": "0 2px 0 0 #d4c9b4"
       },
       "mathBlock": { "borderRadius": "18px", "textAlign": "center" },

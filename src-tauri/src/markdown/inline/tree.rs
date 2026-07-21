@@ -27,6 +27,8 @@ pub struct InlineStyle {
     pub italic: bool,
     pub underline: bool,
     pub strikethrough: bool,
+    pub highlight: bool,
+    pub kbd: bool,
     pub code: bool,
     pub script: InlineScript,
 }
@@ -67,6 +69,22 @@ impl InlineStyle {
         }
     }
 
+    /// Highlighted text (`==...==`).
+    pub fn with_highlight(self) -> Self {
+        Self {
+            highlight: true,
+            ..self
+        }
+    }
+
+    /// Keyboard key style (`<kbd>...</kbd>`).
+    pub fn with_kbd(self) -> Self {
+        Self {
+            kbd: true,
+            ..self
+        }
+    }
+
     pub fn with_code(self) -> Self {
         Self { code: true, ..self }
     }
@@ -95,6 +113,8 @@ impl InlineStyle {
             Delimiter::ItalicMarkdown { .. } | Delimiter::ItalicHtml => self.with_italic(),
             Delimiter::Underline => self.with_underline(),
             Delimiter::StrikethroughMarkdown => self.with_strikethrough(),
+            Delimiter::HighlightMarkdown => self.with_highlight(),
+            Delimiter::KbdHtml => self.with_kbd(),
             Delimiter::CodeMarkdown { .. } => self.with_code(),
             Delimiter::SuperscriptMarkdown | Delimiter::SuperscriptHtml => self.with_superscript(),
             Delimiter::SubscriptMarkdown | Delimiter::SubscriptHtml => self.with_subscript(),
@@ -135,6 +155,8 @@ pub struct InlineMath {
 pub enum InlineMathDelimiter {
     /// Dollar-delimited inline math: `$...$`.
     Dollar,
+    /// Double-dollar-delimited inline math: `$$...$$`（行内展示公式）。
+    DollarDouble,
     /// Parenthesis-delimited inline math: `\(...\)`.
     Paren,
 }
@@ -1256,6 +1278,8 @@ enum Delimiter {
     ItalicMarkdown { marker: char },
     /// Markdown strikethrough marker `~~`.
     StrikethroughMarkdown,
+    /// Markdown highlight marker `==`.
+    HighlightMarkdown,
     /// Markdown superscript marker `^`.
     SuperscriptMarkdown,
     /// Markdown subscript marker `~`.
@@ -1270,6 +1294,8 @@ enum Delimiter {
     BoldHtml,
     /// HTML italic marker `<em>`.
     ItalicHtml,
+    /// HTML keyboard-key marker `<kbd>`.
+    KbdHtml,
     /// Markdown code span marker using a selected backtick run length.
     CodeMarkdown { run_len: usize },
 }
@@ -1282,6 +1308,7 @@ impl Delimiter {
             Self::BoldMarkdown { marker } => marker.to_string().repeat(2),
             Self::ItalicMarkdown { marker } => marker.to_string(),
             Self::StrikethroughMarkdown => "~~".into(),
+            Self::HighlightMarkdown => "==".into(),
             Self::SuperscriptMarkdown => "^".into(),
             Self::SubscriptMarkdown => "~".into(),
             Self::Underline => "<u>".into(),
@@ -1289,6 +1316,7 @@ impl Delimiter {
             Self::SubscriptHtml => "<sub>".into(),
             Self::BoldHtml => "<strong>".into(),
             Self::ItalicHtml => "<em>".into(),
+            Self::KbdHtml => "<kbd>".into(),
             Self::CodeMarkdown { run_len } => "`".repeat(run_len),
         }
     }
@@ -1298,6 +1326,7 @@ impl Delimiter {
             Self::BoldMarkdown { marker } => marker.to_string().repeat(2),
             Self::ItalicMarkdown { marker } => marker.to_string(),
             Self::StrikethroughMarkdown => "~~".into(),
+            Self::HighlightMarkdown => "==".into(),
             Self::SuperscriptMarkdown => "^".into(),
             Self::SubscriptMarkdown => "~".into(),
             Self::Underline => "</u>".into(),
@@ -1305,6 +1334,7 @@ impl Delimiter {
             Self::SubscriptHtml => "</sub>".into(),
             Self::BoldHtml => "</strong>".into(),
             Self::ItalicHtml => "</em>".into(),
+            Self::KbdHtml => "</kbd>".into(),
             Self::CodeMarkdown { run_len } => "`".repeat(run_len),
         }
     }
@@ -1321,19 +1351,21 @@ impl Delimiter {
             Self::BoldMarkdown { .. } => 0,
             Self::Underline => 1,
             Self::StrikethroughMarkdown => 2,
+            Self::HighlightMarkdown => 2,
             Self::SuperscriptMarkdown | Self::SubscriptMarkdown => 3,
             Self::ItalicMarkdown { .. } => 4,
             Self::SuperscriptHtml | Self::SubscriptHtml => 5,
             Self::BoldHtml => 6,
             Self::ItalicHtml => 7,
             Self::CodeMarkdown { .. } => 8,
+            Self::KbdHtml => 9,
         }
     }
 
     fn is_html(self) -> bool {
         matches!(
             self,
-            Self::BoldHtml | Self::ItalicHtml | Self::SuperscriptHtml | Self::SubscriptHtml
+            Self::BoldHtml | Self::ItalicHtml | Self::SuperscriptHtml | Self::SubscriptHtml | Self::KbdHtml
         )
     }
 }
@@ -1415,6 +1447,12 @@ impl NormalizeBuilder {
         }
         if extra_style.strikethrough {
             style.strikethrough = true;
+        }
+        if extra_style.highlight {
+            style.highlight = true;
+        }
+        if extra_style.kbd {
+            style.kbd = true;
         }
         if extra_style.code {
             style.code = true;
@@ -1687,11 +1725,17 @@ fn parse_inline_math(
     builder: &mut NormalizeBuilder,
 ) -> Option<usize> {
     let (body_start, close_start, close_end, delimiter) = if tokens.get(index)?.ch == '$' {
-        if matches_sequence(tokens, index, "$$") || token_is_backslash_escaped(tokens, index) {
+        if token_is_backslash_escaped(tokens, index) {
             return None;
         }
-        let close = locate_inline_dollar_math_close(tokens, index + 1)?;
-        (index + 1, close, close, InlineMathDelimiter::Dollar)
+        if matches_sequence(tokens, index, "$$") {
+            // 行内展示公式 `$$...$$`（如 `$$ 文本 $$ $$ 公式 $$` 同行多段）
+            let close = locate_inline_double_dollar_math_close(tokens, index + 2)?;
+            (index + 2, close, close + 1, InlineMathDelimiter::DollarDouble)
+        } else {
+            let close = locate_inline_dollar_math_close(tokens, index + 1)?;
+            (index + 1, close, close, InlineMathDelimiter::Dollar)
+        }
     } else if matches_sequence(tokens, index, "\\(") {
         let close = locate_inline_paren_math_close(tokens, index + 2)?;
         (index + 2, close, close + 1, InlineMathDelimiter::Paren)
@@ -1708,7 +1752,25 @@ fn parse_inline_math(
     {
         return None;
     }
-    if tokens[body_start].ch.is_whitespace() || tokens[close_start - 1].ch.is_whitespace() {
+    // 双 $$ 定界符允许首尾空白（trim 后作为正文，定界符仍按 source 原样保留）；
+    // 单 $ 与 \( 保持严格规则，防止货币等误判。
+    let (body_start, close_start) = if delimiter == InlineMathDelimiter::DollarDouble {
+        let mut body_start = body_start;
+        let mut close_start = close_start;
+        while body_start < close_start && tokens[body_start].ch.is_whitespace() {
+            body_start += 1;
+        }
+        while close_start > body_start && tokens[close_start - 1].ch.is_whitespace() {
+            close_start -= 1;
+        }
+        (body_start, close_start)
+    } else {
+        if tokens[body_start].ch.is_whitespace() || tokens[close_start - 1].ch.is_whitespace() {
+            return None;
+        }
+        (body_start, close_start)
+    };
+    if body_start >= close_start {
         return None;
     }
 
@@ -1742,6 +1804,20 @@ fn locate_inline_dollar_math_close(tokens: &[CharToken], mut cursor: usize) -> O
             && !token_is_backslash_escaped(tokens, cursor)
             && !matches_sequence(tokens, cursor, "$$")
         {
+            return Some(cursor);
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn locate_inline_double_dollar_math_close(tokens: &[CharToken], mut cursor: usize) -> Option<usize> {
+    while cursor < tokens.len() {
+        let token = &tokens[cursor];
+        if token.ch == '\n' || token.ch == '\r' {
+            return None;
+        }
+        if matches_sequence(tokens, cursor, "$$") && !token_is_backslash_escaped(tokens, cursor) {
             return Some(cursor);
         }
         cursor += 1;
@@ -2059,7 +2135,8 @@ fn inline_html_semantic_style(name: &str, style: InlineStyle) -> InlineStyle {
         "em" | "i" => style.with_italic(),
         "u" | "ins" => style.with_underline(),
         "del" => style.with_strikethrough(),
-        "code" | "kbd" => style.with_code(),
+        "code" => style.with_code(),
+        "kbd" => style.with_kbd(),
         "sup" => style.with_superscript(),
         "sub" => style.with_subscript(),
         _ => style,
@@ -2470,6 +2547,8 @@ fn match_open_delimiter(tokens: &[CharToken], index: usize) -> Option<Delimiter>
         Some(Delimiter::Underline)
     } else if matches_sequence(tokens, index, "~~") {
         Some(Delimiter::StrikethroughMarkdown)
+    } else if matches_sequence(tokens, index, "==") {
+        Some(Delimiter::HighlightMarkdown)
     } else if matches_sequence(tokens, index, "^") && can_open_script(tokens, index, '^') {
         Some(Delimiter::SuperscriptMarkdown)
     } else if is_single_tilde_delimiter(tokens, index) && can_open_script(tokens, index, '~') {
@@ -2588,6 +2667,7 @@ fn emphasis_requires_body(delimiter: Delimiter) -> bool {
             | Delimiter::BoldHtml
             | Delimiter::ItalicHtml
             | Delimiter::Underline
+            | Delimiter::HighlightMarkdown
     )
 }
 
@@ -2978,6 +3058,12 @@ fn stack_variants(
     if style.strikethrough {
         markdown_stack.push(Delimiter::StrikethroughMarkdown);
     }
+    if style.highlight {
+        markdown_stack.push(Delimiter::HighlightMarkdown);
+    }
+    if style.kbd {
+        markdown_stack.push(Delimiter::KbdHtml);
+    }
     match style.script {
         InlineScript::Normal => {}
         InlineScript::Superscript
@@ -3016,6 +3102,12 @@ fn stack_variants(
     }
     if style.strikethrough {
         html_stack.push(Delimiter::StrikethroughMarkdown);
+    }
+    if style.highlight {
+        html_stack.push(Delimiter::HighlightMarkdown);
+    }
+    if style.kbd {
+        html_stack.push(Delimiter::KbdHtml);
     }
     match style.script {
         InlineScript::Normal => {}
@@ -3065,6 +3157,8 @@ fn styles_match_ignoring_script(left: InlineStyle, right: InlineStyle) -> bool {
         && left.italic == right.italic
         && left.underline == right.underline
         && left.strikethrough == right.strikethrough
+        && left.highlight == right.highlight
+        && left.kbd == right.kbd
         && left.code == right.code
 }
 

@@ -1,6 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 pub mod markdown;
+pub mod files;
+pub mod highlight;
+pub mod mermaid;
+pub mod latex;
 
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_autostart::ManagerExt;
@@ -10,6 +14,7 @@ use tauri_plugin_autostart::ManagerExt;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--flag1", "--flag2"]),
@@ -21,7 +26,20 @@ pub fn run() {
             markdown::toggle_task_markdown,
             markdown::text_stats,
             markdown::detect_block_shortcut,
-            markdown::inline_shortcut
+            markdown::inline_shortcut,
+            files::open_markdown_file,
+            files::read_markdown_file,
+            files::list_dir,
+            files::read_image_data_url,
+            files::save_file,
+            files::save_file_as,
+            files::save_pasted_image,
+            files::save_html_as,
+            highlight::highlight_code,
+            mermaid::render_mermaid,
+            latex::render_display_math,
+            latex::render_inline_math,
+            latex::set_math_unicode_font
         ])
         .setup(|app| {
             // 获取自动启动管理器

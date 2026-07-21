@@ -1,5 +1,5 @@
 <script setup>
-import { ref, computed, watch, nextTick } from 'vue';
+import { ref, computed, watch, nextTick, inject } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import BlockView from './BlockView.vue';
 import {
@@ -14,6 +14,7 @@ import {
   insertLineBreakAtCursor,
   numberedOrdinals,
 } from '../utils/wysiwyg.js';
+import { getPref } from '../utils/prefs.js';
 
 // 双模式编辑器：sourceMode 为 Markdown 原文编辑，否则为所见即所得（Typora 式就地编辑）。
 // 全文 Markdown 字符串是唯一数据源；块树由 Rust 命令 parse_markdown 解析得到。
@@ -27,6 +28,9 @@ const props = defineProps({
 const emit = defineEmits(['update:stats', 'update:blocks', 'update:active-heading']);
 
 const content = ref('');
+// 已保存快照：脏标记 = 当前内容与快照不一致
+const savedContent = ref('');
+const isDirty = computed(() => content.value !== savedContent.value);
 const blocks = ref([]);
 // 根块的有序列表序号表（id -> 1 基序号）
 const rootOrdinals = computed(() => numberedOrdinals(blocks.value));
@@ -35,6 +39,8 @@ const flashId = ref(null);
 const activeHeadingId = ref(null);
 // WYSIWYG 滚动容器（大纲定位用）
 const scrollRoot = ref(null);
+// 文档所在目录（粘贴图片的保存基准，App provide）
+const documentDir = inject('documentDir', { value: null });
 // 正在编辑的块 id；'__append__' 表示在文末追加新块
 const editingId = ref(null);
 // 提交/重解析进行中时忽略点击，避免用过期的块区间切片
@@ -321,6 +327,57 @@ function cancelEdit() {
   suppressBlurCommit = false;
 }
 
+// 空块 + Backspace：删除当前块（含源码区间与相邻换行），光标移到上一块末尾；
+// 首块为空则移到下一块开头；文档无块则落到追加区（Typora 式连续退格删除）。
+async function deleteEmptyBlockAndFocusPrev() {
+  if (editingId.value === null) return;
+  syncing.value = true;
+  try {
+    let focusId = null;
+    let focusAtStart = false;
+    if (editingId.value === '__append__') {
+      // 追加区为空：退格跳到末尾块
+      const last = blocks.value[blocks.value.length - 1];
+      if (last) focusId = last.id;
+    } else {
+      const index = blocks.value.findIndex((b) => b.id === editingId.value);
+      const oldBlock = blocks.value[index];
+      editableEl = null;
+      if (oldBlock) {
+        // 删除块源码及其行尾换行（空段落块为零长源码，删除对应空行）
+        let removeStart = oldBlock.start;
+        let removeEnd = oldBlock.end;
+        if (content.value[removeEnd] === '\n') removeEnd += 1;
+        else if (removeStart > 0 && content.value[removeStart - 1] === '\n') removeStart -= 1;
+        const removedLen = removeEnd - removeStart;
+        content.value = content.value.slice(0, removeStart) + content.value.slice(removeEnd);
+        blocks.value.splice(index, 1);
+        for (let i = index; i < blocks.value.length; i++) {
+          const b = blocks.value[i];
+          if (b.start != null) {
+            b.start -= removedLen;
+            b.end -= removedLen;
+          }
+        }
+        publishBlocks();
+        const prev = blocks.value[index - 1];
+        if (prev) focusId = prev.id;
+        else if (blocks.value.length) {
+          focusId = blocks.value[0].id;
+          focusAtStart = true;
+        }
+      }
+    }
+    editableEl = null;
+    suppressBlurCommit = true;
+    editingId.value = focusId ?? '__append__';
+    cursorAtStart = focusAtStart;
+    if (!focusId) suppressBlurCommit = false;
+  } finally {
+    syncing.value = false;
+  }
+}
+
 // 代码块/Mermaid 等 pre 编辑的 Ctrl+Enter：整块提交渲染（不拆分），
 // 并在其后新建空段落进入编辑。普通 Enter 在 pre 内插入换行（见 keydown 路由）。
 async function commitCodeAndNewBlock() {
@@ -396,6 +453,25 @@ function onEditableInput(e) {
   applyMarkdownShortcuts();
 }
 
+// 粘贴图片：按偏好保存到文档目录/assets 子目录并插入相对路径引用（未保存文档跳过）
+async function onEditablePaste(e) {
+  const items = Array.from(e.clipboardData?.items || []);
+  const imageItem = items.find((item) => item.type.startsWith('image/'));
+  if (!imageItem) return;
+  e.preventDefault();
+  const behavior = getPref('image_paste_behavior');
+  if (behavior === 'off') return;
+  const baseDir = documentDir.value;
+  if (!baseDir) return;
+  const file = imageItem.getAsFile();
+  if (!file) return;
+  const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
+  const ext = imageItem.type.split('/')[1] || 'png';
+  const subDir = behavior === 'assets' ? 'assets' : null;
+  const relPath = await invoke('save_pasted_image', { bytes, baseDir, subDir, extension: ext }).catch(() => null);
+  if (relPath) insertTextAtCursor(`![](${relPath})`);
+}
+
 function onEditableKeydown(e) {
   if (e.isComposing) return;
   if (e.key === 'Enter') {
@@ -431,6 +507,12 @@ function onEditableKeydown(e) {
     } else {
       splitAndCommit();
     }
+  } else if (e.key === 'Backspace') {
+    if (e.ctrlKey || e.metaKey || e.shiftKey || !editableEl) return;
+    // 块内容已删空：Backspace 删除该块并跳到上一块（非空块交给浏览器原生删除）
+    if (editableEl.textContent.replace(/\n/g, '') !== '') return;
+    e.preventDefault();
+    deleteEmptyBlockAndFocusPrev();
   } else if (e.key === 'Escape') {
     e.preventDefault();
     cancelEdit();
@@ -489,7 +571,24 @@ function onEditorScroll(e) {
   });
 }
 
-defineExpose({ scrollToBlock });
+// 加载新文档（打开/新建文件）：替换全文并整树重解析，退出当前编辑态
+async function loadDocument(text) {
+  editingId.value = null;
+  editableEl = null;
+  content.value = text;
+  savedContent.value = text;
+  await reparse();
+}
+
+// 保存/另存：返回当前全文；保存成功后同步快照（清除脏标记）
+function getContent() {
+  return content.value;
+}
+function markSaved() {
+  savedContent.value = content.value;
+}
+
+defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () => isDirty.value });
 </script>
 
 <template>
@@ -515,6 +614,7 @@ defineExpose({ scrollToBlock });
           contenteditable="true"
           spellcheck="false"
           @input="onEditableInput"
+          @paste="onEditablePaste"
           @keydown="onEditableKeydown"
           @blur="onEditableBlur"
         ></div>
@@ -536,10 +636,11 @@ defineExpose({ scrollToBlock });
         contenteditable="true"
         spellcheck="false"
         @input="onEditableInput"
+          @paste="onEditablePaste"
         @keydown="onEditableKeydown"
         @blur="onEditableBlur"
       ></div>
-      <div v-else class="min-h-24 cursor-text" @click="startAppend">
+      <div v-else class="min-h-24 cursor-text p-4" @click="startAppend">
         <span v-if="blocks.length === 0" class="t-dim px-1">开始写作...</span>
       </div>
       </div>

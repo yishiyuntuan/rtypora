@@ -84,6 +84,8 @@ function fragmentToHtml(f) {
   if (s.italic) html = `<em>${html}</em>`;
   if (s.strikethrough) html = `<s>${html}</s>`;
   if (s.underline) html = `<u>${html}</u>`;
+  if (s.highlight) html = `<mark>${html}</mark>`;
+  if (s.kbd) html = `<kbd>${html}</kbd>`;
   if (s.script === 'superscript') html = `<sup>${html}</sup>`;
   if (s.script === 'subscript') html = `<sub>${html}</sub>`;
   if (f.link) {
@@ -117,6 +119,7 @@ export function blockToHtml(block, rawSource) {
       return `<blockquote class="blk-quote ${QUOTE_CLASS}">${title}${(block.children || []).map((c) => blockToHtml(c)).join('')}</blockquote>`;
     }
     case 'codeBlock':
+      // 编辑态不内嵌高亮（避免 contenteditable 拆分 span），渲染态经 Rust tree-sitter 高亮
       return `<pre class="${PRE_CLASS} blk-code-block" data-language="${escapeHtml(block.language || '')}"><code>${escapeHtml(plainText(block.title))}</code></pre>`;
     // 原子/保留类块：编辑原始 Markdown 切片，保证不丢内容
     case 'separator':
@@ -157,6 +160,8 @@ function makeFragment(text, style, extra = {}) {
       italic: false,
       underline: false,
       strikethrough: false,
+      highlight: false,
+      kbd: false,
       code: false,
       script: 'normal',
       ...style,
@@ -235,6 +240,8 @@ function domToInlines(el, style = {}, out = []) {
     else if (tag === 'EM' || tag === 'I') next.italic = true;
     else if (tag === 'S' || tag === 'DEL') next.strikethrough = true;
     else if (tag === 'U') next.underline = true;
+    else if (tag === 'MARK') next.highlight = true;
+    else if (tag === 'KBD') next.kbd = true;
     else if (tag === 'SUP') next.script = 'superscript';
     else if (tag === 'SUB') next.script = 'subscript';
     domToInlines(node, next, out);

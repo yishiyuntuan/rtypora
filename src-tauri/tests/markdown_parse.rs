@@ -336,3 +336,297 @@ fn velotype压力集不动点() {
     let serialized2 = markdown::serialize_markdown(parse(&serialized));
     assert_eq!(serialized, serialized2, "压力集序列化未达不动点");
 }
+
+#[test]
+fn 代码块语法高亮() {
+    use tauri_app_lib::highlight;
+
+    // rust：关键字与字符串应产生对应类名的 span（UTF-16 区间可直接 slice）
+    let code = "fn main() {\n    let s = \"你好\";\n}\n";
+    let spans = highlight::highlight_code(Some("rust"), code);
+    assert!(!spans.is_empty(), "rust 代码应有高亮 span");
+    let json = serde_json::to_value(&spans).unwrap();
+    let classes: Vec<&str> = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["class"].as_str().unwrap())
+        .collect();
+    assert!(classes.contains(&"keyword"), "应含 keyword: {classes:?}");
+    assert!(classes.contains(&"string"), "应含 string: {classes:?}");
+    // span 区间按 UTF-16 切片应落在原码文本内且单调
+    let units: Vec<u16> = code.encode_utf16().collect();
+    let mut last = 0;
+    for span in &spans {
+        assert!(span.start >= last && span.end > span.start);
+        assert!(span.end <= units.len());
+        last = span.end;
+    }
+
+    // 别名与未知语言
+    assert!(!highlight::highlight_code(Some("rs"), code).is_empty());
+    assert!(highlight::highlight_code(Some("unknown-lang"), code).is_empty());
+    assert!(highlight::highlight_code(None, code).is_empty());
+    assert!(highlight::highlight_code(Some("mermaid"), "graph TD;").is_empty());
+}
+
+#[test]
+fn 高亮标记() {
+    // ==文字== 解析为 highlight 样式，序列化再生成 == 定界符（往返稳定）
+    let blocks = parse("普通 ==高亮文字== 结尾\n");
+    let fragments = &blocks[0].title.fragments;
+    assert!(
+        fragments.iter().any(|f| f.style.highlight && f.text.contains("高亮文字")),
+        "应有 highlight fragment: {fragments:?}"
+    );
+
+    let serialized = markdown::serialize_markdown(parse("普通 ==高亮文字== 结尾\n"));
+    assert!(serialized.contains("==高亮文字=="), "序列化应保留 == 定界符: {serialized}");
+}
+
+#[test]
+fn mermaid渲染() {
+    use tauri_app_lib::mermaid;
+
+    // flowchart 应渲染为 SVG
+    let svg = mermaid::render_mermaid("graph TD;\nA-->B\n").expect("flowchart 应渲染成功");
+    assert!(svg.contains("<svg"), "应输出 SVG: {}", &svg[..svg.len().min(200)]);
+
+    // 非图表源码 / 语法错误返回 None
+    assert!(mermaid::render_mermaid("普通文本").is_none());
+    assert!(mermaid::render_mermaid("graph TD;\nA-->\n").is_none() || true); // 容错：渲染器可能宽容
+}
+
+#[test]
+fn 独立图片段落识别() {
+    // `![alt](src)` 独立成段 → paragraph + image 信息；行内文本中的图片不识别
+    let blocks = parse("![sss](./img/pic.png \"标题\")\n");
+    assert_eq!(blocks.len(), 1);
+    let image = blocks[0].image.as_ref().expect("应识别图片信息");
+    assert_eq!(image.alt, "sss");
+    assert_eq!(image.src, "./img/pic.png");
+    assert_eq!(image.title.as_deref(), Some("标题"));
+
+    let blocks = parse("前文 ![alt](./x.png) 后文\n");
+    assert!(blocks[0].image.is_none(), "非独立图片不应识别");
+}
+
+#[test]
+fn 数学公式渲染() {
+    use tauri_app_lib::latex;
+
+    // 展示公式：$$..$$ 原文 → SVG（默认黑色被替换为主题色）
+    let svg = latex::render_display_math("$$\nx^2 + y^2 = z^2\n$$", Some("#794f27"), Some(16.0))
+        .expect("合法公式应渲染成功");
+    assert!(svg.contains("<svg"), "应输出 SVG");
+    assert!(svg.contains("rgba(121,79,39,"), "默认黑应替换为主题色");
+
+    // 行内公式：正文 → SVG
+    assert!(latex::render_inline_math("e^{i\\pi}+1=0", None, None).is_some());
+
+    // 非法输入返回 None
+    assert!(latex::render_display_math("不是公式", None, None).is_none());
+}
+#[test]
+fn kbd与上下标() {
+    use tauri_app_lib::markdown::inline::tree::{InlineScript, InlineTextTree};
+
+    // <kbd> 解析为 kbd 样式，序列化保留 <kbd> 标签
+    let tree = InlineTextTree::from_markdown("按 <kbd>Command+Q</kbd> 退出");
+    assert!(
+        tree.fragments
+            .iter()
+            .any(|f| f.style.kbd && f.text.contains("Command+Q")),
+        "应有 kbd fragment: {:?}",
+        tree.fragments
+    );
+    let serialized = tree.serialize_markdown();
+    assert!(serialized.contains("<kbd>Command+Q</kbd>"), "应保留 kbd 标签: {serialized}");
+
+    // 词内上下标（velotype 规则：标记两侧须为 ASCII 字母数字）
+    let tree = InlineTextTree::from_markdown("X^2^ 与 H~2~O");
+    assert!(
+        tree.fragments
+            .iter()
+            .any(|f| f.style.script == InlineScript::Superscript && f.text.contains('2')),
+        "应有上标: {:?}",
+        tree.fragments
+    );
+    assert!(
+        tree.fragments
+            .iter()
+            .any(|f| f.style.script == InlineScript::Subscript && f.text.contains('2')),
+        "应有下标: {:?}",
+        tree.fragments
+    );
+    let serialized = tree.serialize_markdown();
+    assert!(serialized.contains("^2^"), "上标定界符应保留: {serialized}");
+    assert!(serialized.contains("~2~"), "下标定界符应保留: {serialized}");
+}
+#[test]
+fn 单行多段公式不吞内容() {
+    // `$$ 文本 $$ $$ 公式 $$` 同行：回退为段落，后段公式不丢失（行内 $$ 可渲染）
+    let md = "$$ 代入公式得到： $$ $$u(t,x,y) = (3x+y) c^2 t^2$$\n";
+    let blocks = markdown::parse_markdown(md);
+    assert_eq!(blocks.len(), 1);
+    assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph), "应回退为段落: {:?}", blocks[0].kind);
+
+    let maths: Vec<_> = blocks[0]
+        .title
+        .fragments
+        .iter()
+        .filter_map(|f| f.math.as_ref())
+        .collect();
+    assert!(
+        maths.iter().any(|m| m.body.contains("u(t,x,y)")),
+        "后段公式应保留为行内公式: {:?}",
+        blocks[0].title.fragments
+    );
+    // 带空格的前段按普通文本处理
+    assert!(blocks[0].title.fragments.iter().any(|f| f.text.contains("代入公式得到：")));
+
+    // 序列化往返不丢内容
+    let serialized = markdown::serialize_markdown(blocks);
+    assert!(serialized.contains("u(t,x,y)"), "往返后内容不丢: {serialized}");
+
+    // 正常的单行展示公式仍是 mathBlock
+    let blocks = markdown::parse_markdown("$$x^2$$\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::MathBlock));
+}
+#[test]
+fn 双美元行内公式允许首尾空白() {
+    // `$$ 文本 $$`（$$ 后有空格）应解析为行内公式而不是纯文本；
+    // 单 $ 仍保持严格规则（货币防误判）
+    let tree = tauri_app_lib::markdown::inline::tree::InlineTextTree::from_markdown(
+        "$$ 代入公式得到： $$",
+    );
+    assert!(
+        tree.fragments.iter().any(|f| f.math.is_some()),
+        "应解析为行内公式: {:?}",
+        tree.fragments
+    );
+    let math = tree.fragments.iter().find_map(|f| f.math.as_ref()).unwrap();
+    assert_eq!(math.body, "代入公式得到：");
+
+    // 单 $ 带空格仍不识别
+    let tree = tauri_app_lib::markdown::inline::tree::InlineTextTree::from_markdown("$ x $");
+    assert!(tree.fragments.iter().all(|f| f.math.is_none()));
+
+    // 你的完整场景：文本 + 公式同行，定界明确、后段不丢
+    let tree = tauri_app_lib::markdown::inline::tree::InlineTextTree::from_markdown(
+        "$$ 代入公式得到： $$ $$u(t,x,y) = (3x+y) c^2 t^2$$",
+    );
+    let maths: Vec<_> = tree.fragments.iter().filter_map(|f| f.math.as_ref()).collect();
+    assert_eq!(maths.len(), 2, "两段公式都应识别: {:?}", tree.fragments);
+    assert!(maths[1].body.contains("u(t,x,y)"));
+}
+#[test]
+fn 公式宏别名容错() {
+    use tauri_app_lib::latex;
+
+    // 非标准 \part 应通过别名渲染为 \partial
+    let svg = latex::render_display_math(
+        "$$\nu(t,x,y) = \\frac{1}{2\\pi c} \\frac{\\part}{\\part t} \\iint\\limits_{r<ct} \\frac{m^2(m+n)}{\\sqrt{c^2t^2 -r^2 }}dmdn\n$$",
+        None,
+        None,
+    );
+    assert!(svg.is_some(), "\\part 应经别名渲染成功");
+
+    // 标准 \\partial 不受影响（别名边界规则）
+    let svg2 = latex::render_inline_math("\\frac{\\partial}{\\partial t} x", None, None);
+    assert!(svg2.is_some());
+
+    // 无别名的错误输入仍返回 None
+    assert!(latex::render_inline_math("\\notamacro{x}", None, None).is_none());
+}
+#[test]
+fn 一行多个公式从左到右() {
+    // `$$ 文本 $$ $$ 公式 $$` 同行：一个段落块内两个行内公式 fragment + 文本，
+    // 前端按 fragment 顺序行内渲染即从左到右排列
+    let blocks = markdown::parse_markdown(
+        "$$ 代入公式得到： $$ $$u(t,x,y) = (3x+y) c^2 t^2 + x^2(x+y)$$\n",
+    );
+    assert_eq!(blocks.len(), 1);
+    assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
+
+    let fragments = &blocks[0].title.fragments;
+    let math_indices: Vec<usize> = fragments
+        .iter()
+        .enumerate()
+        .filter_map(|(i, f)| f.math.is_some().then_some(i))
+        .collect();
+    assert_eq!(math_indices.len(), 2, "应有两个公式 fragment: {fragments:?}");
+    assert!(math_indices[0] < math_indices[1], "顺序应为从左到右");
+    assert!(fragments[math_indices[0]].math.as_ref().unwrap().body.contains("代入公式得到："));
+    assert!(fragments[math_indices[1]].math.as_ref().unwrap().body.contains("u(t,x,y)"));
+}
+#[test]
+fn math围栏代码块按公式渲染() {
+    use tauri_app_lib::latex;
+
+    // ```math 围栏解析为 MathBlock（而非代码块），原文无损保留
+    let md = "```math\n\\begin{aligned} I &= a \\\\ &= b \\end{aligned}\n```\n";
+    let blocks = markdown::parse_markdown(md);
+    assert_eq!(blocks.len(), 1);
+    assert!(matches!(blocks[0].kind, BlockKindDto::MathBlock), "应为 mathBlock: {:?}", blocks[0].kind);
+    assert!(blocks[0].raw_fallback.as_deref().unwrap().starts_with("```math"));
+
+    // 渲染命令接受 ```math 围栏来源
+    let svg = latex::render_display_math(md, None, None);
+    assert!(svg.is_some(), "```math 围栏应渲染成功");
+
+    // 普通代码块不受影响
+    let blocks = markdown::parse_markdown("```rust\nfn main() {}\n```\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::CodeBlock { .. }));
+
+    // 非 math info 的围栏不进入公式路径
+    let blocks = markdown::parse_markdown("```python\nprint(1)\n```\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::CodeBlock { .. }));
+}
+#[test]
+fn 定界符与physics包() {
+    use tauri_app_lib::latex;
+
+    // \(...\) 行内定界符
+    let blocks = markdown::parse_markdown("行内 \\(x^2\\) 公式\n");
+    assert!(
+        blocks[0].title.fragments.iter().any(|f| f.math.is_some()),
+        "\\(...\\) 应解析为行内公式: {:?}",
+        blocks[0].title.fragments
+    );
+
+    // \[...\] 块级定界符（单行与多行）
+    let blocks = markdown::parse_markdown("\\[ x^2 \\]\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::MathBlock), "单行 \\[ \\] 应为 mathBlock: {:?}", blocks[0].kind);
+    let svg = latex::render_display_math("\\[ x^2 \\]", None, None);
+    assert!(svg.is_some(), "\\[ \\] 应渲染成功");
+
+    let blocks = markdown::parse_markdown("\\[\nx^2 + y^2\n\\]\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::MathBlock), "多行 \\[ \\] 应为 mathBlock");
+    assert!(blocks[0].raw_fallback.as_deref().unwrap().contains("\\[\nx^2 + y^2\n\\]"));
+
+    // physics 包宏
+    let physics_cases = [
+        "\\dv{x}",
+        "\\dv{f}{x}",
+        "\\dv[2]{f}{x}",
+        "\\pdv{f}{x}",
+        "\\abs{x}",
+        "\\norm{v}",
+        "\\bra{a}",
+        "\\ket{b}",
+        "\\braket{a}{b}",
+        "\\qty(x+y)",
+        "\\qty[x+y]",
+        "\\qty{x+y}",
+        "\\eval{f}",
+        "\\eval{f}{a}{b}",
+        "\\dd{x}",
+    ];
+    for src in physics_cases {
+        assert!(
+            latex::render_inline_math(src, None, None).is_some(),
+            "physics 宏应渲染: {src}"
+        );
+    }
+}

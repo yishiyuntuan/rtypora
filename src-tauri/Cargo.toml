@@ -27,7 +27,33 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
 cssparser = "0.37"
+base64 = "0.22"
+ratex-layout = "0.1.9"
+ratex-parser = "0.1.9"
+ratex-svg = { version = "0.1.9", features = ["embed-fonts", "standalone"] }
+mermaid-rs-renderer = { version = "0.3.0", default-features = false }
+tree-sitter = "0.26.9"
+tree-sitter-highlight = "0.26.9"
+tree-sitter-rust = "0.24"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
+tree-sitter-json = "0.24"
+tree-sitter-md = "0.5"
+tree-sitter-bash = "0.25"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-c-sharp = "0.23"
+tree-sitter-css = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-html = "0.23"
+tree-sitter-java = "0.23"
+tree-sitter-php = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-ruby = "0.23"
+tree-sitter-yaml = "0.7"
+tree-sitter-toml = { package = "adot-tree-sitter-toml", version = "0.1" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.6", features = ["serde", "v4"] }

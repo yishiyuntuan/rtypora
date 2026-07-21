@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use super::block::document::BlockNode;
 use super::block::state::{BlockKind, BlockRecord, CalloutVariant};
+use super::inline::image::{ImageTarget, parse_standalone_image};
 use super::inline::tree::InlineTextTree;
 use super::table::TableData;
 
@@ -80,6 +81,16 @@ impl From<BlockKindDto> for BlockKind {
     }
 }
 
+/// 独立图片段落（`![alt](src)`）的图片信息。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageDto {
+    pub alt: String,
+    pub src: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
 /// 前端块树节点（JSON）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -96,6 +107,9 @@ pub struct BlockDto {
     pub title: InlineTextTree,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub table: Option<TableData>,
+    /// 段落为独立图片语法时携带图片信息（前端渲染 <img>）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<ImageDto>,
     /// Raw 保留类块（raw/comment/html/math/mermaid）的原文。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_fallback: Option<String>,
@@ -106,6 +120,21 @@ pub struct BlockDto {
 impl BlockDto {
     /// 从解析节点构建 DTO；`range` 为根块的 UTF-16 区间，子块传 None。
     pub fn from_node(node: &BlockNode, range: Option<(usize, usize)>) -> Self {
+        // 独立图片段落：段落正文整体是 ![alt](src) 语法时携带图片信息
+        let image = if node.record.kind == BlockKind::Paragraph && node.children.is_empty() {
+            parse_standalone_image(&node.record.title.visible_text()).and_then(|syntax| {
+                match syntax.target {
+                    ImageTarget::Direct { src, title } => Some(ImageDto {
+                        alt: syntax.alt,
+                        src,
+                        title,
+                    }),
+                    ImageTarget::Reference { .. } => None,
+                }
+            })
+        } else {
+            None
+        };
         Self {
             id: node.record.id.to_string(),
             kind: node.record.kind.clone().into(),
@@ -113,6 +142,7 @@ impl BlockDto {
             end: range.map(|range| range.1),
             title: node.record.title.clone(),
             table: node.record.table.clone(),
+            image,
             raw_fallback: node.record.raw_fallback.clone(),
             children: node
                 .children

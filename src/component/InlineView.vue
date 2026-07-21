@@ -1,4 +1,6 @@
 <script setup>
+import MathView from './MathView.vue';
+
 // 行内渲染器：渲染 velotype InlineTextTree 的 fragments。
 // 每个 fragment 的样式为标志位组合，通过递归逐层包裹元素（link → 粗 → 斜 → 删 → 下划线 → 代码 → 上下标）。
 defineProps({
@@ -37,7 +39,7 @@ function withoutLink(fragment) {
   <!-- 单个 fragment：特殊载体优先，之后逐层剥样式 -->
   <template v-else-if="fragment">
     <sup v-if="fragment.footnote" class="md-footnote-ref align-super text-[0.75em]">[{{ fragment.footnote.id }}]</sup>
-    <code v-else-if="fragment.math" :class="INLINE_CODE_CLASS" :title="fragment.math.source">{{ fragment.math.body }}</code>
+    <MathView v-else-if="fragment.math" :source="fragment.math.body" />
     <a
       v-else-if="fragment.link"
       :href="linkHref(fragment.link)"
@@ -49,6 +51,8 @@ function withoutLink(fragment) {
     <em v-else-if="fragment.style?.italic"><InlineView :fragment="strip(fragment, 'italic')" /></em>
     <s v-else-if="fragment.style?.strikethrough"><InlineView :fragment="strip(fragment, 'strikethrough')" /></s>
     <u v-else-if="fragment.style?.underline"><InlineView :fragment="strip(fragment, 'underline')" /></u>
+    <mark v-else-if="fragment.style?.highlight" class="rounded px-0.5"><InlineView :fragment="strip(fragment, 'highlight')" /></mark>
+    <kbd v-else-if="fragment.style?.kbd"><InlineView :fragment="strip(fragment, 'kbd')" /></kbd>
     <code v-else-if="fragment.style?.code" :class="INLINE_CODE_CLASS">{{ fragment.text }}</code>
     <sup v-else-if="fragment.style?.script === 'superscript'">{{ fragment.text }}</sup>
     <sub v-else-if="fragment.style?.script === 'subscript'">{{ fragment.text }}</sub>

@@ -43,6 +43,11 @@
       "text_strong": null,              // 粗体文字颜色
       "text_em": null,                  // 斜体文字颜色
       "text_strikethrough": null,       // 删除线文字颜色
+      "mark_bg": null,                  // ==高亮== 标记背景
+      "mark_text": null,                // ==高亮== 标记文字
+      "kbd_bg": null,                   // <kbd> 键盘按键背景
+      "kbd_text": null,                 // <kbd> 键盘按键文字
+      "kbd_border": null,               // <kbd> 键盘按键边框
       "list_marker": null,              // 列表标记（•、序号）颜色
       "table_header_text": null,        // 表头文字颜色
       "task_checkbox_border": null,     // 任务勾选框边框
@@ -50,6 +55,17 @@
       "task_checkbox_checked_bg": null, // 任务勾选框背景（已勾选）
       "task_checkbox_check": null,      // 勾选标记颜色
       "scrollbar_thumb": null,          // 滚动条滑块
+      "code_syntax_comment": null,      // 语法高亮：注释
+      "code_syntax_keyword": null,      // 关键字
+      "code_syntax_string": null,       // 字符串
+      "code_syntax_number": null,       // 数字
+      "code_syntax_type": null,         // 类型/类名
+      "code_syntax_function": null,     // 函数名
+      "code_syntax_constant": null,     // 常量/内建
+      "code_syntax_variable": null,     // 变量
+      "code_syntax_property": null,     // 属性/字段
+      "code_syntax_operator": null,     // 运算符
+      "code_syntax_punctuation": null   // 标点
       "table_border": null,             // 表格边框（兼作通用边框色）
       "table_header_bg": null,          // 表头背景
       "table_cell_bg": null,            // 表格单元格背景
@@ -75,7 +91,9 @@
       "h4_size": null, "h4_weight": "",
       "h5_size": null, "h5_weight": "",
       "h6_size": null, "h6_weight": "",
-      "code_size": null                 // 代码字号
+      "code_size": null,                // 代码字号
+      "script_scale": null,             // 上下标字号比例（如 0.75）
+      "math_cjk_font": ""               // 公式中文回落字体（字体文件路径，可加 #索引 或 #字体族名，如 C:\Windows\Fonts\simsun.ttc#SimSun）
     },
     // 尺寸：数值（px）；content_max_width 为 null 表示全宽
     "dimensions": {

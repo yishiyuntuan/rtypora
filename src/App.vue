@@ -1,9 +1,18 @@
 <script setup>
-import { ref } from "vue";
+import { computed, onMounted, onUnmounted, provide, ref } from "vue";
+import { invoke } from "@tauri-apps/api/core";
+import { Window } from "@tauri-apps/api/window";
 import TitleBar from "./component/TitleBar.vue";
 import StatusBar from "./component/StatusBar.vue";
 import Sidebar from "./component/Sidebar.vue";
 import Editor from "./component/Editor.vue";
+import MenuDrawer from "./component/MenuDrawer.vue";
+import PrefsDialog from "./component/PrefsDialog.vue";
+import AboutDialog from "./component/AboutDialog.vue";
+import ConfirmDialog from "./component/ConfirmDialog.vue";
+import { applyEditorOverrides } from "./utils/prefs.js";
+
+const appWindow = new Window("main");
 
 const sidebarVisible = ref(true);
 const sourceMode = ref(false);
@@ -12,6 +21,244 @@ const editorStats = ref({ wordCount: 0, charCount: 0, lineCount: 1, cursorLine: 
 const docBlocks = ref([]);
 const activeHeadingId = ref(null);
 const editorRef = ref(null);
+
+// 当前文件路径（新建为 null）；文件名用于标题栏显示
+const currentFilePath = ref(null);
+const currentFileName = computed(() => {
+  if (!currentFilePath.value) return "";
+  return currentFilePath.value.split(/[\\/]/).pop() || "";
+});
+// 文档所在目录（图片相对路径的解析基准，注入给块渲染层）
+const documentDir = computed(() => {
+  if (!currentFilePath.value) return null;
+  const parts = currentFilePath.value.split(/[\\/]/);
+  parts.pop();
+  return parts.join("\\") || null;
+});
+provide("documentDir", documentDir);
+
+// 菜单与各对话框状态
+const menuVisible = ref(false);
+const prefsVisible = ref(false);
+const prefsPage = ref("editor");
+const aboutVisible = ref(false);
+const confirmVisible = ref(false);
+// 未保存确认后的待执行动作
+let pendingAction = null;
+
+// 最近使用的文件（localStorage，最多 10 条，最新在前）
+const RECENT_KEY = "tauri-editor.recent-files";
+const recentFiles = ref(JSON.parse(localStorage.getItem(RECENT_KEY) || "[]"));
+function recordRecent(path) {
+  const list = [path, ...recentFiles.value.filter((p) => p !== path)].slice(0, 10);
+  recentFiles.value = list;
+  localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+}
+
+onMounted(() => applyEditorOverrides());
+
+// ---------- 文件操作 ----------
+
+function doNew() {
+  currentFilePath.value = null;
+  editorRef.value?.loadDocument("");
+}
+
+async function doOpen() {
+  const opened = await invoke("open_markdown_file");
+  if (!opened) return;
+  currentFilePath.value = opened.path;
+  recordRecent(opened.path);
+  editorRef.value?.loadDocument(opened.content);
+}
+
+// 侧边栏文件树点击：按路径打开
+async function onSidebarOpenFile(path) {
+  const opened = await invoke("read_markdown_file", { path });
+  if (!opened) return;
+  currentFilePath.value = opened.path;
+  recordRecent(opened.path);
+  editorRef.value?.loadDocument(opened.content);
+}
+
+async function doSave() {
+  if (!currentFilePath.value) {
+    await doSaveAs();
+    return;
+  }
+  const content = editorRef.value?.getContent() ?? "";
+  try {
+    await invoke("save_file", { path: currentFilePath.value, content });
+    editorRef.value?.markSaved();
+  } catch (e) {
+    alert(`保存失败：${e}`);
+  }
+}
+
+async function doSaveAs() {
+  const content = editorRef.value?.getContent() ?? "";
+  const result = await invoke("save_file_as", { content });
+  if (!result) return;
+  if (result.Err) {
+    alert(`保存失败：${result.Err}`);
+    return;
+  }
+  currentFilePath.value = result.Ok;
+  recordRecent(result.Ok);
+  editorRef.value?.markSaved();
+}
+
+// ---------- 导出 HTML ----------
+
+// 当前渲染 DOM + 主题变量/语义样式 → 独立 HTML 文件（含已渲染的公式/图表/图片）
+async function doExport() {
+  const root = document.querySelector(".t-root .t-measure");
+  if (!root) return;
+  const clone = root.cloneNode(true);
+  clone.querySelectorAll("[contenteditable]").forEach((el) => el.removeAttribute("contenteditable"));
+  const rootStyle = document.documentElement.style;
+  const vars = Array.from(rootStyle)
+    .filter((name) => name.startsWith("--t-"))
+    .map((name) => `  ${name}: ${rootStyle.getPropertyValue(name)};`)
+    .join("\n");
+  const rules = [];
+  for (const sheet of Array.from(document.styleSheets)) {
+    let cssRules;
+    try {
+      cssRules = sheet.cssRules;
+    } catch {
+      continue;
+    }
+    for (const rule of Array.from(cssRules)) {
+      if (rule.selectorText?.startsWith(".t-")) rules.push(rule.cssText);
+    }
+  }
+  const title = currentFileName.value || "document";
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>${title}</title>
+<style>
+:root {
+${vars}
+}
+body { margin: 0; background: var(--t-editor-background); color: var(--t-text-default); }
+${rules.join("\n")}
+</style>
+</head>
+<body>
+<div class="t-root"><div class="t-measure">
+${clone.innerHTML}
+</div></div>
+</body>
+</html>`;
+  const suggestedName = title.replace(/\.(md|markdown)$/i, "") + ".html";
+  const result = await invoke("save_html_as", { content: html, suggestedName });
+  if (result?.Err) alert(`导出失败：${result.Err}`);
+}
+
+// ---------- 未保存更改守卫 ----------
+
+function guardThen(run) {
+  if (editorRef.value?.isDirty?.()) {
+    pendingAction = run;
+    confirmVisible.value = true;
+  } else {
+    run();
+  }
+}
+
+async function onConfirmSave() {
+  confirmVisible.value = false;
+  await doSave();
+  // 保存成功（或用户取消另存对话框时仍脏）才继续后续动作
+  if (!editorRef.value?.isDirty?.()) {
+    pendingAction?.();
+  }
+  pendingAction = null;
+}
+
+function onConfirmDiscard() {
+  confirmVisible.value = false;
+  pendingAction?.();
+  pendingAction = null;
+}
+
+function onConfirmCancel() {
+  confirmVisible.value = false;
+  pendingAction = null;
+}
+
+// ---------- 菜单动作 ----------
+
+function onMenuAction(action) {
+  menuVisible.value = false;
+  if (action && typeof action === "object") {
+    if (action.type === "prefs") {
+      prefsPage.value = action.page;
+      prefsVisible.value = true;
+    } else if (action.type === "open-recent") {
+      guardThen(() => onSidebarOpenFile(action.path));
+    }
+    return;
+  }
+  switch (action) {
+    case "new":
+      guardThen(doNew);
+      break;
+    case "open":
+      guardThen(doOpen);
+      break;
+    case "save":
+      doSave();
+      break;
+    case "save-as":
+      doSaveAs();
+      break;
+    case "export":
+      doExport();
+      break;
+    case "print":
+      window.print();
+      break;
+    case "prefs":
+      prefsPage.value = "editor";
+      prefsVisible.value = true;
+      break;
+    case "about":
+      aboutVisible.value = true;
+      break;
+    case "close":
+      guardThen(() => appWindow.close());
+      break;
+  }
+}
+
+// ---------- 全局快捷键 ----------
+
+function onGlobalKeydown(e) {
+  if (!(e.ctrlKey || e.metaKey) || e.isComposing) return;
+  const key = e.key.toLowerCase();
+  if (key === "n") {
+    e.preventDefault();
+    guardThen(doNew);
+  } else if (key === "o") {
+    e.preventDefault();
+    guardThen(doOpen);
+  } else if (key === "s" && e.shiftKey) {
+    e.preventDefault();
+    doSaveAs();
+  } else if (key === "s") {
+    e.preventDefault();
+    doSave();
+  } else if (key === "w") {
+    e.preventDefault();
+    guardThen(() => appWindow.close());
+  }
+}
+onMounted(() => window.addEventListener("keydown", onGlobalKeydown));
+onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
 </script>
 
 <template>
@@ -22,11 +269,13 @@ const editorRef = ref(null);
         v-model:visible="sidebarVisible"
         :blocks="docBlocks"
         :active-heading-id="activeHeadingId"
+        :current-file-path="currentFilePath"
         @select-block="editorRef?.scrollToBlock($event)"
+        @open-file="onSidebarOpenFile"
       />
       <div class="flex flex-1 flex-col overflow-hidden">
-        <TitleBar/>
-        <main class="flex-1 overflow-hidden">
+        <TitleBar :file-name="currentFileName" @toggle-menu="menuVisible = !menuVisible" />
+        <main class="mt-3 flex-1 overflow-hidden">
           <Editor
             ref="editorRef"
             :source-mode="sourceMode"
@@ -48,5 +297,16 @@ const editorRef = ref(null);
         />
       </div>
     </div>
+
+    <MenuDrawer :visible="menuVisible" :recent-files="recentFiles" @close="menuVisible = false" @action="onMenuAction" />
+    <PrefsDialog :visible="prefsVisible" :page="prefsPage" @close="prefsVisible = false" />
+    <AboutDialog :visible="aboutVisible" @close="aboutVisible = false" />
+    <ConfirmDialog
+      :visible="confirmVisible"
+      :file-name="currentFileName"
+      @save="onConfirmSave"
+      @discard="onConfirmDiscard"
+      @cancel="onConfirmCancel"
+    />
   </div>
 </template>

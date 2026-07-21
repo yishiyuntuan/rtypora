@@ -1,7 +1,12 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, inject, ref, watch } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import InlineView from './InlineView.vue';
+import MathView from './MathView.vue';
 import { plainText, numberedOrdinals } from '../utils/wysiwyg.js';
+import { highlightCodeHtml } from '../utils/highlight.js';
+import { resolveImageSrc } from '../utils/image.js';
+import { getPref, prefsVersion } from '../utils/prefs.js';
 
 // 递归块渲染器：渲染 velotype 移植版块模型（16 种块类型）。
 // 顶层块的编辑状态由 Editor.vue 管理，本组件只负责渲染与事件转发。
@@ -39,6 +44,62 @@ const isListItem = computed(() =>
 
 const rawText = computed(() => props.block.rawFallback ?? plainText(props.block.title));
 
+// 代码块语法高亮（Rust tree-sitter，异步取 span；未就绪时先按纯文本渲染）
+const escapedCode = computed(() =>
+  props.block.type === 'codeBlock' ? escapeHtml(plainText(props.block.title)) : '',
+);
+const highlightedCode = ref('');
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+}
+watch(
+  () => [props.block.id, props.block.language, props.block.title, prefsVersion.value],
+  async () => {
+    // 偏好设置可关闭语法高亮（回退纯文本）
+    highlightedCode.value = '';
+    if (props.block.type !== 'codeBlock' || !getPref('render_code_highlight')) return;
+    highlightedCode.value = await highlightCodeHtml(plainText(props.block.title), props.block.language);
+  },
+  { immediate: true },
+);
+
+// Mermaid 图：Rust render_mermaid 渲染 SVG（失败返回源码占位）
+const mermaidSvg = ref('');
+watch(
+  () => [props.block.id, rawText.value, prefsVersion.value],
+  async () => {
+    mermaidSvg.value = '';
+    // 偏好设置可关闭 Mermaid 渲染（回退源码占位）
+    if (props.block.type !== 'mermaidBlock' || !getPref('render_mermaid')) return;
+    // mermaid 围栏原文 → 图表正文（去围栏与 info 行）
+    const body = mermaidBody(rawText.value);
+    if (!body) return;
+    const svg = await invoke('render_mermaid', { source: body }).catch(() => null);
+    if (svg) mermaidSvg.value = svg;
+  },
+  { immediate: true },
+);
+
+// ```mermaid 围栏中提取图表正文
+function mermaidBody(raw) {
+  const lines = raw.split('\n');
+  if (lines.length < 2) return '';
+  return lines.slice(1, lines[lines.length - 1].trim().startsWith('```') ? -1 : undefined).join('\n').trim();
+}
+
+// 独立图片段落：相对路径以文档目录为基准解析（App provide）
+const documentDir = inject('documentDir', { value: null });
+const imageSrc = ref('');
+watch(
+  () => [props.block.image?.src, documentDir.value],
+  async () => {
+    imageSrc.value = '';
+    if (!props.block.image) return;
+    imageSrc.value = await resolveImageSrc(props.block.image.src, documentDir.value);
+  },
+  { immediate: true },
+);
+
 // 子块的有序序号表（quote/callout/footnote/列表项嵌套共用）
 const childOrdinals = computed(() => numberedOrdinals(props.block.children));
 
@@ -55,8 +116,24 @@ function alignStyle(alignments, index) {
 </script>
 
 <template>
-  <p v-if="block.type === 'paragraph'" class="blk-paragraph my-2 whitespace-pre-wrap">
-    <InlineView :tree="block.title" />
+  <!-- 独立图片段落：渲染图片，加载失败显示占位 -->
+  <div v-if="block.type === 'paragraph' && block.image" class="my-2">
+    <img
+      v-if="imageSrc"
+      :src="imageSrc"
+      :alt="block.image.alt"
+      :title="block.image.title || undefined"
+      class="mx-auto block max-w-full rounded-lg"
+    />
+    <div v-else class="md-placeholder rounded border p-3 text-center text-[12px]">
+      {{ block.image.alt || '图片' }}（无法加载 {{ block.image.src }}）
+    </div>
+  </div>
+
+  <p v-else-if="block.type === 'paragraph'" class="blk-paragraph my-2 whitespace-pre-wrap">
+    <!-- 空段落也要占位一行高度，否则 Enter 新建的空块不可见 -->
+    <InlineView v-if="block.title?.fragments?.length" :tree="block.title" />
+    <br v-else />
   </p>
 
   <component
@@ -145,7 +222,7 @@ function alignStyle(alignments, index) {
     <pre
       class="md-pre blk-code-block overflow-x-auto p-3 font-mono text-[13px]"
       :class="block.language ? 'rounded-b' : 'rounded'"
-    ><code>{{ plainText(block.title) }}</code></pre>
+    ><code v-html="highlightedCode || escapedCode"></code></pre>
   </div>
 
   <table v-else-if="block.type === 'table' && block.table" class="blk-table my-2 border-collapse text-[13px]">
@@ -171,16 +248,18 @@ function alignStyle(alignments, index) {
     </tbody>
   </table>
 
-  <!-- 数学公式占位块（KaTeX 渲染为后续阶段） -->
-  <div v-else-if="block.type === 'mathBlock'" class="md-placeholder blk-math-block my-2 rounded border p-3">
-    <div class="t-dim mb-1 text-[11px] font-medium">数学公式</div>
-    <pre class="overflow-x-auto font-mono text-[13px]">{{ rawText }}</pre>
+  <!-- 数学公式：Rust ratex 渲染 SVG（失败回退源码占位）；渲染态不显示背景块 -->
+  <div v-else-if="block.type === 'mathBlock'" class="blk-math-block my-2">
+    <MathView :source="rawText" display />
   </div>
 
-  <!-- Mermaid 图占位块（mermaid.js 渲染为后续阶段） -->
+  <!-- Mermaid 图：Rust 渲染 SVG（加载中/失败时回退源码占位） -->
   <div v-else-if="block.type === 'mermaidBlock'" class="md-placeholder blk-mermaid-block my-2 rounded border p-3">
-    <div class="t-dim mb-1 text-[11px] font-medium">Mermaid 图表</div>
-    <pre class="overflow-x-auto font-mono text-[13px]">{{ rawText }}</pre>
+    <div v-if="mermaidSvg" class="mermaid-diagram" v-html="mermaidSvg"></div>
+    <template v-else>
+      <div class="t-dim mb-1 text-[11px] font-medium">Mermaid 图表</div>
+      <pre class="overflow-x-auto font-mono text-[13px]">{{ rawText }}</pre>
+    </template>
   </div>
 
   <!-- 注释块（可见） -->

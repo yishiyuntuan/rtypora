@@ -24,9 +24,9 @@ enum HtmlBlockStart {
 
 /// Parsed standalone image expression.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct ImageSyntax {
-    pub(crate) alt: String,
-    pub(crate) target: ImageTarget,
+pub struct ImageSyntax {
+    pub alt: String,
+    pub target: ImageTarget,
 }
 
 /// Inline image/text segment used only by native table-cell rendering.
@@ -41,7 +41,7 @@ pub(crate) enum TableCellInlineImageSegment {
 
 /// Image target form before reference resolution.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum ImageTarget {
+pub enum ImageTarget {
     /// Direct image target from `![alt](src "title")`.
     Direct { src: String, title: Option<String> },
     /// Reference image target from `![alt][label]`.

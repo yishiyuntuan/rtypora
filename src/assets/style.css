@@ -41,6 +41,25 @@
 .t-root strong { color: var(--t-text-strong); }
 .t-root em { color: var(--t-text-em); }
 .t-root s { color: var(--t-text-strikethrough); }
+.t-root mark {
+  background: var(--t-mark-bg);
+  color: var(--t-mark-text);
+}
+/* 键盘按键样式（token 控制底色/文字/边框，blocks.kbd 可覆盖任意样式） */
+.t-root kbd {
+  background: var(--t-kbd-bg);
+  color: var(--t-kbd-text);
+  border: 1px solid var(--t-kbd-border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: var(--t-code-font-family);
+  font-size: 0.85em;
+}
+/* 上下标（blocks.superscript / subscript 可覆盖字号与偏移） */
+.t-root sup,
+.t-root sub {
+  font-size: calc(1em * var(--t-script-scale));
+}
 /* 内容列宽（dimensions.content_max_width，默认 none 即全宽） */
 .t-root .t-measure {
   max-width: var(--t-content-max-width);
@@ -87,6 +106,19 @@
   background: transparent;
 }
 
+/* 语法高亮：tree-sitter span 语义类（11 个规范类）→ 主题 code_syntax_* 变量（仅代码块） */
+.t-root .md-pre .ts-comment { color: var(--t-code-syntax-comment); font-style: italic; }
+.t-root .md-pre .ts-keyword { color: var(--t-code-syntax-keyword); }
+.t-root .md-pre .ts-string { color: var(--t-code-syntax-string); }
+.t-root .md-pre .ts-number { color: var(--t-code-syntax-number); }
+.t-root .md-pre .ts-type { color: var(--t-code-syntax-type); }
+.t-root .md-pre .ts-function { color: var(--t-code-syntax-function); }
+.t-root .md-pre .ts-constant { color: var(--t-code-syntax-constant); }
+.t-root .md-pre .ts-variable { color: var(--t-code-syntax-variable); }
+.t-root .md-pre .ts-property { color: var(--t-code-syntax-property); }
+.t-root .md-pre .ts-operator { color: var(--t-code-syntax-operator); }
+.t-root .md-pre .ts-punctuation { color: var(--t-code-syntax-punctuation); }
+
 /* 列表标记与任务勾选框 */
 .t-root .md-marker {
   color: var(--t-list-marker);
@@ -132,6 +164,30 @@
 }
 .t-root table td {
   background: var(--t-table-cell-bg);
+}
+
+/* Mermaid 渲染图 */
+.t-root .mermaid-diagram {
+  text-align: center;
+}
+.t-root .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* 数学公式（ratex SVG）：行内公式原子化行内排列（一行多个公式从左到右） */
+.t-root .math-view {
+  display: inline-block;
+}
+.t-root .math-view svg {
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+.t-root .math-display {
+  display: block;
+  text-align: center;
+  margin: 0.5em 0;
 }
 
 /* callout 五变体 */

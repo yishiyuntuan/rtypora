@@ -18,6 +18,11 @@
 
 import velotype from './velotype.js';
 import velotypeLight from './velotype-light.js';
+import { ref } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
+
+// 主题版本号：applyTheme 时递增，依赖主题色的异步渲染（公式 SVG 等）据此重渲染
+export const themeVersion = ref(0);
 
 const STORAGE_THEME_ID = 'tauri-editor.theme.id';
 const STORAGE_CUSTOM = 'tauri-editor.theme.custom';
@@ -123,9 +128,13 @@ const BLOCK_SELECTORS = {
   strong: 'strong',
   em: 'em',
   strikethrough: 's',
+  mark: 'mark',
   footnoteRef: '.md-footnote-ref',
   listMarker: '.md-marker',
   taskCheckbox: 'input[type="checkbox"]',
+  kbd: 'kbd',
+  superscript: 'sup',
+  subscript: 'sub',
 };
 
 const UNITLESS_PROPS = new Set([
@@ -230,9 +239,11 @@ function applyCssVars(theme) {
   }
   const typography = theme.typography || {};
   for (const [key, value] of Object.entries(typography)) {
+    // math_cjk_font 是 ratex 字体规格（非 CSS 变量），经 set_math_unicode_font 命令下发
+    if (key === 'math_cjk_font') continue;
     if (key.endsWith('_weight')) {
       style.setProperty(`--t-${kebab(key)}`, String(FONT_WEIGHTS[value] || 400));
-    } else if (key === 'text_line_height' || key.endsWith('_family')) {
+    } else if (key === 'text_line_height' || key === 'script_scale' || key.endsWith('_family')) {
       style.setProperty(`--t-${kebab(key)}`, String(value));
     } else {
       style.setProperty(`--t-${kebab(key)}`, `${value}px`);
@@ -253,7 +264,13 @@ export function applyTheme(id) {
   const resolved = resolveTheme(pack);
   applyCssVars(resolved);
   applyBlockCss(resolved.blocks);
+  // 公式中文回落字体随主题下发（ratex 首次加载后进程内锁定，运行中切换需重启生效）
+  const mathFont = resolved.typography?.math_cjk_font;
+  if (mathFont) {
+    invoke('set_math_unicode_font', { spec: mathFont }).catch((e) => console.error('set_math_unicode_font 失败:', e));
+  }
   localStorage.setItem(STORAGE_THEME_ID, id);
+  themeVersion.value += 1;
   return id;
 }
 
