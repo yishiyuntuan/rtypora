@@ -63,7 +63,9 @@
       "image_placeholder_text": "#9f927d",
       "cursor": "#11a89b",
       "selection": "#ffcc00",
-      "status_bar_background": "#faf9f3",
+      "status_bar_background": "#ffffff",
+      "status_bar_border": "transparent",
+      "tab_indicator": "#19c8b9",
       "status_bar_text": "#725d42",
       "status_bar_text_dim": "#9f927d",
       "status_bar_button_hover": "#efe9d6",
@@ -243,7 +245,14 @@
         "boxShadow": "0 2px 0 0 #d4c9b4"
       },
       "mathBlock": { "borderRadius": "18px", "textAlign": "center" },
-      "mermaidBlock": { "borderRadius": "18px" }
+      "mermaidBlock": { "borderRadius": "18px" },
+      // 侧边栏标签：指示条颜色与切换动画（示例：慢速弹性过渡）
+      "sidebarTab": {
+        "transition": "border-color 0.35s cubic-bezier(0.34, 1.56, 0.64, 1), background-color 0.15s ease"
+      },
+      "sidebarTabActive": {
+        "borderBottomColor": "#11a89b"
+      }
     }
   }
 }

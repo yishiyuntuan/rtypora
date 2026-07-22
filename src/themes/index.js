@@ -20,6 +20,7 @@ import velotype from './velotype.js';
 import velotypeLight from './velotype-light.js';
 import { ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
+import { applyEditorOverrides } from '../utils/prefs.js';
 
 // 主题版本号：applyTheme 时递增，依赖主题色的异步渲染（公式 SVG 等）据此重渲染
 export const themeVersion = ref(0);
@@ -119,6 +120,7 @@ const BLOCK_SELECTORS = {
   codeBlock: '.blk-code-block',
   comment: '.blk-comment',
   htmlBlock: '.blk-html-block',
+  sectionBlock: '.blk-section-block',
   mathBlock: '.blk-math-block',
   mermaidBlock: '.blk-mermaid-block',
   rawMarkdown: '.blk-raw-markdown',
@@ -135,6 +137,12 @@ const BLOCK_SELECTORS = {
   kbd: 'kbd',
   superscript: 'sup',
   subscript: 'sub',
+  // 界面区域（blocks 作用域为 .t-app，覆盖编辑区与侧栏/状态栏）
+  sidebarTab: '.t-tab',
+  sidebarTabActive: '.t-tab-active',
+  // 斜杠命令菜单（/ 召唤）与选中项
+  slashMenu: '.md-slash-menu',
+  slashMenuItemActive: '.md-slash-item-active',
 };
 
 const UNITLESS_PROPS = new Set([
@@ -200,7 +208,7 @@ function buildRulesFor(selector, props, rules) {
   if (decls) rules.push(`${selector} { ${decls} }`);
 }
 
-// blocks 配置 → CSS 文本（作用域 .t-root）
+// blocks 配置 → CSS 文本（作用域 .t-app）
 function buildBlockCss(blocks) {
   const rules = [];
   for (const [type, value] of Object.entries(blocks || {})) {
@@ -209,13 +217,13 @@ function buildBlockCss(blocks) {
     if (type === 'heading') {
       // heading 直属属性作用于全部标题级别；h1~h6 子表分级覆盖
       const { h1, h2, h3, h4, h5, h6, ...rest } = value;
-      buildRulesFor(`.t-root .blk-heading`, rest, rules);
+      buildRulesFor(`.t-app .blk-heading`, rest, rules);
       for (const [level, props] of Object.entries({ h1, h2, h3, h4, h5, h6 })) {
-        buildRulesFor(`.t-root ${level}.blk-heading`, props, rules);
+        buildRulesFor(`.t-app ${level}.blk-heading`, props, rules);
       }
       continue;
     }
-    buildRulesFor(`.t-root ${selector}`, value, rules);
+    buildRulesFor(`.t-app ${selector}`, value, rules);
   }
   return rules.join('\n');
 }
@@ -264,6 +272,8 @@ export function applyTheme(id) {
   const resolved = resolveTheme(pack);
   applyCssVars(resolved);
   applyBlockCss(resolved.blocks);
+  // 主题值写入后再叠加编辑器排版偏好覆盖（主题切换时覆盖不丢失）
+  applyEditorOverrides();
   // 公式中文回落字体随主题下发（ratex 首次加载后进程内锁定，运行中切换需重启生效）
   const mathFont = resolved.typography?.math_cjk_font;
   if (mathFont) {

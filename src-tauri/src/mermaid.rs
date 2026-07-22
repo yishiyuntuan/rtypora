@@ -10,16 +10,30 @@ use std::sync::{LazyLock, Mutex};
 static MERMAID_CACHE: LazyLock<Mutex<HashMap<u64, Option<String>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// 渲染 Mermaid 源码为 SVG 文本；不支持的图类型或语法错误返回 None（前端回退源码展示）。
+/// 渲染 Mermaid 源码为 SVG 文本；接受 ```mermaid 围栏原文或图表正文（围栏在 Rust 端剥离）。
+/// 不支持的图类型或语法错误返回 None（前端回退源码展示）。
 #[tauri::command]
 pub fn render_mermaid(source: &str) -> Option<String> {
-    let key = mermaid_cache_key(source);
+    let body = strip_code_fence(source);
+    let key = mermaid_cache_key(&body);
     if let Some(cached) = MERMAID_CACHE.lock().ok()?.get(&key) {
         return cached.clone();
     }
-    let rendered = render_mermaid_raw(source);
+    let rendered = render_mermaid_raw(&body);
     MERMAID_CACHE.lock().ok()?.insert(key, rendered.clone());
     rendered
+}
+
+/// 剥离 ```mermaid 开围栏与闭合围栏；无围栏时原样返回（去首尾空白）
+fn strip_code_fence(source: &str) -> String {
+    let mut lines: Vec<&str> = source.lines().collect();
+    if lines.first().is_some_and(|line| line.trim_start().starts_with("```")) {
+        lines.remove(0);
+        if lines.last().is_some_and(|line| line.trim().starts_with("```")) {
+            lines.pop();
+        }
+    }
+    lines.join("\n").trim().to_string()
 }
 
 fn mermaid_cache_key(source: &str) -> u64 {

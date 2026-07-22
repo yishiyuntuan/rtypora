@@ -74,7 +74,9 @@
       "image_placeholder_text": null,
       "cursor": null,                   // 光标颜色
       "selection": null,                // 选区高亮
-      "status_bar_background": null,    // 状态栏背景
+      "status_bar_background": null,    // 状态栏背景（默认融入编辑器背景）
+      "status_bar_border": null,        // 状态栏上边框（默认 transparent 无线条）
+      "tab_indicator": null,            // 侧边栏活跃标签底部指示条颜色（仅活跃标签显示）
       "status_bar_text": null,          // 状态栏文字
       "status_bar_text_dim": null,      // 状态栏弱化文字
       "status_bar_button_hover": null   // 状态栏按钮悬停（兼作通用悬停色）
@@ -118,6 +120,8 @@
       // },
       // "link": { ":hover": { "color": "#fff", "background": "#2563eb" } },
       // "table": { "tbody tr:nth-child(even) td": { "background": "#00000008" } },
+      // "sidebarTab": { "transition": "border-color 0.35s cubic-bezier(0.34, 1.56, 0.64, 1)" },
+      // "sidebarTabActive": { "borderBottomColor": "#f59e0b", "borderBottomWidth": "3px" },
       // "quote": { "background": "#00000008", "borderRadius": 6, "padding": "4px 12px" },
       // "codeBlock": { "borderRadius": 10, "border": "1px solid #00000014" },
       // "mathBlock": { "textAlign": "center" }

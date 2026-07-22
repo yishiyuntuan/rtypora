@@ -1,6 +1,7 @@
 <script setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { listThemes, currentThemeId, applyTheme, importThemeJson } from '../themes/index.js';
+import { getPref, setPref, prefsVersion } from '../utils/prefs.js';
 
 const emit = defineEmits(['toggle-sidebar', 'toggle-source']);
 
@@ -12,6 +13,18 @@ defineProps({
   cursorColumn: { type: Number, default: 1 },
   sourceMode: { type: Boolean, default: false },
   sidebarVisible: { type: Boolean, default: true },
+});
+
+// 代码行号显示开关（偏好 render_code_line_numbers；prefsVersion 驱动 active 态与渲染联动）
+const lineNumbersOn = computed(() => {
+  prefsVersion.value;
+  return getPref('render_code_line_numbers');
+});
+
+// 自动保存开关（偏好 auto_save_enabled，默认关闭；触发方式在偏好设置中配置）
+const autoSaveOn = computed(() => {
+  prefsVersion.value;
+  return getPref('auto_save_enabled');
 });
 
 // 主题选择：内置明暗两套 + 用户导入的自定义主题（参照 velotype 的 Theme 菜单）
@@ -47,7 +60,7 @@ async function onThemeFile(e) {
 
 <template>
   <div
-    class="t-statusbar flex h-7 items-center justify-between border-t border-(--t-table-border) text-[12px] select-none"
+    class="t-statusbar flex h-7 items-center justify-between text-[12px] select-none"
   >
     <div class="flex h-full items-center">
       <div
@@ -67,6 +80,32 @@ async function onThemeFile(e) {
         @click="emit('toggle-source')"
       >
         <span>&lt;/&gt;</span>
+      </div>
+
+      <div
+        class="t-btn inline-flex h-full cursor-pointer items-center gap-1 px-3"
+        :class="{ active: lineNumbersOn }"
+        title="代码行号显示"
+        @click="setPref('render_code_line_numbers', !lineNumbersOn)"
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]">
+          <rect x="2" y="2.5" width="3.2" height="11" rx="0.8" fill="currentColor" opacity="0.45" />
+          <rect x="7" y="4" width="7" height="1.6" rx="0.8" fill="currentColor" />
+          <rect x="7" y="7.5" width="7" height="1.6" rx="0.8" fill="currentColor" />
+          <rect x="7" y="11" width="7" height="1.6" rx="0.8" fill="currentColor" />
+        </svg>
+      </div>
+
+      <div
+        class="t-btn inline-flex h-full cursor-pointer items-center gap-1 px-3"
+        :class="{ active: autoSaveOn }"
+        title="自动保存（触发方式见 菜单 → 偏好设置 → 编辑器）"
+        @click="setPref('auto_save_enabled', !autoSaveOn)"
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
+          <path d="M3 2.5h7.5l2.5 2.5v8.5H3z" />
+          <path d="M5.5 2.5v3h5v-3M5.5 13.5v-4.5h5v4.5" />
+        </svg>
       </div>
     </div>
 

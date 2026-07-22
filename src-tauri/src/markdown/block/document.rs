@@ -695,6 +695,11 @@ fn collect_list_item_region(lines: &[String], start: usize, marker_indent_column
         }
 
         let (indent_columns, _) = leading_indent_columns_and_bytes(line);
+        // 同级或更浅缩进的分割线终止列表项区域（CommonMark：thematic break 终止列表项，
+        // 无空行时也不得吸入项内）
+        if indent_columns <= marker_indent_columns && BlockKind::parse_separator_line(line) {
+            return index.saturating_sub(pending_blank_lines);
+        }
         if indent_columns > marker_indent_columns || pending_blank_lines == 0 {
             pending_blank_lines = 0;
             index += 1;
@@ -1073,9 +1078,16 @@ fn build_blocks_from_lines_internal(
                 continue;
             }
 
-            if let Some(level) = lines
-                .get(index + 1)
-                .and_then(|next| BlockKind::parse_setext_underline(next))
+            // setext 标题只能由段落行构成：列表项/引用/ATX 标题/分割线起始的行不参与
+            //（`- [ ] x\n---` 应为列表项 + 分割线，而非把列表项行当 setext 文本）
+            let setext_ineligible = parse_list_marker(line).is_some()
+                || is_quote_start(line)
+                || BlockKind::parse_atx_heading_line(line).is_some()
+                || BlockKind::parse_separator_line(line);
+            if !setext_ineligible
+                && let Some(level) = lines
+                    .get(index + 1)
+                    .and_then(|next| BlockKind::parse_setext_underline(next))
             {
                 roots.push(RootBlock::spanned(
                     native_block(BlockKind::Heading { level }, line.trim_end().to_string()),
@@ -1645,11 +1657,38 @@ fn build_blocks_from_lines_internal(
             };
 
             let item_end = collect_list_item_region(lines, index, marker.indent_columns);
+            // 围栏开在列表标记行（如 `1. ```html`）时，围栏行文本需要保留以构造原文
+            let marker_fence = parse_opening_fence(&marker.text).map(|fence| (fence, marker.text.clone()));
             let mut block = native_block(marker.kind.clone(), marker.text);
             let mut body_index = index + 1;
             let mut pending_blank_lines = 0usize;
             let mut fallback_raw = false;
             let mut saw_child = false;
+
+            // 标记行开围栏：续行去内容缩进后收集到闭合围栏，作为该项的代码块子块
+            //（mermaid/math 围栏与根级一致各自特判）；未闭合则维持普通子块流程
+            if let Some((fence, fence_line)) = marker_fence {
+                let content_dedented =
+                    dedent_lines(&lines[body_index..item_end], marker.content_indent_columns);
+                if let Some(closing_index) = find_matching_closing_fence(&content_dedented, 0, &fence) {
+                    let raw = std::iter::once(fence_line.as_str())
+                        .chain(content_dedented[..=closing_index].iter().map(String::as_str))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let child = if is_mermaid_info_string(fence.language.as_deref()) {
+                        BlockNode::leaf(BlockRecord::mermaid(raw))
+                    } else if is_math_info_string(fence.language.as_deref()) {
+                        BlockNode::leaf(BlockRecord::math(raw))
+                    } else {
+                        let code_lines = content_dedented[..closing_index].to_vec();
+                        build_code_block(fence.language.clone(), code_lines.join("\n"))
+                    };
+                    block.children.push(child);
+                    block.record.set_title(InlineTextTree::plain(String::new()));
+                    body_index += closing_index + 1;
+                    saw_child = true;
+                }
+            }
 
             while body_index < item_end {
                 let line = &lines[body_index];
@@ -1683,6 +1722,18 @@ fn build_blocks_from_lines_internal(
 
                         block.children.extend(vec![quote]);
                         body_index += consumed;
+                        pending_blank_lines = 0;
+                        saw_child = true;
+                        continue;
+                    }
+
+                    // 项内分割线（内容级缩进的 ---）：作为分割线子块而非标题文本
+                    if BlockKind::parse_separator_line(&anchor_dedented[0]) {
+                        block.children.push(BlockNode::leaf(BlockRecord::new(
+                            BlockKind::Separator,
+                            InlineTextTree::plain(String::new()),
+                        )));
+                        body_index += 1;
                         pending_blank_lines = 0;
                         saw_child = true;
                         continue;

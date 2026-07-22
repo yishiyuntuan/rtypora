@@ -105,6 +105,37 @@ function update(key, value) {
                   @change="update('editor_padding', $event.target.valueAsNumber || null)"
                 />
               </label>
+
+              <div>
+                <span class="t-dim mb-2 block text-[12px]">自动保存触发方式（开关在状态栏，默认关闭）</span>
+                <label class="t-btn mb-1 flex cursor-pointer items-center gap-2 rounded px-2 py-1.5">
+                  <input
+                    type="radio"
+                    name="auto-save-trigger"
+                    :checked="form.auto_save_trigger === 'blur'"
+                    @change="update('auto_save_trigger', 'blur')"
+                  />
+                  <span>焦点切换时保存</span>
+                </label>
+                <label class="t-btn mb-1 flex cursor-pointer items-center gap-2 rounded px-2 py-1.5">
+                  <input
+                    type="radio"
+                    name="auto-save-trigger"
+                    :checked="form.auto_save_trigger === 'delay'"
+                    @change="update('auto_save_trigger', 'delay')"
+                  />
+                  <span>输入停止后</span>
+                  <input
+                    type="number" min="1" max="60" step="1"
+                    class="prefs-input"
+                    style="width: 64px"
+                    :value="form.auto_save_delay_seconds"
+                    @change="update('auto_save_delay_seconds', Math.min(60, Math.max(1, $event.target.valueAsNumber || 3)))"
+                  />
+                  <span>秒自动保存</span>
+                </label>
+                <p class="t-dim text-[12px]">仅对已保存过的文件生效；新文档请先手动保存。</p>
+              </div>
             </div>
 
             <!-- 图像 -->
@@ -141,6 +172,14 @@ function update(key, value) {
               <label class="flex cursor-pointer items-center gap-2">
                 <input
                   type="checkbox"
+                  :checked="form.render_code_line_numbers"
+                  @change="update('render_code_line_numbers', $event.target.checked)"
+                />
+                <span>代码块行号显示</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
                   :checked="form.render_mermaid"
                   @change="update('render_mermaid', $event.target.checked)"
                 />
@@ -153,6 +192,26 @@ function update(key, value) {
                   @change="update('render_math', $event.target.checked)"
                 />
                 <span>数学公式渲染</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.render_html_block"
+                  @change="update('render_html_block', $event.target.checked)"
+                />
+                <span>&lt;section&gt; 图文排版渲染</span>
+              </label>
+              <label class="flex items-center justify-between gap-2">
+                <span>公式自动编号</span>
+                <select
+                  class="prefs-select"
+                  :value="form.math_numbering"
+                  @change="update('math_numbering', $event.target.value)"
+                >
+                  <option value="off">不启用公式的自动编号</option>
+                  <option value="ams">根据 AMS 规则对公式使用自动编号</option>
+                  <option value="all">对所有公式使用自动编号</option>
+                </select>
               </label>
               <p class="t-dim text-[12px]">关闭后对应内容按源码显示，不影响文档内容。</p>
             </div>
@@ -197,5 +256,19 @@ function update(key, value) {
   background: transparent;
   color: inherit;
   outline: none;
+}
+.prefs-select {
+  max-width: 260px;
+  padding: 4px 8px;
+  border: 1px solid var(--t-table-border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  outline: none;
+}
+/* 下拉闭合与展开都跟随主题，避免原生白底闪变 */
+.prefs-select option {
+  background: var(--t-editor-background);
+  color: var(--t-text-default);
 }
 </style>

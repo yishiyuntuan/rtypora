@@ -3,12 +3,13 @@ import { computed, inject, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import InlineView from './InlineView.vue';
 import MathView from './MathView.vue';
+import SectionView from './SectionView.vue';
 import { plainText, numberedOrdinals } from '../utils/wysiwyg.js';
 import { highlightCodeHtml } from '../utils/highlight.js';
 import { resolveImageSrc } from '../utils/image.js';
 import { getPref, prefsVersion } from '../utils/prefs.js';
 
-// 递归块渲染器：渲染 velotype 移植版块模型（16 种块类型）。
+// 递归块渲染器：渲染 velotype 移植版块模型（17 种块类型）。
 // 顶层块的编辑状态由 Editor.vue 管理，本组件只负责渲染与事件转发。
 // 列表项在模型中是独立块（嵌套经 children），此处逐项渲染标记。
 // 颜色全部走 style.css 语义类（--t-* 主题变量），此处只写布局类。
@@ -48,6 +49,15 @@ const rawText = computed(() => props.block.rawFallback ?? plainText(props.block.
 const escapedCode = computed(() =>
   props.block.type === 'codeBlock' ? escapeHtml(plainText(props.block.title)) : '',
 );
+// 代码块行号（偏好 render_code_line_numbers 控制，默认显示；prefsVersion 驱动响应）
+const showLineNumbers = computed(() => {
+  prefsVersion.value;
+  return props.block.type === 'codeBlock' && getPref('render_code_line_numbers');
+});
+const lineNumbersText = computed(() => {
+  const count = (plainText(props.block.title).match(/\n/g) || []).length + 1;
+  return Array.from({ length: count }, (_, i) => i + 1).join('\n');
+});
 const highlightedCode = ref('');
 function escapeHtml(text) {
   return String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -63,7 +73,7 @@ watch(
   { immediate: true },
 );
 
-// Mermaid 图：Rust render_mermaid 渲染 SVG（失败返回源码占位）
+// Mermaid 图：Rust render_mermaid 渲染 SVG（围栏剥离在 Rust 端完成；失败返回源码占位）
 const mermaidSvg = ref('');
 watch(
   () => [props.block.id, rawText.value, prefsVersion.value],
@@ -71,21 +81,11 @@ watch(
     mermaidSvg.value = '';
     // 偏好设置可关闭 Mermaid 渲染（回退源码占位）
     if (props.block.type !== 'mermaidBlock' || !getPref('render_mermaid')) return;
-    // mermaid 围栏原文 → 图表正文（去围栏与 info 行）
-    const body = mermaidBody(rawText.value);
-    if (!body) return;
-    const svg = await invoke('render_mermaid', { source: body }).catch(() => null);
+    const svg = await invoke('render_mermaid', { source: rawText.value }).catch(() => null);
     if (svg) mermaidSvg.value = svg;
   },
   { immediate: true },
 );
-
-// ```mermaid 围栏中提取图表正文
-function mermaidBody(raw) {
-  const lines = raw.split('\n');
-  if (lines.length < 2) return '';
-  return lines.slice(1, lines[lines.length - 1].trim().startsWith('```') ? -1 : undefined).join('\n').trim();
-}
 
 // 独立图片段落：相对路径以文档目录为基准解析（App provide）
 const documentDir = inject('documentDir', { value: null });
@@ -102,6 +102,12 @@ watch(
 
 // 子块的有序序号表（quote/callout/footnote/列表项嵌套共用）
 const childOrdinals = computed(() => numberedOrdinals(props.block.children));
+// 展示公式编号（Editor provide 的编号表；无编号为空串）
+const mathNumbers = inject('mathNumbers', { value: new Map() });
+const mathNumberLabel = computed(() => {
+  const n = mathNumbers.value.get(props.block.id);
+  return n ? `(${n})` : '';
+});
 
 const calloutClass = computed(() => `blk-callout callout-${props.block.variant || 'note'}`);
 const listItemClass = computed(() => `blk-${props.block.type.replace(/[A-Z]/g, (ch) => '-' + ch.toLowerCase())}`);
@@ -154,7 +160,6 @@ function alignStyle(alignments, index) {
       type="checkbox"
       class="mt-[5px] shrink-0 cursor-pointer"
       :checked="block.checked"
-      :disabled="block.start == null"
       @click.stop
       @change="emit('toggle-task', block)"
     />
@@ -221,8 +226,12 @@ function alignStyle(alignments, index) {
     >{{ block.language }}</div>
     <pre
       class="md-pre blk-code-block overflow-x-auto p-3 font-mono text-[13px]"
-      :class="block.language ? 'rounded-b' : 'rounded'"
-    ><code v-html="highlightedCode || escapedCode"></code></pre>
+      :class="[block.language ? 'rounded-b' : 'rounded', showLineNumbers ? 'flex' : '']"
+    ><code
+        v-if="showLineNumbers"
+        class="md-code-gutter mr-3 shrink-0 select-none border-r pr-2 text-right"
+        aria-hidden="true"
+      >{{ lineNumbersText }}</code><code class="min-w-0 flex-1" v-html="highlightedCode || escapedCode"></code></pre>
   </div>
 
   <table v-else-if="block.type === 'table' && block.table" class="blk-table my-2 border-collapse text-[13px]">
@@ -248,9 +257,11 @@ function alignStyle(alignments, index) {
     </tbody>
   </table>
 
-  <!-- 数学公式：Rust ratex 渲染 SVG（失败回退源码占位）；渲染态不显示背景块 -->
-  <div v-else-if="block.type === 'mathBlock'" class="blk-math-block my-2">
+  <!-- 数学公式：Rust ratex 渲染 SVG（失败回退源码占位）；渲染态不显示背景块；
+       编号按偏好 math_numbering 显示（AMS 判定在 Rust mathNumbered 字段） -->
+  <div v-else-if="block.type === 'mathBlock'" class="blk-math-block relative my-2">
     <MathView :source="rawText" display />
+    <span v-if="mathNumberLabel" class="md-eq-number absolute right-2 top-1/2 -translate-y-1/2">{{ mathNumberLabel }}</span>
   </div>
 
   <!-- Mermaid 图：Rust 渲染 SVG（加载中/失败时回退源码占位） -->
@@ -267,6 +278,15 @@ function alignStyle(alignments, index) {
     v-else-if="block.type === 'comment'"
     class="md-pre md-comment blk-comment my-2 overflow-x-auto rounded p-3 font-mono text-[13px]"
   >{{ rawText }}</pre>
+
+  <!-- section 图文排版块：grid 布局渲染（关闭渲染开关时回退源码展示） -->
+  <div v-else-if="block.type === 'sectionBlock'" class="blk-section-block my-2">
+    <SectionView :raw="rawText" />
+    <pre
+      v-if="!getPref('render_html_block')"
+      class="md-pre my-2 overflow-x-auto rounded p-3 font-mono text-[13px]"
+    >{{ rawText }}</pre>
+  </div>
 
   <!-- htmlBlock / rawMarkdown：源码展示，避免注入 -->
   <pre

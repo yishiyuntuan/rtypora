@@ -17,8 +17,16 @@ const DEFAULTS = {
   image_paste_behavior: 'document', // 'off' | 'document'（文档目录）| 'assets'（assets 子目录）
   // Markdown 渲染开关
   render_code_highlight: true,
+  render_code_line_numbers: true,
   render_mermaid: true,
   render_math: true,
+  render_html_block: true,
+  // 公式编号：'off' 不启用 | 'ams' 按 AMS 规则 | 'all' 所有展示公式
+  math_numbering: 'ams',
+  // 自动保存（默认关闭，状态栏开关）：触发方式 'blur' 焦点切换 | 'delay' 输入停止 N 秒
+  auto_save_enabled: false,
+  auto_save_trigger: 'blur',
+  auto_save_delay_seconds: 3,
 };
 
 let cache = null;
@@ -49,15 +57,17 @@ export function setPref(key, value) {
   prefsVersion.value += 1;
 }
 
-// 把编辑器排版覆盖写入 CSS 变量（空值删除，回退主题值）
+// 把编辑器排版覆盖写入独立的 --t-*-pref 覆盖变量（CSS 以
+// var(--t-x-pref, var(--t-x)) 回落到主题值，覆盖与主题互不干扰）。
+// 空值仅删除覆盖键，主题值不受影响。
 export function applyEditorOverrides(prefs = load()) {
   const style = document.documentElement.style;
   const apply = (name, value) => {
     if (value === null || value === undefined || value === '') style.removeProperty(name);
     else style.setProperty(name, `${value}px`);
   };
-  apply('--t-text-size', prefs.text_size);
-  apply('--t-text-line-height', prefs.text_line_height);
-  apply('--t-content-max-width', prefs.content_max_width);
-  apply('--t-editor-padding', prefs.editor_padding);
+  apply('--t-text-size-pref', prefs.text_size);
+  apply('--t-text-line-height-pref', prefs.text_line_height);
+  apply('--t-content-max-width-pref', prefs.content_max_width);
+  apply('--t-editor-padding-pref', prefs.editor_padding);
 }

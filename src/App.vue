@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onMounted, onUnmounted, provide, ref } from "vue";
+import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { Window } from "@tauri-apps/api/window";
 import TitleBar from "./component/TitleBar.vue";
 import StatusBar from "./component/StatusBar.vue";
@@ -10,7 +11,7 @@ import MenuDrawer from "./component/MenuDrawer.vue";
 import PrefsDialog from "./component/PrefsDialog.vue";
 import AboutDialog from "./component/AboutDialog.vue";
 import ConfirmDialog from "./component/ConfirmDialog.vue";
-import { applyEditorOverrides } from "./utils/prefs.js";
+import { applyEditorOverrides, getPref } from "./utils/prefs.js";
 
 const appWindow = new Window("main");
 
@@ -36,6 +37,15 @@ const documentDir = computed(() => {
   return parts.join("\\") || null;
 });
 provide("documentDir", documentDir);
+// 侧边栏工作目录（打开文件时跟随其目录，也可经「打开文件夹」独立设置）
+const workspaceDir = ref(null);
+watch(currentFilePath, (path) => {
+  if (path) {
+    const parts = path.split(/[\\/]/);
+    parts.pop();
+    workspaceDir.value = parts.join("\\") || path;
+  }
+});
 
 // 菜单与各对话框状态
 const menuVisible = ref(false);
@@ -55,7 +65,47 @@ function recordRecent(path) {
   localStorage.setItem(RECENT_KEY, JSON.stringify(list));
 }
 
-onMounted(() => applyEditorOverrides());
+onMounted(async () => {
+  applyEditorOverrides();
+  // 焦点切换触发：窗口失焦时按偏好自动保存
+  unlistenWindowBlur = await appWindow.listen("tauri://blur", () => {
+    if (getPref("auto_save_trigger") === "blur") autoSave();
+  });
+});
+onUnmounted(() => {
+  clearTimeout(delaySaveTimer);
+  unlistenWindowBlur?.();
+});
+
+// ---------- 自动保存（默认关闭；触发方式：焦点切换 / 输入停止 N 秒） ----------
+
+let delaySaveTimer = null;
+let unlistenWindowBlur = null;
+
+// 自动保存条件：开关开启、已有文件路径（新文档不弹另存对话框）、内容有改动
+function autoSaveEligible() {
+  return getPref("auto_save_enabled") && currentFilePath.value && editorRef.value?.isDirty?.();
+}
+
+async function autoSave() {
+  if (!autoSaveEligible()) return;
+  try {
+    await invoke("save_file", { path: currentFilePath.value, content: editorRef.value.getContent() });
+    editorRef.value.markSaved();
+  } catch (e) {
+    console.error("自动保存失败:", e);
+  }
+}
+
+// 延时模式：内容/光标活动后 N 秒无操作则保存（统计更新即活动信号）
+function scheduleDelaySave() {
+  if (getPref("auto_save_trigger") !== "delay") return;
+  clearTimeout(delaySaveTimer);
+  const seconds = Number(getPref("auto_save_delay_seconds")) || 3;
+  delaySaveTimer = setTimeout(autoSave, Math.max(1, seconds) * 1000);
+}
+
+watch(editorStats, scheduleDelaySave);
 
 // ---------- 文件操作 ----------
 
@@ -79,6 +129,24 @@ async function onSidebarOpenFile(path) {
   currentFilePath.value = opened.path;
   recordRecent(opened.path);
   editorRef.value?.loadDocument(opened.content);
+}
+
+// 侧边栏：打开文件夹（弹框或直接传入路径）
+async function onOpenFolder(path) {
+  const dir = path ?? (await invoke("pick_folder"));
+  if (dir) workspaceDir.value = dir;
+}
+
+// 侧边栏：在当前文件夹新建文件并打开
+async function onCreateFile() {
+  if (!workspaceDir.value) return;
+  const path = await invoke("create_markdown_file", { dir: workspaceDir.value }).catch(() => null);
+  if (path) await onSidebarOpenFile(path);
+}
+
+// 侧边栏：在系统资源管理器中显示目录
+async function onShowInExplorer(dir) {
+  if (dir) await openPath(dir).catch((e) => console.error("打开资源管理器失败:", e));
 }
 
 async function doSave() {
@@ -153,8 +221,8 @@ ${clone.innerHTML}
 </div></div>
 </body>
 </html>`;
-  const suggestedName = title.replace(/\.(md|markdown)$/i, "") + ".html";
-  const result = await invoke("save_html_as", { content: html, suggestedName });
+  // 建议文件名由 Rust 端按源文件名推导（.md/.markdown → .html）
+  const result = await invoke("save_html_as", { content: html, sourceName: title });
   if (result?.Err) alert(`导出失败：${result.Err}`);
 }
 
@@ -270,12 +338,16 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
         :blocks="docBlocks"
         :active-heading-id="activeHeadingId"
         :current-file-path="currentFilePath"
+        :workspace-dir="workspaceDir"
         @select-block="editorRef?.scrollToBlock($event)"
         @open-file="onSidebarOpenFile"
+        @open-folder="onOpenFolder"
+        @create-file="onCreateFile"
+        @show-in-explorer="onShowInExplorer"
       />
       <div class="flex flex-1 flex-col overflow-hidden">
         <TitleBar :file-name="currentFileName" @toggle-menu="menuVisible = !menuVisible" />
-        <main class="mt-3 flex-1 overflow-hidden">
+        <main class="mt-1 flex-1 overflow-hidden">
           <Editor
             ref="editorRef"
             :source-mode="sourceMode"

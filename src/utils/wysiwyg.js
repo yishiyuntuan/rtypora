@@ -46,7 +46,9 @@ function linkHref(link) {
   return link?.destination || link?.target || '';
 }
 
-// 连续 numberedListItem 兄弟块的序号表（id -> 1 基序号），用于有序列表渲染
+// 连续 numberedListItem 兄弟块的序号表（id -> 1 基序号），用于有序列表渲染。
+// 块模型会把列表项之间的空行保留为空段落块（velotype 编辑模型），空段落不打断
+// 编号（对应 CommonMark 松散列表）；实质内容块（含独立图片段落）才重置序号。
 export function numberedOrdinals(blocks) {
   const map = new Map();
   let n = 0;
@@ -54,6 +56,8 @@ export function numberedOrdinals(blocks) {
     if (b.type === 'numberedListItem') {
       n += 1;
       map.set(b.id, n);
+    } else if (b.type === 'paragraph' && !plainText(b.title).trim() && !b.image) {
+      continue;
     } else {
       n = 0;
     }
@@ -129,6 +133,7 @@ export function blockToHtml(block, rawSource) {
     case 'mathBlock':
     case 'mermaidBlock':
     case 'htmlBlock':
+    case 'sectionBlock':
     case 'comment':
     case 'rawMarkdown':
       return `<pre class="${PRE_CLASS}" data-raw="">${escapeHtml(rawSource ?? block.rawFallback ?? plainText(block.title))}</pre>`;
@@ -285,7 +290,12 @@ function domChildrenToBlocks(el) {
 function elementToBlocks(el) {
   const tag = el.tagName;
   if (/^H[1-6]$/.test(tag)) {
-    return [makeBlock({ type: 'heading', level: Number(tag[1]) }, { title: makeTree(domToInlines(el)) })];
+    const fragments = domToInlines(el);
+    // 标题删空后降级为段落（与 Typora 行为一致，不再保留空标题渲染）
+    if (!fragments.some((f) => f.text.trim() || f.footnote || f.math)) {
+      return [makeBlock({ type: 'paragraph' })];
+    }
+    return [makeBlock({ type: 'heading', level: Number(tag[1]) }, { title: makeTree(fragments) })];
   }
   if (tag === 'P' || tag === 'DIV') {
     return [makeBlock({ type: 'paragraph' }, { title: makeTree(domToInlines(el)) })];
@@ -320,8 +330,19 @@ function elementToBlocks(el) {
 function listToBlocks(el, ordered) {
   const items = [];
   el.querySelectorAll(':scope > li').forEach((li) => {
-    const checkbox = li.querySelector(':scope input[type="checkbox"]');
-    const blocks = domChildrenToBlocks(li);
+    // 只认本项自己的勾选框：input 最近的祖先 li 必须是本 li
+    // （后代选择器会误中嵌套任务项的勾选框，把父项错判成任务项）
+    let checkbox = null;
+    for (const input of li.querySelectorAll('input[type="checkbox"]')) {
+      if (input.closest('li') === li) {
+        checkbox = input;
+        break;
+      }
+    }
+    // 任务项的正文在勾选框旁的 body 容器里（含嵌套子块），从该容器提取，
+    // 否则整个行 div 会被当作段落、嵌套列表文字被 domToInlines 吸进标题而拍平
+    const container = checkbox ? checkbox.nextElementSibling || li : li;
+    const blocks = domChildrenToBlocks(container);
     let title = makeTree([]);
     let children = blocks;
     if (blocks[0]?.type === 'paragraph') {
@@ -383,6 +404,24 @@ export async function convertFenceToCodeBlock(container) {
   container.innerHTML = '';
   container.append(pre);
   placeCursorAtEnd(pre);
+  return true;
+}
+
+// `<section>` 行按 Enter：转换为 section 图文排版块的原文编辑
+// （<section>\n\n</section>，光标在中间空行；类型判定由 Rust detect_block_shortcut 完成）。
+export async function convertSectionToHtmlBlock(container) {
+  const text = container.textContent.trim();
+  // 仅开标签才调用 Rust 判定
+  if (!/^<section/i.test(text)) return false;
+  const hit = await invoke('detect_block_shortcut', { line: text }).catch(() => null);
+  if (!hit || hit.type !== 'sectionBlock') return false;
+  const pre = document.createElement('pre');
+  pre.className = PRE_CLASS;
+  pre.setAttribute('data-raw', '');
+  pre.textContent = '<section>\n\n</section>';
+  container.innerHTML = '';
+  container.append(pre);
+  placeCaretAtTextOffset(pre, '<section>\n'.length);
   return true;
 }
 
@@ -518,6 +557,488 @@ export function applyMarkdownShortcuts() {
 }
 
 // ---------- 光标操作 ----------
+
+// ---------- 斜杠命令（/ 召唤语法菜单） ----------
+
+// 菜单项：id 对应 applySlashCommand 的 DOM 构建；icon 为内联 SVG；keywords 供过滤
+//（拼音/英文别名）。标题合并为一项（菜单内 H1-H6 徽章选级别）。
+// 菜单展示与构建为视图层职责；块结构的 Markdown 序列化在提交时由 Rust 统一完成。
+export const SLASH_ICON = {
+  heading:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 3.5v9M9 3.5v9M3 8h6M12.8 6v6.5M11 6l1.8-1.5"/></svg>',
+  paragraph:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 4.5h10M3 8h10M3 11.5h7"/></svg>',
+  bulletedListItem:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="3.2" cy="4.5" r="1" fill="currentColor" stroke="none"/><circle cx="3.2" cy="8" r="1" fill="currentColor" stroke="none"/><circle cx="3.2" cy="11.5" r="1" fill="currentColor" stroke="none"/><path d="M6.5 4.5h7M6.5 8h7M6.5 11.5h7"/></svg>',
+  numberedListItem:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><text x="1.2" y="5.6" font-size="5.5" fill="currentColor" stroke="none">1</text><text x="1.2" y="9.8" font-size="5.5" fill="currentColor" stroke="none">2</text><text x="1.2" y="14" font-size="5.5" fill="currentColor" stroke="none">3</text><path d="M6.5 4.5h7M6.5 8.7h7M6.5 12.8h7"/></svg>',
+  taskListItem:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2.4" width="5.2" height="5.2" rx="1"/><path d="M3.2 5l1.3 1.3L6.9 3.8"/><path d="M9 5h4.5M3 11.5h10M3 14h7"/></svg>',
+  quote:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 3v10" stroke-width="2.2"/><path d="M6.5 4.5h7M6.5 8h7M6.5 11.5h5"/></svg>',
+  codeBlock:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4L2.5 8 6 12M10 4l3.5 4L10 12"/></svg>',
+  table:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M2.5 6.3h11M2.5 9.6h11M8 3v10"/></svg>',
+  image:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><rect x="2.5" y="3" width="11" height="10" rx="1"/><circle cx="5.6" cy="6.1" r="1.1"/><path d="M3.5 12l3-3.4 2.4 2.4 2.1-2.4 1.5 1.7"/></svg>',
+  mathBlock:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11.5 3H6L10.5 8 6 13h5.5"/></svg>',
+  mermaidBlock:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="3" width="4.5" height="3" rx="0.8"/><rect x="9.5" y="10" width="4.5" height="3" rx="0.8"/><path d="M6.5 4.5h3.2a2 2 0 012 2V10"/></svg>',
+  callout:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"><path d="M8 2.6L14 13H2z"/><path d="M8 6.4v3.4" stroke-linecap="round"/><circle cx="8" cy="11.3" r="0.6" fill="currentColor" stroke="none"/></svg>',
+  sectionBlock:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="4" width="5" height="8" rx="0.8"/><path d="M8.5 5h5M8.5 8h5M8.5 11h3.5" stroke-linecap="round"/></svg>',
+  separator:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2.5 8h11" stroke-dasharray="2.5 2"/></svg>',
+};
+
+export const SLASH_ITEMS = [
+  { id: 'heading', label: '标题', icon: SLASH_ICON.heading, keywords: 'h1 h2 h3 h4 h5 h6 biaoti bt heading' },
+  { id: 'paragraph', label: '正文段落', icon: SLASH_ICON.paragraph, keywords: 'p text duanluo dl zhengwen zw' },
+  { id: 'list', label: '列表', icon: SLASH_ICON.bulletedListItem, keywords: 'ul ol task list liebiao lb wuxu wx youxu yx renwu rw' },
+  { id: 'quote', label: '引用', icon: SLASH_ICON.quote, keywords: 'quote yinyong yy' },
+  { id: 'codeBlock', label: '代码块', icon: SLASH_ICON.codeBlock, keywords: 'code daima dm' },
+  { id: 'table', label: '表格', icon: SLASH_ICON.table, keywords: 'table biaoge bg' },
+  { id: 'image', label: '图片', icon: SLASH_ICON.image, keywords: 'img image tupian tp' },
+  { id: 'mathBlock', label: '数学公式', icon: SLASH_ICON.mathBlock, keywords: 'math latex gongshi gs' },
+  { id: 'callout', label: '高亮块（Callout）', icon: SLASH_ICON.callout, keywords: 'callout note gaoliang gl' },
+  { id: 'sectionBlock', label: '图文排版（section）', icon: SLASH_ICON.sectionBlock, keywords: 'section tuwen tw paiban pb' },
+  { id: 'separator', label: '分割线', icon: SLASH_ICON.separator, keywords: 'hr fenge fg' },
+];
+
+// 语言补全菜单的徽章图标（按语言缩写 + 品牌色，mermaid/math 为特殊渲染围栏）
+export const LANG_BADGES = {
+  mermaid: { text: 'Mm', color: '#3e69d7' },
+  math: { text: '∑', color: '#8250df' },
+  rust: { text: 'Rs', color: '#b7410e' },
+  javascript: { text: 'JS', color: '#c9a227' },
+  jsx: { text: 'JSX', color: '#2f9dbb' },
+  typescript: { text: 'TS', color: '#2f6dbb' },
+  tsx: { text: 'TSX', color: '#2f6dbb' },
+  json: { text: '{}', color: '#8a8a8a' },
+  markdown: { text: 'M↓', color: '#3e69d7' },
+  bash: { text: '>_', color: '#4e9a3d' },
+  c: { text: 'C', color: '#2f6dbb' },
+  cpp: { text: 'C++', color: '#2f6dbb' },
+  csharp: { text: 'C#', color: '#8250df' },
+  css: { text: 'CSS', color: '#2f9dbb' },
+  go: { text: 'Go', color: '#2f9dbb' },
+  html: { text: '<>', color: '#d35d2e' },
+  java: { text: 'Jv', color: '#b7410e' },
+  php: { text: 'php', color: '#6c7fb7' },
+  python: { text: 'Py', color: '#3a6ea5' },
+  ruby: { text: 'Rb', color: '#c0392b' },
+  yaml: { text: 'Y', color: '#8a8a8a' },
+  toml: { text: 'T', color: '#8a8a8a' },
+};
+
+// 列表行的类型徽章（无序/有序/任务，菜单内 ←/→ 或点选）
+export const SLASH_LIST_TYPES = [
+  { id: 'bulletedListItem', icon: SLASH_ICON.bulletedListItem, label: '无序列表' },
+  { id: 'numberedListItem', icon: SLASH_ICON.numberedListItem, label: '有序列表' },
+  { id: 'taskListItem', icon: SLASH_ICON.taskListItem, label: '任务列表' },
+];
+
+// 应用斜杠命令：清空触发文本（/query），按所选语法构建编辑态 DOM 并放置光标；
+// 原子类结构（表格/公式/Mermaid/callout/section）以原文模板进入 raw 编辑，提交时经 Rust 解析。
+// opts.rows/cols 仅表格使用（数据行数/列数）。
+export function applySlashCommand(el, id, opts) {
+  el.innerHTML = '';
+  const rawPre = (text, caretOffset) => {
+    const pre = document.createElement('pre');
+    pre.className = PRE_CLASS;
+    pre.setAttribute('data-raw', '');
+    pre.textContent = text;
+    el.append(pre);
+    placeCaretAtTextOffset(pre, caretOffset);
+    return true;
+  };
+  if (/^h[1-6]$/.test(id)) {
+    const level = Number(id[1]);
+    const h = styled(`h${level}`, '', `whitespace-pre-wrap ${headingClasses[level]}`);
+    el.append(h);
+    placeCursorAtEnd(h);
+    return true;
+  }
+  switch (id) {
+    case 'paragraph': {
+      const p = styled('p', '', P_CLASS);
+      p.innerHTML = '<br>';
+      el.append(p);
+      placeCursorAtEnd(p);
+      return true;
+    }
+    case 'bulletedListItem':
+    case 'numberedListItem': {
+      const ordered = id === 'numberedListItem';
+      const list = styled(ordered ? 'ol' : 'ul', '', ordered ? 'my-2 pl-6 list-decimal' : 'my-2 pl-6 list-disc');
+      list.append(styled('li', '', 'my-0.5'));
+      el.append(list);
+      placeCursorAtEnd(list.querySelector('li'));
+      return true;
+    }
+    case 'taskListItem': {
+      const ul = styled('ul', '', 'my-2 list-none pl-4');
+      const checkbox = document.createElement('input');
+      checkbox.type = 'checkbox';
+      checkbox.className = 'pointer-events-none mt-[5px] shrink-0';
+      checkbox.setAttribute('data-checked', ' ');
+      checkbox.setAttribute('contenteditable', 'false');
+      const li = styled('li', '', 'my-0.5');
+      const row = styled('div', '', 'flex items-start gap-1.5');
+      const body = styled('div', '', 'min-w-0 flex-1');
+      row.append(checkbox, body);
+      li.append(row);
+      ul.append(li);
+      el.append(ul);
+      placeCursorAtEnd(body);
+      return true;
+    }
+    case 'quote': {
+      const quote = document.createElement('blockquote');
+      quote.className = QUOTE_CLASS;
+      quote.append(styled('p', '', P_CLASS));
+      el.append(quote);
+      placeCursorAtEnd(quote.querySelector('p'));
+      return true;
+    }
+    case 'codeBlock': {
+      const pre = document.createElement('pre');
+      pre.className = PRE_CLASS;
+      pre.setAttribute('data-language', '');
+      pre.append(styled('code', ''));
+      el.append(pre);
+      placeCursorAtEnd(pre);
+      return true;
+    }
+    case 'separator': {
+      const hr = styled('hr', '', 'my-4');
+      const next = styled('p', '', P_CLASS);
+      next.innerHTML = '<br>';
+      el.append(hr, next);
+      placeCursorAtEnd(next);
+      return true;
+    }
+    case 'image': {
+      // 独立图片段落语法，光标落在括号内直接输入图片路径
+      const p = styled('p', '', P_CLASS);
+      p.textContent = '![]()';
+      el.append(p);
+      placeCaretAtTextOffset(p, 3);
+      return true;
+    }
+    case 'table': {
+      // 表格模板：行列数来自菜单调节（行 = 数据行，列 = 列数，均 ≥1）
+      const cols = Math.max(1, opts?.cols ?? 2);
+      const rows = Math.max(1, opts?.rows ?? 2);
+      const header = `| ${Array.from({ length: cols }, (_, i) => `列${i + 1}`).join(' | ')} |`;
+      const delimiter = `| ${Array.from({ length: cols }, () => '---').join(' | ')} |`;
+      const body = Array.from({ length: rows }, () => `| ${Array.from({ length: cols }, () => ' ').join(' | ')} |`).join('\n');
+      return rawPre(`${header}\n${delimiter}\n${body}`, 2);
+    }
+    case 'mathBlock':
+      return rawPre('$$\n\n$$', 3);
+    case 'mermaidBlock':
+      return rawPre('```mermaid\n\n```', 11);
+    case 'callout':
+      return rawPre('> [!NOTE]\n> ', '> [!NOTE]\n> '.length);
+    case 'sectionBlock':
+      return rawPre('<section>\n\n</section>', '<section>\n'.length);
+    default:
+      return false;
+  }
+}
+
+// ---------- 列表 Tab 缩进 / Shift+Tab 取消缩进 ----------
+
+// 光标所在列表项按 Tab：缩进为前一项的子项（前一项没有同类型子列表则新建）；
+// Shift+Tab：取消缩进，提升为父项的后续兄弟（后续兄弟一并带走作其子项）。
+// 首项无缩进目标、顶层项无可提升时返回 false（保持原位）。移动节点不丢光标。
+export function handleListTab(el, outdent) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return false;
+  const caret = sel.getRangeAt(0);
+  if (!el.contains(caret.startContainer)) return false;
+  const anchor = caret.startContainer.nodeType === Node.TEXT_NODE ? caret.startContainer.parentElement : caret.startContainer;
+  const li = anchor?.closest('li');
+  if (!li || !el.contains(li)) return false;
+  return outdent ? outdentListItem(li) : indentListItem(li);
+}
+
+// 列表项的内容宿主：任务项为正文 div，普通项为 li 自身
+function liContentHost(li) {
+  return taskItemBody(li) || li;
+}
+
+// 宿主内最后一个同类型子列表（没有则新建并挂在宿主末尾）
+function ensureNestedList(host, tag, className) {
+  let nested = null;
+  for (const child of host.children) {
+    if (child.tagName === tag) nested = child;
+  }
+  if (!nested) {
+    nested = document.createElement(tag.toLowerCase());
+    nested.className = className;
+    host.append(nested);
+  }
+  return nested;
+}
+
+// 光标在容器内的纯文本偏移（<br> 计 1，与 placeCaretAtTextOffset 对齐）；
+// 列表项移动（缩进/提升）前后据此恢复光标，避免浏览器把光标吸附到相邻项末尾
+function caretOffsetIn(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return null;
+  const caret = sel.getRangeAt(0);
+  if (!el.contains(caret.startContainer)) return null;
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.setEnd(caret.startContainer, caret.startOffset);
+  const div = document.createElement('div');
+  div.append(range.cloneContents());
+  return div.textContent.length + div.querySelectorAll('br').length;
+}
+
+function indentListItem(li) {
+  const list = li.parentElement;
+  const prev = li.previousElementSibling;
+  if (!prev || prev.tagName !== 'LI') return false;
+  const offset = caretOffsetIn(li);
+  const nested = ensureNestedList(liContentHost(prev), list.tagName, list.className);
+  nested.append(li);
+  if (offset != null) placeCaretAtTextOffset(li, offset);
+  return true;
+}
+
+function outdentListItem(li) {
+  const list = li.parentElement;
+  const parentLi = list.parentElement?.closest('li');
+  if (!parentLi) return false; // 已是顶层列表项，无可提升
+  const offset = caretOffsetIn(li);
+  // 后续兄弟一并带走，作为当前项的子列表（标准 outdent 行为）
+  const followers = [];
+  let n = li.nextElementSibling;
+  while (n) {
+    followers.push(n);
+    n = n.nextElementSibling;
+  }
+  if (followers.length) {
+    const nested = ensureNestedList(liContentHost(li), list.tagName, list.className);
+    followers.forEach((f) => nested.append(f));
+  }
+  parentLi.after(li);
+  if (!list.children.length) list.remove();
+  if (offset != null) placeCaretAtTextOffset(li, offset);
+  return true;
+}
+
+// ---------- 列表内 Enter（Typora 式续项/退出列表） ----------
+
+// 任务项的正文容器（勾选框旁的 div）；非任务项返回 null
+function taskItemBody(li) {
+  const row = li.querySelector(':scope > div');
+  const input = row?.firstElementChild;
+  if (row && input?.tagName === 'INPUT' && input.getAttribute('type') === 'checkbox' && input.closest('li') === li) {
+    return input.nextElementSibling || null;
+  }
+  return null;
+}
+
+// 列表项标题部分是否为空（忽略嵌套子列表与勾选框）
+function liTitleBlank(li, host) {
+  const clone = host.cloneNode(true);
+  clone.querySelectorAll('ul, ol, input').forEach((n) => n.remove());
+  return clone.textContent.trim() === '';
+}
+
+// 编辑容器内、光标在列表项中按 Enter：
+// 非空项 → 在光标处拆出同类型新列表项（任务项补勾选框结构），嵌套子列表留在原项；
+// 空项（无嵌套子列表）→ 退出列表：空项替换为空段落，列表在该处断开，光标进入段落。
+// 返回是否已处理；未处理时调用方走既有拆分逻辑。提交序列化仍由 Rust 统一完成。
+export function handleListEnter(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const caret = sel.getRangeAt(0);
+  if (!el.contains(caret.startContainer)) return false;
+  const anchor = caret.startContainer.nodeType === Node.TEXT_NODE ? caret.startContainer.parentElement : caret.startContainer;
+  const li = anchor?.closest('li');
+  if (!li || !el.contains(li)) return false;
+
+  const body = taskItemBody(li);
+  const host = body || li;
+  // 含嵌套子列表的空标题项不退出（避免子列表随空项丢失），按普通拆分处理
+  if (liTitleBlank(li, host) && !host.querySelector('ul, ol')) {
+    // 空项回车：嵌套则提升一层（回到父项的后续兄弟）；已是顶层则退出列表转为段落
+    if (!outdentListItem(li)) exitListAtEmptyItem(li);
+  } else {
+    splitListItemAtCaret(li, host, caret, !!body);
+  }
+  return true;
+}
+
+// 在光标处拆分列表项：光标后的行内内容移入新项，嵌套子列表留在原项
+function splitListItemAtCaret(li, host, caret, isTask) {
+  // 抽取范围终点：行内内容末尾（首个嵌套子列表之前）
+  let endOffset = host.childNodes.length;
+  for (let i = 0; i < host.childNodes.length; i++) {
+    const n = host.childNodes[i];
+    if (n.nodeType === Node.ELEMENT_NODE && (n.tagName === 'UL' || n.tagName === 'OL')) {
+      endOffset = i;
+      break;
+    }
+  }
+  const range = document.createRange();
+  range.setStart(caret.startContainer, caret.startOffset);
+  range.setEnd(host, endOffset);
+  const frag = range.extractContents();
+
+  const newLi = document.createElement('li');
+  newLi.className = 'my-0.5';
+  let cursorHost = newLi;
+  if (isTask) {
+    // 新任务项：补上勾选框与正文结构（与 blockToHtml 的任务项 DOM 一致）
+    newLi.innerHTML = `<div class="flex items-start gap-1.5"><input type="checkbox" class="pointer-events-none mt-[5px] shrink-0" data-checked=" " contenteditable="false"><div class="min-w-0 flex-1"></div></div>`;
+    cursorHost = newLi.querySelector('div.min-w-0');
+  }
+  cursorHost.append(frag);
+  if (!cursorHost.textContent && !cursorHost.querySelector('img, input, br')) cursorHost.innerHTML = '<br>';
+  li.after(newLi);
+  placeCursorAtStart(cursorHost);
+}
+
+// 空列表项退出列表：空项替换为空段落；列表在该处断开为前后两段（若有）
+function exitListAtEmptyItem(li) {
+  const ul = li.parentElement;
+  const p = document.createElement('p');
+  p.className = `blk-paragraph ${P_CLASS}`;
+  p.innerHTML = '<br>';
+  const items = [...ul.children].filter((n) => n.tagName === 'LI');
+  const index = items.indexOf(li);
+  if (items.length === 1) {
+    ul.replaceWith(p);
+  } else if (index === 0) {
+    li.remove();
+    ul.before(p);
+  } else if (index === items.length - 1) {
+    li.remove();
+    ul.after(p);
+  } else {
+    const afterUl = ul.cloneNode(false);
+    let n = li.nextElementSibling;
+    while (n) {
+      const next = n.nextElementSibling;
+      afterUl.append(n);
+      n = next;
+    }
+    li.remove();
+    ul.after(p, afterUl);
+  }
+  placeCursorAtStart(p);
+}
+
+// 光标紧贴任务勾选框之后（任务行内、勾选框前无其他内容）时删除该勾选框：
+// 任务项降为普通列表项，行包装展开、正文节点直接移入 li（与普通列表项 DOM 结构一致，
+// 提交提取才不丢嵌套），光标位置不变。返回是否已处理——浏览器原生退格无法越过
+// contenteditable=false 的勾选框，不处理则表现为「勾选框后按删除无反应」。
+export function deleteTaskCheckboxBeforeCaret(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const caret = sel.getRangeAt(0);
+  if (!el.contains(caret.startContainer)) return false;
+  let node = caret.startContainer.nodeType === Node.TEXT_NODE ? caret.startContainer.parentElement : caret.startContainer;
+  for (let cur = node; cur && cur !== el; cur = cur.parentElement) {
+    const first = cur.firstElementChild;
+    if (!first || first.tagName !== 'INPUT' || first.getAttribute('type') !== 'checkbox') continue;
+    // cur 是任务行容器：勾选框之后、光标之前不能有任何文本/有意义元素
+    const before = document.createRange();
+    before.selectNodeContents(cur);
+    before.setEnd(caret.startContainer, caret.startOffset);
+    const div = document.createElement('div');
+    div.append(before.cloneContents());
+    div.querySelectorAll('input').forEach((n) => n.remove());
+    if (div.textContent !== '' || div.querySelector('img, hr, br, table, pre')) return false;
+    // 删除勾选框并展开行包装（任务行 div → li 直挂正文节点）
+    const li = cur.closest('li');
+    const body = first.nextElementSibling;
+    first.remove();
+    if (li && body && cur !== li) {
+      while (body.firstChild) li.insertBefore(body.firstChild, cur);
+      cur.remove();
+    }
+    return true;
+  }
+  return false;
+}
+
+// 光标是否处于编辑容器内容的最前面（前方无文本、无有意义元素；任务勾选框不算内容）
+export function isCaretAtStart(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const caret = sel.getRangeAt(0);
+  if (!el.contains(caret.startContainer)) return false;
+  const before = document.createRange();
+  before.selectNodeContents(el);
+  before.setEnd(caret.startContainer, caret.startOffset);
+  const div = document.createElement('div');
+  div.append(before.cloneContents());
+  div.querySelectorAll('input').forEach((n) => n.remove());
+  return div.textContent === '' && !div.querySelector('img, hr, br, table, pre');
+}
+
+// 按纯文本偏移放置光标（<br> 记 1 个单位，与模型文本中的 \n 对齐；越界落到末尾）
+export function placeCaretAtTextOffset(el, offset) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
+  const sel = window.getSelection();
+  const range = document.createRange();
+  let remaining = Math.max(0, offset);
+  let node;
+  while ((node = walker.nextNode())) {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      if (node.tagName === 'BR') {
+        if (remaining === 0) {
+          range.setStartBefore(node);
+          range.collapse(true);
+          sel.removeAllRanges();
+          sel.addRange(range);
+          return;
+        }
+        remaining -= 1;
+      }
+      continue;
+    }
+    const len = node.textContent.length;
+    if (remaining <= len) {
+      range.setStart(node, remaining);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+      return;
+    }
+    remaining -= len;
+  }
+  placeCursorAtEnd(el);
+}
+
+// 行内树 → 单段落 DTO（借 Rust serialize_markdown 生成行内 Markdown 文本，如块首退格合并）
+export function paragraphDtoFromTree(title) {
+  return makeBlock({ type: 'paragraph' }, { title });
+}
+
+// 块首退格降级：标题/引用/列表项等样式块的编辑态 DOM 替换为段落（行内内容保留），
+// 嵌套子块（子列表、引用的后续段）提升为顶层块跟在段落后，光标置开头。
+// 仅改 DOM；Markdown 源在提交时由 Rust 序列化统一更新。
+export function demoteEditableToParagraph(el, dto) {
+  const p = document.createElement('p');
+  p.className = `blk-paragraph ${P_CLASS}`;
+  p.innerHTML = inlineToHtml(dto.title) || '<br>';
+  el.replaceChildren(p);
+  for (const child of dto.children || []) {
+    el.insertAdjacentHTML('beforeend', blockToHtml(child));
+  }
+  placeCursorAtStart(el);
+}
 
 export function placeCursorAtEnd(el) {
   // 深入到最后一个叶子元素，光标落在其内容末尾

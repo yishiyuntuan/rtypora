@@ -63,15 +63,29 @@ pub fn serialize_markdown(blocks: Vec<model::BlockDto>) -> String {
     block::tree::serialize_blocks(&nodes)
 }
 
-/// 任务列表勾选：替换源码中首个 `[ ]`/`[x]` 标记，返回替换后的源码。
+/// 任务列表勾选：把源码中第 occurrence 个（0 基，默认首个）任务标记替换为勾选状态。
+/// occurrence 为任务项在块树 DFS 前序中的序号（嵌套任务项经根块源码定位）；
+/// 同一轮取三种写法中位置最早者，兼容 `[ ]`/`[x]`/`[X]` 混排。
 /// Markdown 文本的增删改一律在 Rust 端完成，前端只做切片拼接。
 #[tauri::command]
-pub fn toggle_task_markdown(source: &str, checked: bool) -> String {
+pub fn toggle_task_markdown(source: &str, checked: bool, occurrence: Option<usize>) -> String {
     let marker = if checked { "[x]" } else { "[ ]" };
-    for pat in ["[ ]", "[x]", "[X]"] {
-        if let Some(pos) = source.find(pat) {
-            return format!("{}{}{}", &source[..pos], marker, &source[pos + 3..]);
+    let target = occurrence.unwrap_or(0);
+    let mut rest = source;
+    let mut offset = 0usize;
+    for seen in 0..=target {
+        // 本轮最早出现的任务标记位置（三种写法取最小）
+        let pos = ["[ ]", "[x]", "[X]"]
+            .iter()
+            .filter_map(|pat| rest.find(pat))
+            .min();
+        let Some(pos) = pos else { break };
+        if seen == target {
+            let abs = offset + pos;
+            return format!("{}{}{}", &source[..abs], marker, &source[abs + 3..]);
         }
+        offset += pos + 3;
+        rest = &rest[pos + 3..];
     }
     source.to_string()
 }
@@ -148,10 +162,17 @@ fn is_cjk_char(ch: char) -> bool {
     )
 }
 
-/// 块级 Markdown 快捷输入检测（`# `、`- `、`1. `、`> `、`- [ ] `、``` fence、`---`），
+/// 块级 Markdown 快捷输入检测（`# `、`- `、`1. `、`> `、`- [ ] `、``` fence、`---`、`<section>`），
 /// 返回目标块类型与标记前缀长度；前端据此做 DOM 结构转换。
 #[tauri::command]
 pub fn detect_block_shortcut(line: &str) -> Option<ShortcutHit> {
+    // `<section>` 图文排版容器（仅开标签行；前端回车补全闭合标签进入原文编辑）
+    if line.trim().eq_ignore_ascii_case("<section>") {
+        return Some(ShortcutHit {
+            kind: model::BlockKindDto::SectionBlock,
+            prefix_len: line.encode_utf16().count(),
+        });
+    }
     // 围栏代码块（``` 或 ~~~，可带语言标记）
     if let Some(fence) = block::document::parse_opening_fence(line) {
         return Some(ShortcutHit {

@@ -56,9 +56,9 @@ pub fn read_markdown_file(path: &str) -> Option<OpenedFile> {
     })
 }
 
-/// 列出目录内容：文件夹在前，文件在后，各自按名称排序（不递归）。
+/// 列出目录内容：文件夹在前，文件在后，各自按名称排序（sort: "asc" 默认升序 / "desc" 降序；不递归）。
 #[tauri::command]
-pub fn list_dir(path: &str) -> Vec<DirEntry> {
+pub fn list_dir(path: &str, sort: Option<&str>) -> Vec<DirEntry> {
     let mut dirs = Vec::new();
     let mut files = Vec::new();
     let Ok(entries) = std::fs::read_dir(path) else {
@@ -83,7 +83,11 @@ pub fn list_dir(path: &str) -> Vec<DirEntry> {
             files.push(item);
         }
     }
-    let by_name = |a: &DirEntry, b: &DirEntry| a.name.to_lowercase().cmp(&b.name.to_lowercase());
+    let desc = matches!(sort, Some("desc"));
+    let by_name = |a: &DirEntry, b: &DirEntry| {
+        let ord = a.name.to_lowercase().cmp(&b.name.to_lowercase());
+        if desc { ord.reverse() } else { ord }
+    };
     dirs.sort_by(by_name);
     files.sort_by(by_name);
     dirs.extend(files);
@@ -183,16 +187,58 @@ pub fn save_pasted_image(
     })
 }
 
-/// 导出 HTML：弹出保存对话框（.html 过滤器）并写入；取消返回 None。
+/// 源 Markdown 文件名 → 导出 HTML 建议文件名（大小写不敏感去除 .md/.markdown 后缀）。
+pub fn html_export_name(source_name: &str) -> String {
+    let lower = source_name.to_ascii_lowercase();
+    let stem = if lower.ends_with(".markdown") {
+        &source_name[..source_name.len() - ".markdown".len()]
+    } else if lower.ends_with(".md") {
+        &source_name[..source_name.len() - ".md".len()]
+    } else {
+        source_name
+    };
+    format!("{stem}.html")
+}
+
+/// 导出 HTML：弹出保存对话框（.html 过滤器，建议文件名由源文件名推导）并写入；取消返回 None。
 #[tauri::command]
-pub fn save_html_as(app: tauri::AppHandle, content: &str, suggested_name: &str) -> Option<Result<String, String>> {
+pub fn save_html_as(app: tauri::AppHandle, content: &str, source_name: &str) -> Option<Result<String, String>> {
     let picked = app
         .dialog()
         .file()
         .add_filter("HTML", &["html", "htm"])
-        .set_file_name(suggested_name)
+        .set_file_name(html_export_name(source_name))
         .blocking_save_file()?;
     let path = picked.into_path().ok()?;
     let path_str = path.to_string_lossy().to_string();
     Some(std::fs::write(&path, content).map(|_| path_str).map_err(|e| e.to_string()))
+}
+
+/// 选择文件夹对话框；取消返回 None。
+#[tauri::command]
+pub fn pick_folder(app: tauri::AppHandle) -> Option<String> {
+    let picked = app.dialog().file().blocking_pick_folder()?;
+    Some(picked.into_path().ok()?.to_string_lossy().to_string())
+}
+
+/// 在当前文件夹创建新的 Markdown 文件（untitled.md，重名自动编号），返回路径。
+#[tauri::command]
+pub fn create_markdown_file(dir: &str) -> Option<String> {
+    let dir = std::path::Path::new(dir);
+    if !dir.is_dir() {
+        return None;
+    }
+    for i in 0..100 {
+        let name = if i == 0 {
+            "untitled.md".to_string()
+        } else {
+            format!("untitled-{i}.md")
+        };
+        let path = dir.join(&name);
+        if !path.exists() {
+            std::fs::write(&path, "").ok()?;
+            return Some(path.to_string_lossy().to_string());
+        }
+    }
+    None
 }

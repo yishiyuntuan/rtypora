@@ -17,10 +17,11 @@
   background: var(--t-editor-background);
   color: var(--t-text-default);
   font-family: var(--t-font-family);
-  font-size: var(--t-text-size);
-  line-height: var(--t-text-line-height);
+  font-size: var(--t-text-size-pref, var(--t-text-size));
+  line-height: var(--t-text-line-height-pref, var(--t-text-line-height));
   caret-color: var(--t-cursor);
-  padding: var(--t-editor-padding);
+  /* 左右 32px（--t-editor-padding），上下减半 16px */
+  padding: 16px var(--t-editor-padding-pref, var(--t-editor-padding));
 }
 .t-root ::selection {
   background: var(--t-selection);
@@ -60,9 +61,9 @@
 .t-root sub {
   font-size: calc(1em * var(--t-script-scale));
 }
-/* 内容列宽（dimensions.content_max_width，默认 none 即全宽） */
+/* 内容列宽（dimensions.content_max_width，默认 none 即全宽；--t-*-pref 为偏好覆盖层） */
 .t-root .t-measure {
-  max-width: var(--t-content-max-width);
+  max-width: var(--t-content-max-width-pref, var(--t-content-max-width));
   margin-inline: auto;
 }
 
@@ -104,6 +105,14 @@
 }
 .t-root .md-pre code {
   background: transparent;
+}
+/* 代码块行号槽（横向滚动时吸附左侧；blocks.codeBlock 的后代键 ".md-code-gutter" 可覆盖） */
+.t-root .md-code-gutter {
+  position: sticky;
+  left: 0;
+  background: var(--t-code-bg);
+  color: var(--t-text-placeholder);
+  border-color: var(--t-table-border);
 }
 
 /* 语法高亮：tree-sitter span 语义类（11 个规范类）→ 主题 code_syntax_* 变量（仅代码块） */
@@ -175,6 +184,35 @@
   height: auto;
 }
 
+/* section 图文排版（Mdmdt 式 grid 布局：每个直接子元素为一列，列宽按内容自动分配；
+   列内嵌套 span 为多段落；列/图片可用 style="width:200px" 单独定宽，建议具体值勿用百分比。
+   主题可经 blocks.sectionBlock 的后代选择器（"> section"）覆盖间距/对齐等） */
+.t-root .md-section section {
+  display: grid;
+  grid-gap: 16px;
+  justify-content: flex-start;
+  align-items: center;
+  grid-template-columns: repeat(auto-fit, minmax(16px, auto));
+  grid-auto-rows: minmax(16px, auto);
+}
+.t-root .md-section section img {
+  display: block;
+  max-width: 100%;
+  border-radius: 8px;
+}
+.t-root .md-section section span {
+  display: block;
+}
+.t-root .md-section section > span > span {
+  margin: 8px 0;
+}
+.t-root .md-section section > span > span:first-child {
+  margin-top: 0;
+}
+.t-root .md-section section > span > span:last-child {
+  margin-bottom: 0;
+}
+
 /* 数学公式（ratex SVG）：行内公式原子化行内排列（一行多个公式从左到右） */
 .t-root .math-view {
   display: inline-block;
@@ -188,6 +226,12 @@
   display: block;
   text-align: center;
   margin: 0.5em 0;
+}
+/* 展示公式编号（blocks.mathBlock 的后代键 ".md-eq-number" 可覆盖） */
+.t-root .md-eq-number {
+  color: var(--t-text-placeholder);
+  font-size: 0.9em;
+  user-select: none;
 }
 
 /* callout 五变体 */
@@ -231,20 +275,142 @@
   transition: background 0.3s;
 }
 
-/* 状态栏 */
+/* 状态栏（默认融入编辑器背景，边框透明；主题可经 status_bar_background/status_bar_border 自定义） */
 .t-statusbar {
+  background: var(--t-status-bar-background);
+  color: var(--t-status-bar-text);
+  border-top: 1px solid var(--t-status-bar-border);
+}
+/* 主题下拉：闭合与展开都跟随主题，避免原生白底闪变 */
+.t-statusbar select,
+.t-statusbar select option {
   background: var(--t-status-bar-background);
   color: var(--t-status-bar-text);
 }
 .t-statusbar .t-btn {
-  transition: background 0.08s;
+  transition: background 0.08s, color 0.08s;
 }
-.t-statusbar .t-btn:hover,
-.t-statusbar .t-btn.active {
+.t-statusbar .t-btn:hover {
   background: var(--t-status-bar-button-hover);
+}
+/* 开关型按钮的开启态：指示色高亮 + 图标着色，与悬停态明确区分（侧边栏/源码/行号/自动保存） */
+.t-statusbar .t-btn.active {
+  background: color-mix(in srgb, var(--t-tab-indicator) 18%, transparent);
+  color: var(--t-tab-indicator);
+}
+
+/* 斜杠命令菜单（/ 召唤语法菜单；blocks.slashMenu / slashMenuItemActive 可定制。
+   菜单经 Teleport 挂在 .t-app 包装内，blocks 作用域规则同样生效） */
+.md-slash-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 200px;
+  max-height: 264px;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--t-editor-background);
+  color: var(--t-text-default);
+  border: 1px solid var(--t-table-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  font-size: 13px;
+  user-select: none;
+}
+.md-slash-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+/* 选中项：主题指示色的浅混合，明暗主题下都清晰可见（slashMenuItemActive 可覆盖） */
+.md-slash-item-active {
+  background: color-mix(in srgb, var(--t-tab-indicator) 16%, transparent);
+}
+.md-slash-icon {
+  width: 22px;
+  text-align: center;
+  color: var(--t-text-placeholder);
+}
+.md-slash-icon svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+  margin: 0 auto;
+}
+/* 标题行的 H1-H6 徽章 */
+.md-slash-levels {
+  display: flex;
+  gap: 3px;
+}
+.md-slash-level {
+  min-width: 24px;
+  padding: 1px 3px;
+  border: 1px solid var(--t-table-border);
+  border-radius: 4px;
+  text-align: center;
+  font-family: var(--t-code-font-family);
+  font-size: 11px;
+  color: var(--t-text-placeholder);
+}
+.md-slash-level-active {
+  background: var(--t-tab-indicator);
+  border-color: var(--t-tab-indicator);
+  color: var(--t-editor-background);
+}
+/* 列表行的图标徽章与表格的行列数量徽章 */
+.md-slash-level-icon {
+  padding: 2px 4px;
+}
+.md-slash-level-icon svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+.md-slash-level-icon.md-slash-level-active {
+  color: var(--t-editor-background);
+}
+.md-slash-dim {
+  padding: 1px 6px;
+  border: 1px solid var(--t-table-border);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--t-text-placeholder);
+}
+.md-slash-dim.md-slash-level-active {
+  background: var(--t-tab-indicator);
+  border-color: var(--t-tab-indicator);
+  color: var(--t-editor-background);
+}
+.md-slash-dim-x {
+  color: var(--t-text-placeholder);
+  font-size: 11px;
+}
+.md-slash-empty {
+  padding: 6px 8px;
+  color: var(--t-text-placeholder);
+}
+/* 语言补全菜单的缩写徽章（颜色按语言品牌色内联传入） */
+.md-lang-badge {
+  display: inline-block;
+  min-width: 22px;
+  text-align: center;
+  font-family: var(--t-code-font-family);
+  font-size: 10px;
+  font-weight: 700;
 }
 
 /* 通用弱化文字（占位提示、列表标记、脚注等） */
 .t-dim {
   color: var(--t-text-placeholder);
+}
+
+/* 侧边栏标签页：单一指示条颜色，仅活跃标签显示，带切换过渡动画 */
+.t-tab {
+  border-bottom: 2px solid transparent;
+  transition: background-color 0.1s ease, border-color 0.2s ease;
+}
+.t-tab-active {
+  border-bottom-color: var(--t-tab-indicator);
 }

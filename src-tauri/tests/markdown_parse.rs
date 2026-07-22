@@ -102,6 +102,155 @@ fn 列表项嵌套子块() {
 }
 
 #[test]
+fn 公式ams编号环境标记() {
+    // align 环境 → AMS 编号；星号变体与普通公式不编号；非公式块不携带该字段
+    let align = parse("$$\n\\begin{align}\ny &= x\\\\\n&= z\n\\end{align}\n$$\n");
+    assert!(matches!(align[0].kind, BlockKindDto::MathBlock));
+    assert_eq!(align[0].math_numbered, Some(true));
+
+    let star = parse("$$\n\\begin{align*}\ny &= x\n\\end{align*}\n$$\n");
+    assert_eq!(star[0].math_numbered, Some(false));
+
+    let plain = parse("$$\nx = 1\n$$\n");
+    assert_eq!(plain[0].math_numbered, Some(false));
+
+    let p = parse("普通段落\n");
+    assert_eq!(p[0].math_numbered, None);
+}
+
+#[test]
+fn section图文排版块() {
+    // <section> 容器分类为 SectionBlock（DTO 层）；普通 html 块不受影响
+    let md = "<section>\n<img src=\"./img/a.png\"></img>\n<span>文字</span>\n</section>\n";
+    let blocks = parse(md);
+    assert_eq!(blocks.len(), 1);
+    assert!(matches!(blocks[0].kind, BlockKindDto::SectionBlock));
+    let raw = blocks[0].raw_fallback.as_deref().unwrap_or("");
+    assert!(raw.contains("<img src=\"./img/a.png\"></img>"));
+
+    let div = parse("<div>\n<p>x</p>\n</div>\n");
+    assert!(matches!(div[0].kind, BlockKindDto::HtmlBlock));
+
+    // 含空行的最小容器（「输入 <section> 回车」钩子产生的形态）同样解析为单块
+    let minimal = parse("<section>\n\n</section>\n");
+    assert_eq!(minimal.len(), 1);
+    assert!(matches!(minimal[0].kind, BlockKindDto::SectionBlock));
+
+    // 往返：SectionBlock DTO 序列化按 HtmlBlock 原文透传，重解析仍分类为 SectionBlock
+    let rt = markdown::parse_markdown(&markdown::serialize_markdown(blocks));
+    assert!(matches!(rt[0].kind, BlockKindDto::SectionBlock));
+    assert_eq!(rt[0].raw_fallback.as_deref(), Some(md.trim_end_matches('\n')));
+}
+
+#[test]
+fn 列表项标记行开围栏() {
+    // 回归：围栏开在列表标记行（`1. ```html`）时，续行内容必须收集为该项的代码块子块，
+    // 内容（如 <section>）不得逃逸为独立块
+    let md = "1. ```html\n   <section>\n            \n   </section>\n   ```\n";
+    let blocks = parse(md);
+    assert_eq!(blocks.len(), 1, "整体应为一个列表项: {blocks:?}");
+    assert!(matches!(blocks[0].kind, BlockKindDto::NumberedListItem));
+    assert_eq!(title_text(&blocks[0]), "", "标题应为空（围栏行不占标题）");
+    assert_eq!(blocks[0].children.len(), 1);
+    match &blocks[0].children[0].kind {
+        BlockKindDto::CodeBlock { language } => assert_eq!(language.as_deref(), Some("html")),
+        other => panic!("应为代码块子块: {other:?}"),
+    }
+    assert_eq!(title_text(&blocks[0].children[0]), "<section>\n\n</section>");
+
+    // 往返：结构稳定（空标题 + 代码块子块）
+    let rt = markdown::parse_markdown(&markdown::serialize_markdown(blocks));
+    assert_eq!(rt.len(), 1);
+    assert!(matches!(rt[0].kind, BlockKindDto::NumberedListItem));
+    assert!(matches!(rt[0].children[0].kind, BlockKindDto::CodeBlock { .. }));
+    assert_eq!(title_text(&rt[0].children[0]), "<section>\n\n</section>");
+}
+
+#[test]
+fn 列表项后分割线不误判setext() {
+    // 回归：列表项后的 --- 是分割线，不是 setext 标题下划线
+    let blocks = parse("- [ ] Something is DONE.\n---\n");
+    assert_eq!(blocks.len(), 2);
+    assert!(matches!(blocks[0].kind, BlockKindDto::TaskListItem { checked: false }));
+    assert_eq!(title_text(&blocks[0]), "Something is DONE.");
+    assert!(matches!(blocks[1].kind, BlockKindDto::Separator));
+
+    let blocks = parse("- 列表项\n---\n");
+    assert_eq!(blocks.len(), 2);
+    assert!(matches!(blocks[0].kind, BlockKindDto::BulletedListItem));
+    assert!(matches!(blocks[1].kind, BlockKindDto::Separator));
+
+    // 普通段落的 setext 标题不受影响
+    let blocks = parse("段落文本\n---\n");
+    assert_eq!(blocks.len(), 1);
+    assert!(matches!(blocks[0].kind, BlockKindDto::Heading { level: 2 }));
+    assert_eq!(title_text(&blocks[0]), "段落文本");
+}
+
+#[test]
+fn 嵌套列表项后分割线不被吞() {
+    // 回归：无空行时 --- 不被吸入嵌套任务项标题，而是结束列表成为分割线
+    let md = "- This is Item 2.\n    - [x] Not TODO.\n    - [ ] DONE.\n---\n";
+    let blocks = parse(md);
+    assert_eq!(blocks.len(), 2);
+    let item = &blocks[0];
+    assert!(matches!(item.kind, BlockKindDto::BulletedListItem));
+    assert_eq!(item.children.len(), 2);
+    assert!(matches!(item.children[1].kind, BlockKindDto::TaskListItem { checked: false }));
+    assert_eq!(title_text(&item.children[1]), "DONE.");
+    assert!(matches!(blocks[1].kind, BlockKindDto::Separator));
+}
+
+#[test]
+fn 列表项内缩进分割线成子块() {
+    // 内容级缩进的 --- 是项内分割线子块
+    let md = "- 列表项\n  ---\n";
+    let blocks = parse(md);
+    assert_eq!(blocks.len(), 1);
+    assert!(matches!(blocks[0].kind, BlockKindDto::BulletedListItem));
+    assert!(blocks[0].children.iter().any(|c| matches!(c.kind, BlockKindDto::Separator)));
+}
+
+#[test]
+fn section快捷判定() {
+    let hit = markdown::detect_block_shortcut("<section>").expect("应命中 section");
+    assert!(matches!(hit.kind, BlockKindDto::SectionBlock));
+    assert!(markdown::detect_block_shortcut("<div>").is_none());
+    assert!(markdown::detect_block_shortcut("<section>x</section>").is_none());
+}
+
+#[test]
+fn 深层嵌套列表往返稳定() {
+    // 回归：混合有序/无序/任务三层嵌套，序列化后重解析结构必须一致
+    //（前端编辑提交 = DOM → DTO → serialize → 增量重解析，结构错乱源于此链路）
+    let md = "- 列表 A\n- 列表 B\n    1. Item 1.\n    2. Item 2.\n        - [ ] Not TODO.\n        - [x] DONE.\n";
+    let blocks = parse(md);
+    assert_eq!(blocks.len(), 2);
+    let b = &blocks[1];
+    assert!(matches!(b.kind, BlockKindDto::BulletedListItem));
+    assert_eq!(b.children.len(), 2);
+    assert!(matches!(b.children[0].kind, BlockKindDto::NumberedListItem));
+    assert!(matches!(b.children[1].kind, BlockKindDto::NumberedListItem));
+    assert_eq!(b.children[1].children.len(), 2);
+    assert!(matches!(b.children[1].children[0].kind, BlockKindDto::TaskListItem { checked: false }));
+    assert!(matches!(b.children[1].children[1].kind, BlockKindDto::TaskListItem { checked: true }));
+
+    let reparsed = markdown::parse_markdown(&markdown::serialize_markdown(blocks));
+    assert_eq!(reparsed.len(), 2);
+    let b = &reparsed[1];
+    assert!(matches!(b.kind, BlockKindDto::BulletedListItem));
+    assert_eq!(b.children.len(), 2);
+    assert!(matches!(b.children[0].kind, BlockKindDto::NumberedListItem));
+    assert!(matches!(b.children[1].kind, BlockKindDto::NumberedListItem));
+    assert_eq!(b.children[1].children.len(), 2);
+    assert!(matches!(b.children[1].children[0].kind, BlockKindDto::TaskListItem { checked: false }));
+    assert!(matches!(b.children[1].children[1].kind, BlockKindDto::TaskListItem { checked: true }));
+    assert_eq!(title_text(&b.children[1].children[0]), "Not TODO.");
+    assert_eq!(title_text(&b.children[1].children[1]), "DONE.");
+}
+
+
+#[test]
 fn 表格() {
     // 注意：velotype 表格分隔行要求至少 3 个连字符（比 GFM 严格）
     let md = "| 名称 | 数量 |\n|:-----|-----:|\n| 苹果 | 3 |\n";
@@ -250,10 +399,27 @@ fn dto序列化为markdown() {
 
 #[test]
 fn 任务勾选切换() {
-    assert_eq!(markdown::toggle_task_markdown("- [ ] 待办", true), "- [x] 待办");
-    assert_eq!(markdown::toggle_task_markdown("- [x] 待办", false), "- [ ] 待办");
+    assert_eq!(markdown::toggle_task_markdown("- [ ] 待办", true, None), "- [x] 待办");
+    assert_eq!(markdown::toggle_task_markdown("- [x] 待办", false, None), "- [ ] 待办");
     // 无标记时原样返回
-    assert_eq!(markdown::toggle_task_markdown("普通段落", true), "普通段落");
+    assert_eq!(markdown::toggle_task_markdown("普通段落", true, None), "普通段落");
+    // 按序号切换（嵌套任务项定位）：第 0/1/2 个标记各自独立，互不影响
+    let src = "- [x] 已完成\n  - [ ] 子任务一\n  - [ ] 子任务二";
+    assert_eq!(
+        markdown::toggle_task_markdown(src, false, Some(0)),
+        "- [ ] 已完成\n  - [ ] 子任务一\n  - [ ] 子任务二",
+        "切换第 0 个标记（兼容混排：首个标记是 [x] 也能命中）"
+    );
+    assert_eq!(
+        markdown::toggle_task_markdown(src, true, Some(1)),
+        "- [x] 已完成\n  - [x] 子任务一\n  - [ ] 子任务二"
+    );
+    assert_eq!(
+        markdown::toggle_task_markdown(src, true, Some(2)),
+        "- [x] 已完成\n  - [ ] 子任务一\n  - [x] 子任务二"
+    );
+    // 序号越界原样返回
+    assert_eq!(markdown::toggle_task_markdown(src, true, Some(9)), src);
 }
 
 #[test]

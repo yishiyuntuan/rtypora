@@ -1,20 +1,34 @@
 <script setup>
-import { ref, computed, watch, nextTick, inject } from 'vue';
+import { ref, computed, watch, nextTick, inject, provide } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import BlockView from './BlockView.vue';
+import SlashMenu from './SlashMenu.vue';
 import {
   blockToHtml,
   domToBlockDtos,
   emptyParagraphHtml,
   applyMarkdownShortcuts,
   convertFenceToCodeBlock,
+  convertSectionToHtmlBlock,
+  SLASH_ITEMS,
+  SLASH_LIST_TYPES,
+  LANG_BADGES,
+  applySlashCommand,
   placeCursorAtEnd,
   placeCursorAtStart,
+  placeCaretAtTextOffset,
   insertTextAtCursor,
   insertLineBreakAtCursor,
   numberedOrdinals,
+  isCaretAtStart,
+  deleteTaskCheckboxBeforeCaret,
+  handleListEnter,
+  handleListTab,
+  paragraphDtoFromTree,
+  demoteEditableToParagraph,
+  plainText,
 } from '../utils/wysiwyg.js';
-import { getPref } from '../utils/prefs.js';
+import { getPref, prefsVersion } from '../utils/prefs.js';
 
 // 双模式编辑器：sourceMode 为 Markdown 原文编辑，否则为所见即所得（Typora 式就地编辑）。
 // 全文 Markdown 字符串是唯一数据源；块树由 Rust 命令 parse_markdown 解析得到。
@@ -34,6 +48,187 @@ const isDirty = computed(() => content.value !== savedContent.value);
 const blocks = ref([]);
 // 根块的有序列表序号表（id -> 1 基序号）
 const rootOrdinals = computed(() => numberedOrdinals(blocks.value));
+// 展示公式编号表（块 id -> 1 基序号）：AMS 编号环境判定在 Rust（mathNumbered 字段），
+// 编号序列按偏好 math_numbering（off/ams/all）生成（视图层），经 provide 供块渲染层取用
+const mathNumbers = computed(() => {
+  prefsVersion.value;
+  const map = new Map();
+  const mode = getPref('math_numbering');
+  if (mode === 'off') return map;
+  let n = 0;
+  for (const b of blocks.value) {
+    if (b.type !== 'mathBlock') continue;
+    if (mode === 'ams' && !b.mathNumbered) continue;
+    n += 1;
+    map.set(b.id, n);
+  }
+  return map;
+});
+provide('mathNumbers', mathNumbers);
+
+// ---------- 斜杠命令菜单（/ 召唤 Markdown 语法菜单） ----------
+const slashOpen = ref(false);
+const slashQuery = ref('');
+const slashIndex = ref(0);
+// 标题行当前级别（1-6，←/→ 或悬停 H 徽章调整）
+const slashLevel = ref(1);
+// 列表行当前类型（0 无序 / 1 有序 / 2 任务，←/→ 或悬停徽章调整）
+const slashListType = ref(0);
+// 表格行行列数量与当前调节字段（'item' 表格项本身 / 'rows' 行数 / 'cols' 列数；
+// 'item' 时 ↑/↓ 为菜单导航，←/→ 在 项→行→列 间循环，进入字段后 ↑/↓ 增减）
+const slashTableRows = ref(2);
+const slashTableCols = ref(2);
+const slashTableField = ref('item');
+const slashPos = ref({ left: 0, top: 0 });
+
+// 按查询串过滤菜单项（匹配中文名 / 拼音与英文别名 / id）
+const slashItems = computed(() => {
+  const q = slashQuery.value.trim().toLowerCase();
+  if (!q) return SLASH_ITEMS;
+  return SLASH_ITEMS.filter(
+    (item) =>
+      item.label.toLowerCase().includes(q) || item.keywords.includes(q) || item.id.toLowerCase().includes(q),
+  );
+});
+
+// 光标处的斜杠上下文：块内文本（光标前）以 / 开头时返回查询串与菜单位置；
+// 代码/原文 pre 编辑内不触发
+function slashContext() {
+  const el = currentEditable();
+  if (!el || editingId.value === null) return null;
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return null;
+  const caret = sel.getRangeAt(0);
+  if (!el.contains(caret.startContainer)) return null;
+  const anchorEl = caret.startContainer.nodeType === Node.TEXT_NODE ? caret.startContainer.parentElement : caret.startContainer;
+  if (anchorEl?.closest('pre')) return null;
+  const before = document.createRange();
+  before.selectNodeContents(el);
+  before.setEnd(caret.startContainer, caret.startOffset);
+  const text = before.toString();
+  if (!text.startsWith('/')) return null;
+  const rect = caret.getBoundingClientRect();
+  // 视口底部空间不足时向上翻（菜单最大高度 264 + 间隙）
+  const estimatedHeight = 270;
+  const top = rect.bottom + estimatedHeight > window.innerHeight
+    ? Math.max(8, rect.top - estimatedHeight)
+    : rect.bottom + 6;
+  return { query: text.slice(1), pos: { left: rect.left, top } };
+}
+
+// 输入后刷新菜单：触发文本被删改（不再是 / 开头、含空格/换行）则关闭
+function updateSlashMenu() {
+  const ctx = slashContext();
+  if (!ctx || ctx.query.includes('\n') || ctx.query.includes(' ')) {
+    slashOpen.value = false;
+    return;
+  }
+  slashQuery.value = ctx.query;
+  if (slashIndex.value >= slashItems.value.length) slashIndex.value = 0;
+  slashLevel.value = 1;
+  slashListType.value = 0;
+  slashTableField.value = 'item';
+  slashPos.value = ctx.pos;
+  slashOpen.value = true;
+}
+
+function applySlashItem(item, option) {
+  const el = currentEditable();
+  if (!el || !item) return;
+  slashOpen.value = false;
+  // 标题行按当前/点选级别应用；列表行按当前/点选类型应用；表格带行列数量；
+  // 其余项直接应用
+  let id = item.id;
+  let opts;
+  if (id === 'heading') id = `h${option ?? slashLevel.value}`;
+  else if (id === 'list') id = SLASH_LIST_TYPES[option ?? slashListType.value].id;
+  else if (id === 'table') opts = { rows: slashTableRows.value, cols: slashTableCols.value };
+  // 替换 DOM 期间抑制 blur 误提交：清空聚焦中的容器可能触发同步 blur，
+  // 不抑制则 onEditableBlur 抢先提交空内容（块被删，新内容插到已卸载节点上）
+  suppressBlurCommit = true;
+  try {
+    applySlashCommand(el, id, opts);
+  } finally {
+    suppressBlurCommit = false;
+  }
+  // 替换导致失焦时恢复焦点（光标已由构建函数放置）
+  if (document.activeElement !== el) el.focus({ preventScroll: true });
+}
+
+// ---------- 围栏语言自动补全（``` 后弹出语言菜单，含 mermaid/math） ----------
+const langOpen = ref(false);
+const langQuery = ref('');
+const langIndex = ref(0);
+const langPos = ref({ left: 0, top: 0 });
+// 语言清单（Rust code_languages：mermaid/math + tree-sitter 高亮语言），首次打开时拉取
+const langList = ref([]);
+
+// 前缀匹配过滤（清单由 Rust code_languages 按字典序返回）
+const langItems = computed(() => {
+  const q = langQuery.value.trim().toLowerCase();
+  if (!q) return langList.value;
+  return langList.value.filter((lang) => lang.toLowerCase().startsWith(q));
+});
+
+// 菜单展示项（每语言专属缩写徽章 + 品牌色）
+const langMenuItems = computed(() =>
+  langItems.value.map((lang) => {
+    const badge = LANG_BADGES[lang] || { text: lang.slice(0, 2), color: 'currentColor' };
+    return { id: lang, label: lang, icon: `<span class="md-lang-badge" style="color:${badge.color}">${badge.text}</span>` };
+  }),
+);
+
+// 光标前文本为 ```/~~~ 加部分语言名（无空格无换行）时返回补全上下文；否则 null
+function fenceContext() {
+  const el = currentEditable();
+  if (!el || editingId.value === null) return null;
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return null;
+  const caret = sel.getRangeAt(0);
+  if (!el.contains(caret.startContainer)) return null;
+  const anchorEl = caret.startContainer.nodeType === Node.TEXT_NODE ? caret.startContainer.parentElement : caret.startContainer;
+  if (anchorEl?.closest('pre')) return null;
+  const before = document.createRange();
+  before.selectNodeContents(el);
+  before.setEnd(caret.startContainer, caret.startOffset);
+  const text = before.toString();
+  const match = /^(`{3,}|~{3,})([a-zA-Z0-9#+_-]*)$/.exec(text);
+  if (!match) return null;
+  const rect = caret.getBoundingClientRect();
+  const estimatedHeight = 270;
+  const top = rect.bottom + estimatedHeight > window.innerHeight
+    ? Math.max(8, rect.top - estimatedHeight)
+    : rect.bottom + 6;
+  return { fence: match[1], query: match[2], pos: { left: rect.left, top } };
+}
+
+async function updateLangMenu() {
+  const ctx = fenceContext();
+  if (!ctx) {
+    langOpen.value = false;
+    return;
+  }
+  if (!langList.value.length) {
+    langList.value = await invoke('code_languages').catch(() => []);
+  }
+  langQuery.value = ctx.query;
+  if (langIndex.value >= langItems.value.length) langIndex.value = 0;
+  langPos.value = ctx.pos;
+  langOpen.value = true;
+}
+
+// 应用语言补全：围栏后的查询文本替换为所选语言，光标落在语言之后
+//（此时仍是普通文本行，继续输入或 Enter 经既有流程转为代码块）
+function applyLangItem(lang) {
+  const el = currentEditable();
+  const ctx = fenceContext();
+  if (!el || !ctx || !lang) return;
+  langOpen.value = false;
+  const after = el.textContent.slice((ctx.fence + ctx.query).length);
+  const p = el.querySelector('p') || el;
+  p.textContent = ctx.fence + lang + after;
+  placeCaretAtTextOffset(p, (ctx.fence + lang).length);
+}
 // 滚动定位闪烁的块 id / 当前滚动位置对应的标题 id（供大纲高亮）
 const flashId = ref(null);
 const activeHeadingId = ref(null);
@@ -43,6 +238,11 @@ const scrollRoot = ref(null);
 const documentDir = inject('documentDir', { value: null });
 // 正在编辑的块 id；'__append__' 表示在文末追加新块
 const editingId = ref(null);
+// 换块/提交时关闭斜杠命令菜单与语言补全菜单
+watch(editingId, () => {
+  slashOpen.value = false;
+  langOpen.value = false;
+});
 // 提交/重解析进行中时忽略点击，避免用过期的块区间切片
 const syncing = ref(false);
 const wordCount = ref(0);
@@ -52,8 +252,16 @@ const lineCount = ref(1);
 const cursorLine = ref(1);
 const cursorColumn = ref(1);
 let parseSeq = 0;
-// 当前 contenteditable 编辑容器元素
+// 当前编辑容器元素
 let editableEl = null;
+
+// 当前编辑容器（引用丢失时从 DOM 恢复，保证提交/拆分链路不被静默早退）
+function currentEditable() {
+  if (editableEl && editableEl.isConnected) return editableEl;
+  const el = scrollRoot.value?.querySelector('[contenteditable="true"]');
+  if (el) editableEl = el;
+  return editableEl;
+}
 
 // 行/词/字符统计由 Rust text_stats 命令完成（CJK 感知词数、UTF-16 字符数），
 // 内容变化后防抖更新，避免每次按键都跨进程调用
@@ -151,23 +359,50 @@ function onInput(e) {
 // 注意：两个编辑容器（块容器与文末 __append__ 容器）共用本 ref，Vue 打补丁时
 // 「挂载新容器 → 卸载旧容器」的顺序不定，卸载回调可能后于挂载执行——
 // 因此卸载（el 为 null）时仅当当前容器已脱离文档才清空，避免误清新容器。
+// 意外重挂载防护：非提交路径的卸载（如父级重渲染重建容器）会暂存未提交内容，
+// 同一编辑目标重挂载时恢复——否则 setEditableEl 会用初始 HTML 覆盖用户/命令写入的内容。
+let stashedEdit = null; // { id, html }：意外卸载时暂存的编辑内容与目标
 function setEditableEl(el) {
   if (!el) {
-    if (editableEl && !editableEl.isConnected) editableEl = null;
+    // 卸载回调（可能后于新容器挂载执行）：旧容器已脱离文档才暂存并清空
+    if (editableEl && !editableEl.isConnected) {
+      stashedEdit = stashedEdit ?? { id: editingId.value, html: editableEl.innerHTML };
+      editableEl = null;
+    }
     return;
+  }
+  // 同一容器的 ref 重复触发（Vue 对 v-if 分支补丁时会重设函数 ref）：
+  // 直接跳过——否则无条件重填初始 HTML 会把未提交内容原地抹掉
+  if (el === editableEl) return;
+  // 挂载回调：「先挂新、后卸旧」的替换中，旧容器仍在文档且持未提交内容，先暂存
+  if (editableEl && editableEl !== el && editableEl.isConnected) {
+    stashedEdit = { id: editingId.value, html: editableEl.innerHTML };
   }
   editableEl = el;
   const block = blocks.value.find((b) => b.id === editingId.value);
   // 原子/保留类块按原始 Markdown 切片编辑，其余按渲染 HTML 就地编辑
   const rawSource = block && block.start != null ? content.value.slice(block.start, block.end) : '';
-  el.innerHTML = editingId.value === '__append__' || !block ? emptyParagraphHtml() : blockToHtml(block, rawSource);
+  if (stashedEdit && stashedEdit.id === editingId.value) {
+    el.innerHTML = stashedEdit.html;
+  } else {
+    el.innerHTML = editingId.value === '__append__' || !block ? emptyParagraphHtml() : blockToHtml(block, rawSource);
+  }
+  stashedEdit = null;
   nextTick(() => {
     // 换块 blur 抑制到此为止（无论是否成功聚焦）
     suppressBlurCommit = false;
     // 期间用户点击切换了编辑目标，或元素已被卸载，则放弃聚焦
-    if (editableEl !== el || !el.isConnected) return;
+    if (editableEl !== el || !el.isConnected) {
+      pendingCaretOffset = null;
+      return;
+    }
     el.focus();
-    if (cursorAtStart) {
+    if (pendingCaretOffset != null) {
+      // 合并两块后：光标落在上一块原文末尾（接缝处）
+      const offset = pendingCaretOffset;
+      pendingCaretOffset = null;
+      placeCaretAtTextOffset(el, offset);
+    } else if (cursorAtStart) {
       cursorAtStart = false;
       placeCursorAtStart(el);
     } else {
@@ -177,6 +412,8 @@ function setEditableEl(el) {
 }
 // setEditableEl 的下一次挂载把光标放在内容开头（Enter 拆分进入新块）
 let cursorAtStart = false;
+// 下一次挂载把光标放在指定纯文本偏移（块首退格合并两块）；优先于 cursorAtStart
+let pendingCaretOffset = null;
 
 function startEdit(block) {
   if (syncing.value) return;
@@ -198,7 +435,7 @@ function startAppend() {
 }
 
 async function commitEdit() {
-  if (editingId.value === null || !editableEl) return;
+  if (editingId.value === null || !currentEditable()) return;
   syncing.value = true;
   try {
     // 前端只提取 DOM 结构，Markdown 序列化由 Rust 完成
@@ -239,23 +476,32 @@ async function commitEdit() {
 // Enter 提交：在光标处拆分当前块——光标前内容留在本块、光标后内容移入新块，
 // 两段分别由 Rust 序列化与解析，光标落到新块开头。代码块/Mermaid 等 pre 编辑不经过此路径。
 async function splitAndCommit() {
-  if (editingId.value === null || !editableEl) return;
+  const el = currentEditable();
+  if (editingId.value === null || !el) return;
   syncing.value = true;
   try {
     const sel = window.getSelection();
-    if (!sel.rangeCount) return;
-    const range = sel.getRangeAt(0);
-    // 以光标为界克隆前后两段 DOM
-    const beforeRange = range.cloneRange();
-    beforeRange.selectNodeContents(editableEl);
-    beforeRange.setEnd(range.startContainer, range.startOffset);
-    const afterRange = range.cloneRange();
-    afterRange.selectNodeContents(editableEl);
-    afterRange.setStart(range.endContainer, range.endOffset);
-    const beforeDiv = document.createElement('div');
-    beforeDiv.append(beforeRange.cloneContents());
-    const afterDiv = document.createElement('div');
-    afterDiv.append(afterRange.cloneContents());
+    let beforeDiv;
+    let afterDiv;
+    if (sel.rangeCount && el.contains(sel.getRangeAt(0).startContainer)) {
+      // 以光标为界克隆前后两段 DOM
+      const range = sel.getRangeAt(0);
+      const beforeRange = range.cloneRange();
+      beforeRange.selectNodeContents(el);
+      beforeRange.setEnd(range.startContainer, range.startOffset);
+      const afterRange = range.cloneRange();
+      afterRange.selectNodeContents(el);
+      afterRange.setStart(range.endContainer, range.endOffset);
+      beforeDiv = document.createElement('div');
+      beforeDiv.append(beforeRange.cloneContents());
+      afterDiv = document.createElement('div');
+      afterDiv.append(afterRange.cloneContents());
+    } else {
+      // 无有效光标（内容删空后浏览器丢失选区）：按块尾拆分，前段为整块内容
+      beforeDiv = document.createElement('div');
+      beforeDiv.innerHTML = el.innerHTML;
+      afterDiv = document.createElement('div');
+    }
 
     // 空段检测：拆分会在边界克隆出空的块级元素（如标题末尾的空 <h2>），
     // 若参与序列化会生成孤立的标记文本（## 等），此处按空段处理
@@ -327,6 +573,116 @@ function cancelEdit() {
   suppressBlurCommit = false;
 }
 
+// 块的纯文本（标题行 + 子块递归），用于块首退格合并后的光标接缝定位
+function blockPlainText(b) {
+  return plainText(b.title) + (b.children || []).map(blockPlainText).join('');
+}
+
+// 进入指定块编辑并把光标放在末尾（程序性换块走 setEditableEl 挂载链路）
+function focusBlockAtEnd(id) {
+  suppressBlurCommit = true;
+  cursorAtStart = false;
+  editingId.value = id;
+}
+
+// 非空块开头 + Backspace（Typora 式两步退格）：
+// 标题/引用/列表项等样式块先降级为段落；段落并入上一文本块（块类型沿用上块）；
+// 上一块是分割线则删除之；原子块/复杂结构只提交当前编辑并把光标移到上一块末尾。
+async function backspaceAtBlockStart() {
+  const el = currentEditable();
+  if (editingId.value === null || !el || syncing.value) return;
+  const TEXTLIKE = ['paragraph', 'heading', 'quote', 'bulletedListItem', 'numberedListItem', 'taskListItem'];
+  const isAppend = editingId.value === '__append__';
+  const index = isAppend ? blocks.value.length : blocks.value.findIndex((b) => b.id === editingId.value);
+  if (index < 0) return;
+  const dtos = domToBlockDtos(el);
+  const single = dtos.length === 1 ? dtos[0] : null;
+
+  // 样式块（标题/引用/列表项）：第一次退格降级为段落，嵌套子块提升为顶层
+  //（仅改编辑态 DOM，提交时落源）
+  if (single && single.type !== 'paragraph' && TEXTLIKE.includes(single.type)) {
+    demoteEditableToParagraph(el, single);
+    return;
+  }
+
+  const prev = blocks.value[index - 1];
+  if (!prev) return; // 首块段落：前面没有可并入的块
+
+  // 上一块是分割线：删除分割线，当前块保持编辑（光标仍在开头）
+  if (prev.type === 'separator') {
+    removePrevSeparator(index - 1);
+    return;
+  }
+
+  // 当前块为单段落且上一块为文本类：并入上一块，光标落在接缝处
+  if (single && single.type === 'paragraph' && TEXTLIKE.includes(prev.type)) {
+    await mergeIntoPrevBlock(single, index, isAppend);
+    return;
+  }
+
+  // 其余（原子块/嵌套结构）：提交当前编辑，光标移到上一块末尾
+  await commitEdit();
+  focusBlockAtEnd(prev.id);
+}
+
+// 删除上一块分割线（含相邻换行）并平移后续偏移；当前编辑块不受影响
+function removePrevSeparator(prevIndex) {
+  const prev = blocks.value[prevIndex];
+  if (!prev) return;
+  let removeStart = prev.start;
+  let removeEnd = prev.end;
+  if (content.value[removeEnd] === '\n') removeEnd += 1;
+  else if (removeStart > 0 && content.value[removeStart - 1] === '\n') removeStart -= 1;
+  const removedLen = removeEnd - removeStart;
+  content.value = content.value.slice(0, removeStart) + content.value.slice(removeEnd);
+  blocks.value.splice(prevIndex, 1);
+  for (let i = prevIndex; i < blocks.value.length; i++) {
+    const b = blocks.value[i];
+    if (b.start != null) {
+      b.start -= removedLen;
+      b.end -= removedLen;
+    }
+  }
+  publishBlocks();
+}
+
+// 当前段落块并入上一文本块：合并源 = 上块源 + 当前行内 Markdown（上块类型保留），
+// 重解析合并区间并平移后续偏移，光标落在上块原文末尾（接缝处）
+async function mergeIntoPrevBlock(dto, index, isAppend) {
+  syncing.value = true;
+  try {
+    const prev = blocks.value[index - 1];
+    const curEnd = isAppend ? content.value.length : blocks.value[index].end;
+    const curMd = (await invoke('serialize_markdown', { blocks: [paragraphDtoFromTree(dto.title)] })).trim();
+    const prevSource = content.value.slice(prev.start, prev.end);
+    const combined = prevSource + curMd;
+    const junction = blockPlainText(prev).length;
+    editableEl = null;
+    content.value = content.value.slice(0, prev.start) + combined + content.value.slice(curEnd);
+    const replacements = await parseAnchoredBlocks(combined, prev.start);
+    const delta = combined.length - (curEnd - prev.start);
+    blocks.value.splice(index - 1, isAppend ? 1 : 2, ...replacements);
+    for (let i = index - 1 + replacements.length; i < blocks.value.length; i++) {
+      const b = blocks.value[i];
+      if (b.start != null) {
+        b.start += delta;
+        b.end += delta;
+      }
+    }
+    publishBlocks();
+    const merged = replacements[0];
+    suppressBlurCommit = true;
+    pendingCaretOffset = junction;
+    editingId.value = merged ? merged.id : null;
+    if (!merged) {
+      suppressBlurCommit = false;
+      pendingCaretOffset = null;
+    }
+  } finally {
+    syncing.value = false;
+  }
+}
+
 // 空块 + Backspace：删除当前块（含源码区间与相邻换行），光标移到上一块末尾；
 // 首块为空则移到下一块开头；文档无块则落到追加区（Typora 式连续退格删除）。
 async function deleteEmptyBlockAndFocusPrev() {
@@ -338,7 +694,18 @@ async function deleteEmptyBlockAndFocusPrev() {
     if (editingId.value === '__append__') {
       // 追加区为空：退格跳到末尾块
       const last = blocks.value[blocks.value.length - 1];
-      if (last) focusId = last.id;
+      if (last) {
+        focusId = last.id;
+      } else {
+        // 文档无可跳块：追加区重置为空段落。editingId 不变时 Vue 不会重挂载容器，
+        // 不重置则快捷转换出的空标题等元素会一直残留（表现为删空后仍是标题渲染）
+        const el = currentEditable();
+        if (el) {
+          el.innerHTML = emptyParagraphHtml();
+          placeCursorAtEnd(el);
+        }
+        return;
+      }
     } else {
       const index = blocks.value.findIndex((b) => b.id === editingId.value);
       const oldBlock = blocks.value[index];
@@ -381,7 +748,7 @@ async function deleteEmptyBlockAndFocusPrev() {
 // 代码块/Mermaid 等 pre 编辑的 Ctrl+Enter：整块提交渲染（不拆分），
 // 并在其后新建空段落进入编辑。普通 Enter 在 pre 内插入换行（见 keydown 路由）。
 async function commitCodeAndNewBlock() {
-  if (editingId.value === null || !editableEl) return;
+  if (editingId.value === null || !currentEditable()) return;
   syncing.value = true;
   try {
     const md = (await invoke('serialize_markdown', { blocks: domToBlockDtos(editableEl) })).trimEnd();
@@ -451,6 +818,8 @@ let suppressBlurCommit = false;
 function onEditableInput(e) {
   if (e.isComposing || e.inputType === 'insertCompositionText') return;
   applyMarkdownShortcuts();
+  updateSlashMenu();
+  updateLangMenu();
 }
 
 // 粘贴图片：按偏好保存到文档目录/assets 子目录并插入相对路径引用（未保存文档跳过）
@@ -474,6 +843,90 @@ async function onEditablePaste(e) {
 
 function onEditableKeydown(e) {
   if (e.isComposing) return;
+  // 斜杠菜单打开时优先路由：上下选择、Enter 应用、Esc 关闭
+  if (slashOpen.value) {
+    const items = slashItems.value;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const item = items[slashIndex.value];
+      // 表格行且已进入行/列字段：↑/↓ 增减数量；字段为表格项本身时照常菜单导航
+      if (item?.id === 'table' && slashTableField.value !== 'item') {
+        const delta = e.key === 'ArrowUp' ? 1 : -1;
+        if (slashTableField.value === 'rows') {
+          slashTableRows.value = Math.min(50, Math.max(1, slashTableRows.value + delta));
+        } else {
+          slashTableCols.value = Math.min(20, Math.max(1, slashTableCols.value + delta));
+        }
+        return;
+      }
+      if (items.length) {
+        // 循环导航（到底/到顶回绕），滚动跟随由菜单面板负责
+        slashIndex.value =
+          e.key === 'ArrowDown'
+            ? (slashIndex.value + 1) % items.length
+            : (slashIndex.value - 1 + items.length) % items.length;
+      }
+      return;
+    }
+    // 行内 ←/→：标题调级别 / 列表调类型 / 表格在 项→行→列 字段间循环
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      const item = items[slashIndex.value];
+      if (item?.id === 'heading') {
+        e.preventDefault();
+        slashLevel.value =
+          e.key === 'ArrowRight' ? Math.min(6, slashLevel.value + 1) : Math.max(1, slashLevel.value - 1);
+        return;
+      }
+      if (item?.id === 'list') {
+        e.preventDefault();
+        slashListType.value =
+          e.key === 'ArrowRight' ? Math.min(2, slashListType.value + 1) : Math.max(0, slashListType.value - 1);
+        return;
+      }
+      if (item?.id === 'table') {
+        e.preventDefault();
+        const fields = ['item', 'rows', 'cols'];
+        const step = e.key === 'ArrowRight' ? 1 : -1;
+        const next = (fields.indexOf(slashTableField.value) + step + fields.length) % fields.length;
+        slashTableField.value = fields[next];
+        return;
+      }
+    }
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      applySlashItem(items[slashIndex.value]);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      slashOpen.value = false;
+      return;
+    }
+  }
+  // 围栏语言补全打开时：↑/↓ 选择（循环回绕）、Enter/Tab 补全、Esc 关闭
+  if (langOpen.value) {
+    const list = langItems.value;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (list.length) {
+        langIndex.value =
+          e.key === 'ArrowDown'
+            ? (langIndex.value + 1) % list.length
+            : (langIndex.value - 1 + list.length) % list.length;
+      }
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      if (list.length) applyLangItem(list[langIndex.value]);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      langOpen.value = false;
+      return;
+    }
+  }
   if (e.key === 'Enter') {
     const sel = window.getSelection();
     const anchor = sel.rangeCount ? sel.anchorNode : null;
@@ -499,20 +952,55 @@ function onEditableKeydown(e) {
       return;
     }
     e.preventDefault();
+    const editable = currentEditable();
+    // 列表项内 Enter：非空项拆出同类型新列表项续写；空项退出列表转为段落（Typora 式）
+    if (editable && handleListEnter(editable)) return;
     // 围栏行（```lang）按 Enter：转换为代码块并进入块内编辑，不做拆分
-    if (editableEl) {
-      convertFenceToCodeBlock(editableEl).then((converted) => {
-        if (!converted) splitAndCommit();
+    if (editable) {
+      convertFenceToCodeBlock(editable).then((converted) => {
+        if (converted) return;
+        // `<section>` 行按 Enter：补全闭合标签，进入图文排版块原文编辑
+        convertSectionToHtmlBlock(editable).then((section) => {
+          if (!section) splitAndCommit();
+        });
       });
     } else {
       splitAndCommit();
     }
   } else if (e.key === 'Backspace') {
-    if (e.ctrlKey || e.metaKey || e.shiftKey || !editableEl) return;
-    // 块内容已删空：Backspace 删除该块并跳到上一块（非空块交给浏览器原生删除）
-    if (editableEl.textContent.replace(/\n/g, '') !== '') return;
+    if (e.ctrlKey || e.metaKey || e.shiftKey || !currentEditable()) return;
+    // 块内容已删空：Backspace 删除该块并跳到上一块
+    if (editableEl.textContent.replace(/\n/g, '') === '') {
+      e.preventDefault();
+      deleteEmptyBlockAndFocusPrev();
+      return;
+    }
+    // 光标紧贴任务勾选框之后：删除勾选框，任务项降为普通列表项
+    //（浏览器原生退格无法越过 contenteditable=false 的勾选框，不拦截则无反应）
+    if (deleteTaskCheckboxBeforeCaret(editableEl)) {
+      e.preventDefault();
+      return;
+    }
+    // 光标在块开头：样式块降级为段落，段落并入上一块（Typora 式退格）；
+    // 其余位置交给浏览器原生删除
+    if (isCaretAtStart(editableEl)) {
+      e.preventDefault();
+      backspaceAtBlockStart();
+    }
+  } else if (e.key === 'Tab') {
+    // Tab 默认行为是移出焦点，必须拦截：代码块内插入制表符；
+    // 列表项内 Tab 缩进、Shift+Tab 取消缩进（Typora 式）
     e.preventDefault();
-    deleteEmptyBlockAndFocusPrev();
+    const editable = currentEditable();
+    if (!editable) return;
+    const sel = window.getSelection();
+    const anchor = sel.rangeCount ? sel.anchorNode : null;
+    const el = anchor ? (anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor) : null;
+    if (el?.closest('pre')) {
+      insertTextAtCursor('\t');
+      return;
+    }
+    handleListTab(editable, e.shiftKey);
   } else if (e.key === 'Escape') {
     e.preventDefault();
     cancelEdit();
@@ -520,16 +1008,47 @@ function onEditableKeydown(e) {
 }
 
 
-// 任务列表勾选：标记替换由 Rust 完成（替换源码切片内首个 [ ]/[x]），再增量重解析该块
+// 任务列表勾选：标记替换由 Rust 完成（替换根块源码中第 occurrence 个 [ ]/[x]），
+// 再增量重解析该根块。嵌套任务项没有自身源码区间：按块树 DFS 前序定位其根块与序号。
 async function toggleTask(block) {
-  if (block.type !== 'taskListItem' || block.start == null) return;
-  const index = blocks.value.findIndex((b) => b.id === block.id);
+  if (block.type !== 'taskListItem') return;
+  let rootBlock = block;
+  let occurrence = 0;
+  if (block.start == null) {
+    const hit = locateTaskInRoot(block.id);
+    if (!hit) return;
+    rootBlock = hit.root;
+    occurrence = hit.occurrence;
+  }
+  const index = blocks.value.findIndex((b) => b.id === rootBlock.id);
   if (index < 0) return;
-  const source = content.value.slice(block.start, block.end);
-  const next = await invoke('toggle_task_markdown', { source, checked: !block.checked });
+  const source = content.value.slice(rootBlock.start, rootBlock.end);
+  const next = await invoke('toggle_task_markdown', { source, checked: !block.checked, occurrence });
   if (next === source) return;
-  content.value = content.value.slice(0, block.start) + next + content.value.slice(block.end);
-  await reparseRegion(index, block, next);
+  content.value = content.value.slice(0, rootBlock.start) + next + content.value.slice(rootBlock.end);
+  await reparseRegion(index, rootBlock, next);
+}
+
+// 在根块树中定位任务项：返回其根块与 DFS 前序序号（目标为第 occurrence 个任务标记）
+function locateTaskInRoot(id) {
+  for (const root of blocks.value) {
+    let occurrence = 0;
+    let found = false;
+    const dfs = (node) => {
+      if (found) return;
+      if (node.type === 'taskListItem') {
+        if (node.id === id) {
+          found = true;
+          return;
+        }
+        occurrence += 1;
+      }
+      for (const child of node.children || []) dfs(child);
+    };
+    dfs(root);
+    if (found) return { root, occurrence };
+  }
+  return null;
 }
 
 // ---------- 大纲联动 ----------
@@ -646,4 +1165,26 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
       </div>
     </div>
   </div>
+  <!-- 斜杠命令菜单 / 围栏语言补全菜单（同一面板，互斥触发）：Teleport 移出根布局（多根片段），其挂载/卸载不再引起
+       布局子节点重建；.t-app 包装使主题 blocks 规则（.t-app 作用域）同样生效 -->
+  <Teleport to="body">
+    <div v-if="slashOpen || langOpen" class="t-app">
+      <SlashMenu
+        :items="langOpen ? langMenuItems : slashItems"
+        :index="langOpen ? langIndex : slashIndex"
+        :heading-level="slashLevel"
+        :list-type="slashListType"
+        :table-rows="slashTableRows"
+        :table-cols="slashTableCols"
+        :table-field="slashTableField"
+        :left="langOpen ? langPos.left : slashPos.left"
+        :top="langOpen ? langPos.top : slashPos.top"
+        @pick="(item, option) => (langOpen ? applyLangItem(item.id) : applySlashItem(item, option))"
+        @hover="(i) => (langOpen ? (langIndex = i) : (slashIndex = i))"
+        @heading-level="(lv) => (slashLevel = lv)"
+        @list-type="(t) => (slashListType = t)"
+        @table-field="(f) => (slashTableField = f)"
+      />
+    </div>
+  </Teleport>
 </template>

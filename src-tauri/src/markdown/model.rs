@@ -30,9 +30,46 @@ pub enum BlockKindDto {
     CodeBlock { language: Option<String> },
     Comment,
     HtmlBlock,
+    /// `<section>...</section>` 图文排版容器（Mdmdt 式 grid 布局；DTO 层从 HtmlBlock/RawMarkdown
+    /// 分类——velotype 的 HTML 安全分级不含 section 标签，解析为 RawMarkdown，此处统一归类；
+    /// 序列化按 RawMarkdown 原文透传）
+    SectionBlock,
     MathBlock,
     MermaidBlock,
     RawMarkdown,
+}
+
+/// section 图文排版容器判定：HTML 块原文以 `<section` 开标签开头（后跟 `>`/空白）。
+fn is_section_html_block(raw: &str) -> bool {
+    let trimmed = raw.trim_start();
+    trimmed.len() > "<section".len()
+        && trimmed[.."<section".len()].eq_ignore_ascii_case("<section")
+        && matches!(trimmed.as_bytes()["<section".len()], b'>' | b' ' | b'\t')
+}
+
+/// 公式源码是否使用 AMS 编号环境：align/gather/equation/multline/flalign/alignat/
+/// eqnarray 的非星号变体（星号变体按 AMS 规则不编号）。
+fn uses_ams_numbered_environment(source: &str) -> bool {
+    const AMS_ENVIRONMENTS: [&str; 7] = [
+        "align", "gather", "equation", "multline", "flalign", "alignat", "eqnarray",
+    ];
+    let mut rest = source;
+    while let Some(pos) = rest.find("\\begin{") {
+        rest = &rest[pos + "\\begin{".len()..];
+        let Some(end) = rest.find('}') else { break };
+        let env = rest[..end].trim();
+        match env.strip_suffix('*') {
+            // 星号变体不编号，继续扫描后续环境
+            Some(_) => rest = &rest[end..],
+            None => {
+                if AMS_ENVIRONMENTS.contains(&env) {
+                    return true;
+                }
+                rest = &rest[end..];
+            }
+        }
+    }
+    false
 }
 
 impl From<BlockKind> for BlockKindDto {
@@ -74,6 +111,7 @@ impl From<BlockKindDto> for BlockKind {
             BlockKindDto::CodeBlock { language } => Self::CodeBlock { language },
             BlockKindDto::Comment => Self::Comment,
             BlockKindDto::HtmlBlock => Self::HtmlBlock,
+            BlockKindDto::SectionBlock => Self::RawMarkdown,
             BlockKindDto::MathBlock => Self::MathBlock,
             BlockKindDto::MermaidBlock => Self::MermaidBlock,
             BlockKindDto::RawMarkdown => Self::RawMarkdown,
@@ -113,6 +151,10 @@ pub struct BlockDto {
     /// Raw 保留类块（raw/comment/html/math/mermaid）的原文。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raw_fallback: Option<String>,
+    /// 展示公式块：源码是否使用 AMS 编号环境（align/gather/equation/multline/flalign/
+    /// alignat/eqnarray 的非星号变体）。前端按偏好（math_numbering）决定编号显示。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub math_numbered: Option<bool>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<BlockDto>,
 }
@@ -135,15 +177,29 @@ impl BlockDto {
         } else {
             None
         };
+        // section 图文排版容器：原文以 <section 开头的 HtmlBlock/RawMarkdown 分类为 SectionBlock（DTO 层）
+        let kind = if matches!(node.record.kind, BlockKind::HtmlBlock | BlockKind::RawMarkdown)
+            && node
+                .record
+                .raw_fallback
+                .as_deref()
+                .is_some_and(is_section_html_block)
+        {
+            BlockKindDto::SectionBlock
+        } else {
+            node.record.kind.clone().into()
+        };
         Self {
             id: node.record.id.to_string(),
-            kind: node.record.kind.clone().into(),
+            kind,
             start: range.map(|range| range.0),
             end: range.map(|range| range.1),
             title: node.record.title.clone(),
             table: node.record.table.clone(),
             image,
             raw_fallback: node.record.raw_fallback.clone(),
+            math_numbered: (node.record.kind == BlockKind::MathBlock)
+                .then(|| uses_ams_numbered_environment(&node.record.title.visible_text())),
             children: node
                 .children
                 .iter()
