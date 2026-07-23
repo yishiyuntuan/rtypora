@@ -323,7 +323,16 @@ function onGlobalKeydown(e) {
   } else if (key === "w") {
     e.preventDefault();
     guardThen(() => appWindow.close());
+  } else if (key === "/") {
+    e.preventDefault();
+    onToggleSource();
   }
+}
+// Ctrl+/ 或状态栏 </>：先精确捕获光标（编辑态则先提交），再切换源码/WYSIWYG，
+// 恢复滚动位置由 Editor.vue 的 sourceMode watch 在重新解析后执行
+async function onToggleSource() {
+  await editorRef.value?.captureScrollPosition();
+  sourceMode.value = !sourceMode.value;
 }
 onMounted(() => window.addEventListener("keydown", onGlobalKeydown));
 onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
@@ -365,7 +374,7 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
           :cursor-line="editorStats.cursorLine"
           :cursor-column="editorStats.cursorColumn"
           @toggle-sidebar="sidebarVisible = !sidebarVisible"
-          @toggle-source="sourceMode = !sourceMode"
+          @toggle-source="onToggleSource"
         />
       </div>
     </div>

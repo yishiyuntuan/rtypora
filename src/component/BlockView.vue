@@ -1,5 +1,5 @@
 <script setup>
-import { computed, inject, ref, watch } from 'vue';
+import { computed, inject, provide, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import InlineView from './InlineView.vue';
 import MathView from './MathView.vue';
@@ -17,9 +17,49 @@ const props = defineProps({
   block: { type: Object, required: true },
   // 有序列表序号（由父级按连续 numberedListItem 兄弟计算）
   ordinal: { type: Number, default: 1 },
+  // 列表嵌套层级（0 起；列表项子块 +1，引用/callout/脚注子块不变）
+  depth: { type: Number, default: 0 },
 });
 
 const emit = defineEmits(['toggle-task']);
+
+// 列表标记按层级区分（体现父子层级）：圆点 •/◦/▪，序号 1./a./i.
+const bulletMarker = computed(() => ['•', '◦', '▪'][Math.min(props.depth, 2)]);
+const numberMarker = computed(() => {
+  if (props.depth === 0) return `${props.ordinal}.`;
+  if (props.depth === 1) return `${alphaOrdinal(props.ordinal)}.`;
+  return `${romanOrdinal(props.ordinal)}.`;
+});
+
+// 二级序号：a, b, ..., z, aa, ab...
+function alphaOrdinal(n) {
+  let s = '';
+  let x = Math.max(1, n);
+  while (x > 0) {
+    x -= 1;
+    s = String.fromCharCode(97 + (x % 26)) + s;
+    x = Math.floor(x / 26);
+  }
+  return s;
+}
+
+// 三级及更深序号：小写罗马数字 i, ii, iii, iv, v...
+function romanOrdinal(n) {
+  const table = [
+    [1000, 'm'], [900, 'cm'], [500, 'd'], [400, 'cd'],
+    [100, 'c'], [90, 'xc'], [50, 'l'], [40, 'xl'],
+    [10, 'x'], [9, 'ix'], [5, 'v'], [4, 'iv'], [1, 'i'],
+  ];
+  let x = Math.max(1, n);
+  let s = '';
+  for (const [v, sym] of table) {
+    while (x >= v) {
+      s += sym;
+      x -= v;
+    }
+  }
+  return s;
+}
 
 const headingClasses = {
   1: 'my-3',
@@ -109,6 +149,27 @@ const mathNumberLabel = computed(() => {
   return n ? `(${n})` : '';
 });
 
+// 向后代 InlineView 传递当前块 id，用于脚注引用全局序号匹配
+provide('currentBlockId', props.block.id);
+
+// 脚注定义区：当前定义 id 与所有引用它的位置列表
+const footnoteRefList = inject('footnoteRefList', { value: [] });
+const scrollToFootnoteRef = inject('scrollToFootnoteRef', () => {});
+const footnoteId = computed(() => plainText(props.block.title));
+const footnoteBackRefs = computed(() =>
+  props.block.type === 'footnoteDefinition'
+    ? footnoteRefList.value.filter((r) => r.id === footnoteId.value)
+    : [],
+);
+
+function scrollToFootnoteRefFrom(ref) {
+  scrollToFootnoteRef(ref.refIndex);
+}
+function scrollToFirstFootnoteRef() {
+  const first = footnoteBackRefs.value[0];
+  if (first) scrollToFootnoteRef(first.refIndex);
+}
+
 const calloutClass = computed(() => `blk-callout callout-${props.block.variant || 'note'}`);
 const listItemClass = computed(() => `blk-${props.block.type.replace(/[A-Z]/g, (ch) => '-' + ch.toLowerCase())}`);
 const calloutLabelStyle = computed(() => ({
@@ -163,8 +224,8 @@ function alignStyle(alignments, index) {
       @click.stop
       @change="emit('toggle-task', block)"
     />
-    <span v-else-if="block.type === 'numberedListItem'" class="md-marker shrink-0 select-none">{{ ordinal }}.</span>
-    <span v-else class="md-marker shrink-0 select-none">•</span>
+    <span v-else-if="block.type === 'numberedListItem'" class="md-marker shrink-0 select-none">{{ numberMarker }}</span>
+    <span v-else class="md-marker shrink-0 select-none">{{ bulletMarker }}</span>
     <div class="min-w-0 flex-1">
       <div class="whitespace-pre-wrap"><InlineView :tree="block.title" /></div>
       <div v-if="block.children?.length" class="pl-4">
@@ -173,6 +234,7 @@ function alignStyle(alignments, index) {
           :key="child.id"
           :block="child"
           :ordinal="childOrdinals.get(child.id) || 1"
+          :depth="depth + 1"
           @toggle-task="emit('toggle-task', $event)"
         />
       </div>
@@ -188,6 +250,7 @@ function alignStyle(alignments, index) {
       :key="child.id"
       :block="child"
       :ordinal="childOrdinals.get(child.id) || 1"
+      :depth="depth"
       @toggle-task="emit('toggle-task', $event)"
     />
   </blockquote>
@@ -204,19 +267,45 @@ function alignStyle(alignments, index) {
       :key="child.id"
       :block="child"
       :ordinal="childOrdinals.get(child.id) || 1"
+      :depth="depth"
       @toggle-task="emit('toggle-task', $event)"
     />
   </div>
 
-  <div v-else-if="block.type === 'footnoteDefinition'" class="blk-footnote-definition t-dim my-2 text-[13px]">
-    <span class="align-super text-[0.75em]">[^{{ plainText(block.title) }}]:</span>
-    <BlockView
-      v-for="child in block.children || []"
-      :key="child.id"
-      :block="child"
-      :ordinal="childOrdinals.get(child.id) || 1"
-      @toggle-task="emit('toggle-task', $event)"
-    />
+  <div
+    v-else-if="block.type === 'footnoteDefinition'"
+    class="blk-footnote-definition"
+    :data-footnote-def="footnoteId"
+  >
+    <div class="md-footnote-id">
+      <a
+        href="javascript:void(0)"
+        class="md-footnote-ref"
+        @click.stop.prevent="scrollToFirstFootnoteRef"
+      >[{{ footnoteId }}]:</a>
+    </div>
+    <div class="md-footnote-content">
+      <BlockView
+        v-for="child in block.children || []"
+        :key="child.id"
+        :block="child"
+        :ordinal="childOrdinals.get(child.id) || 1"
+        :depth="depth"
+        @toggle-task="emit('toggle-task', $event)"
+      />
+    </div>
+    <div class="md-footnote-back">
+      <sup
+        v-for="ref in footnoteBackRefs"
+        :key="ref.blockId + ':' + ref.occurrenceIndex"
+        class="md-footnote-back-item"
+      >
+        <a
+          href="javascript:void(0)"
+          @click.stop.prevent="scrollToFootnoteRefFrom(ref)"
+        >[{{ ref.refIndex }}]</a>
+      </sup>
+    </div>
   </div>
 
   <div v-else-if="block.type === 'codeBlock'" class="my-2">

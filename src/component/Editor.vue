@@ -11,7 +11,7 @@ import {
   convertFenceToCodeBlock,
   convertSectionToHtmlBlock,
   SLASH_ITEMS,
-  SLASH_LIST_TYPES,
+  SLASH_TEXT_BADGES,
   LANG_BADGES,
   applySlashCommand,
   placeCursorAtEnd,
@@ -47,7 +47,41 @@ const savedContent = ref('');
 const isDirty = computed(() => content.value !== savedContent.value);
 const blocks = ref([]);
 // 根块的有序列表序号表（id -> 1 基序号）
-const rootOrdinals = computed(() => numberedOrdinals(blocks.value));
+const renderedBlocks = computed(() => blocks.value.filter((b) => b.type !== 'footnoteDefinition'));
+const footnotes = computed(() => blocks.value.filter((b) => b.type === 'footnoteDefinition'));
+// 根块的有序列表序号表（id -> 1 基序号；footnoteDefinition 已过滤到末尾，不中断正文列表编号）
+const rootOrdinals = computed(() => numberedOrdinals(renderedBlocks.value));
+// 脚注引用全局序号表：按文档顺序（块顺序 + 递归子块）为每个 [^id] 分配 1 基 refIndex，
+// 用于定义区返回链接与引用区锚点一一对应。项中保留 blockId 与 occurrenceIndex 以精确匹配。
+const footnoteRefList = computed(() => {
+  const list = [];
+  function scanTree(tree, blockId) {
+    for (const f of tree?.fragments || []) {
+      if (f.footnote) {
+        list.push({
+          id: f.footnote.id,
+          occurrenceIndex: f.footnote.occurrenceIndex,
+          blockId,
+          refIndex: list.length + 1,
+        });
+      }
+    }
+  }
+  function scanBlock(block) {
+    scanTree(block.title, block.id);
+    for (const child of block.children || []) scanBlock(child);
+  }
+  for (const b of renderedBlocks.value) scanBlock(b);
+  return list;
+});
+provide('footnoteRefList', footnoteRefList);
+provide('getFootnoteRefIndex', (id, occurrenceIndex, blockId) => {
+  const idx = footnoteRefList.value.findIndex(
+    (r) => r.id === id && r.blockId === blockId && r.occurrenceIndex === occurrenceIndex,
+  );
+  return idx >= 0 ? idx + 1 : 0;
+});
+
 // 展示公式编号表（块 id -> 1 基序号）：AMS 编号环境判定在 Rust（mathNumbered 字段），
 // 编号序列按偏好 math_numbering（off/ams/all）生成（视图层），经 provide 供块渲染层取用
 const mathNumbers = computed(() => {
@@ -70,10 +104,8 @@ provide('mathNumbers', mathNumbers);
 const slashOpen = ref(false);
 const slashQuery = ref('');
 const slashIndex = ref(0);
-// 标题行当前级别（1-6，←/→ 或悬停 H 徽章调整）
-const slashLevel = ref(1);
-// 列表行当前类型（0 无序 / 1 有序 / 2 任务，←/→ 或悬停徽章调整）
-const slashListType = ref(0);
+// 文本行当前徽章下标（0-9：H1-H6 + 无序/有序/任务列表 + 行内代码，←/→ 或悬停徽章调整）
+const slashTextIndex = ref(0);
 // 表格行行列数量与当前调节字段（'item' 表格项本身 / 'rows' 行数 / 'cols' 列数；
 // 'item' 时 ↑/↓ 为菜单导航，←/→ 在 项→行→列 间循环，进入字段后 ↑/↓ 增减）
 const slashTableRows = ref(2);
@@ -108,12 +140,13 @@ function slashContext() {
   const text = before.toString();
   if (!text.startsWith('/')) return null;
   const rect = caret.getBoundingClientRect();
-  // 视口底部空间不足时向上翻（菜单最大高度 264 + 间隙）
+  // 视口底部空间不足时向上翻（菜单最大高度 264 + 间隙）；文本行徽章较宽，左侧防溢出
   const estimatedHeight = 270;
   const top = rect.bottom + estimatedHeight > window.innerHeight
     ? Math.max(8, rect.top - estimatedHeight)
     : rect.bottom + 6;
-  return { query: text.slice(1), pos: { left: rect.left, top } };
+  const left = Math.max(8, Math.min(rect.left, window.innerWidth - 380));
+  return { query: text.slice(1), pos: { left, top } };
 }
 
 // 输入后刷新菜单：触发文本被删改（不再是 / 开头、含空格/换行）则关闭
@@ -125,8 +158,7 @@ function updateSlashMenu() {
   }
   slashQuery.value = ctx.query;
   if (slashIndex.value >= slashItems.value.length) slashIndex.value = 0;
-  slashLevel.value = 1;
-  slashListType.value = 0;
+  slashTextIndex.value = 0;
   slashTableField.value = 'item';
   slashPos.value = ctx.pos;
   slashOpen.value = true;
@@ -136,12 +168,10 @@ function applySlashItem(item, option) {
   const el = currentEditable();
   if (!el || !item) return;
   slashOpen.value = false;
-  // 标题行按当前/点选级别应用；列表行按当前/点选类型应用；表格带行列数量；
-  // 其余项直接应用
+  // 文本行按当前/点选徽章应用；表格带行列数量；其余项直接应用
   let id = item.id;
   let opts;
-  if (id === 'heading') id = `h${option ?? slashLevel.value}`;
-  else if (id === 'list') id = SLASH_LIST_TYPES[option ?? slashListType.value].id;
+  if (id === 'text') id = SLASH_TEXT_BADGES[option ?? slashTextIndex.value].id;
   else if (id === 'table') opts = { rows: slashTableRows.value, cols: slashTableCols.value };
   // 替换 DOM 期间抑制 blur 误提交：清空聚焦中的容器可能触发同步 blur，
   // 不抑制则 onEditableBlur 抢先提交空内容（块被删，新内容插到已卸载节点上）
@@ -234,6 +264,13 @@ const flashId = ref(null);
 const activeHeadingId = ref(null);
 // WYSIWYG 滚动容器（大纲定位用）
 const scrollRoot = ref(null);
+// 源码模式滚动容器
+const sourceRoot = ref(null);
+// 切换源码模式时保存的滚动锚点：content 字符偏移 + 元素/行距视口顶部的距离
+let savedAnchorOffset = 0;
+let savedTopMargin = 0;
+// 切回 WYSIWYG 后需要在光标放置完成时再微调滚动，使焦点与切换前相对窗口位置一致
+let restoreCaretAdjustment = null;
 // 文档所在目录（粘贴图片的保存基准，App provide）
 const documentDir = inject('documentDir', { value: null });
 // 正在编辑的块 id；'__append__' 表示在文末追加新块
@@ -296,9 +333,10 @@ function publishBlocks() {
   emit('update:blocks', blocks.value);
 }
 
-// 源码模式不解析；切回所见即所得时立即解析一次
-watch(() => props.sourceMode, (source) => {
-  if (!source) reparse();
+// 源码模式不解析；切回所见即所得时立即解析一次并在解析完成后恢复滚动位置
+watch(() => props.sourceMode, async (source) => {
+  if (!source) await reparse();
+  restoreScrollPosition();
 });
 
 async function reparse() {
@@ -394,10 +432,19 @@ function setEditableEl(el) {
     // 期间用户点击切换了编辑目标，或元素已被卸载，则放弃聚焦
     if (editableEl !== el || !el.isConnected) {
       pendingCaretOffset = null;
+      pendingPreciseRawOffset = null;
       return;
     }
-    el.focus();
-    if (pendingCaretOffset != null) {
+    el.focus({ preventScroll: true });
+    if (pendingPreciseRawOffset != null) {
+      // 源码 → WYSIWYG 切换：块内源码偏移经「序列化对齐」精确换算为 DOM 位置
+      const target = pendingPreciseRawOffset;
+      pendingPreciseRawOffset = null;
+      const md = block && block.start != null ? content.value.slice(block.start, block.end) : '';
+      markdownOffsetToPlainOffset(el, md, target).then((plain) => {
+        if (editableEl === el && el.isConnected) placeCaretAtTextOffset(el, plain);
+      });
+    } else if (pendingCaretOffset != null) {
       // 合并两块后：光标落在上一块原文末尾（接缝处）
       const offset = pendingCaretOffset;
       pendingCaretOffset = null;
@@ -408,12 +455,54 @@ function setEditableEl(el) {
     } else {
       placeCursorAtEnd(el);
     }
+    // 源码/WYSIWYG 切换后：光标已放置，把光标滚动到窗口中间。
+    // 含图片时等待图片加载完成后再重算一次，避免布局变化导致光标错位。
+    if (restoreCaretAdjustment) {
+      restoreCaretAdjustment = null;
+      nextTick(() => {
+        requestAnimationFrame(() => adjustCaretToViewportCenter());
+        waitForImages(scrollRoot.value).then(() => {
+          requestAnimationFrame(() => adjustCaretToViewportCenter());
+        });
+      });
+    }
   });
 }
+
+// 等待 root 内所有图片加载完成（包含已完成/加载失败）
+function waitForImages(root) {
+  if (!root) return Promise.resolve();
+  const imgs = root.querySelectorAll('img');
+  if (!imgs.length) return Promise.resolve();
+  return Promise.all(
+    [...imgs].map((img) =>
+      img.complete
+        ? Promise.resolve()
+        : new Promise((resolve) => {
+            img.addEventListener('load', resolve, { once: true });
+            img.addEventListener('error', resolve, { once: true });
+          }),
+    ),
+  );
+}
+
+// 把光标滚动到窗口中间
+function adjustCaretToViewportCenter() {
+  const sel = window.getSelection();
+  const root = scrollRoot.value;
+  if (!sel?.rangeCount || !root) return;
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  const rootRect = root.getBoundingClientRect();
+  const viewportHeight = root.clientHeight;
+  root.scrollTop += rect.top - rootRect.top - viewportHeight / 2;
+}
+
 // setEditableEl 的下一次挂载把光标放在内容开头（Enter 拆分进入新块）
 let cursorAtStart = false;
 // 下一次挂载把光标放在指定纯文本偏移（块首退格合并两块）；优先于 cursorAtStart
 let pendingCaretOffset = null;
+// 下一次挂载把源码偏移经序列化对齐精确换算为 DOM 位置（源码 → WYSIWYG 切换）
+let pendingPreciseRawOffset = null;
 
 function startEdit(block) {
   if (syncing.value) return;
@@ -868,19 +957,15 @@ function onEditableKeydown(e) {
       }
       return;
     }
-    // 行内 ←/→：标题调级别 / 列表调类型 / 表格在 项→行→列 字段间循环
+    // 行内 ←/→：文本行移动徽章 / 表格在 项→行→列 字段间循环
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
       const item = items[slashIndex.value];
-      if (item?.id === 'heading') {
+      if (item?.id === 'text') {
         e.preventDefault();
-        slashLevel.value =
-          e.key === 'ArrowRight' ? Math.min(6, slashLevel.value + 1) : Math.max(1, slashLevel.value - 1);
-        return;
-      }
-      if (item?.id === 'list') {
-        e.preventDefault();
-        slashListType.value =
-          e.key === 'ArrowRight' ? Math.min(2, slashListType.value + 1) : Math.max(0, slashListType.value - 1);
+        slashTextIndex.value =
+          e.key === 'ArrowRight'
+            ? Math.min(SLASH_TEXT_BADGES.length - 1, slashTextIndex.value + 1)
+            : Math.max(0, slashTextIndex.value - 1);
         return;
       }
       if (item?.id === 'table') {
@@ -1053,8 +1138,233 @@ function locateTaskInRoot(id) {
 
 // ---------- 大纲联动 ----------
 
+// 滚动到指定脚注定义（底部集中区域）并短暂闪烁高亮
+function scrollToFootnote(id) {
+  const root = scrollRoot.value;
+  if (!root) return;
+  const el = root.querySelector(`[data-footnote-def="${id}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  flashId.value = `fn-def-${id}`;
+  setTimeout(() => {
+    if (flashId.value === `fn-def-${id}`) flashId.value = null;
+  }, 1200);
+}
+
+// 从脚注定义返回对应引用位置
+function scrollToFootnoteRef(refIndex) {
+  const root = scrollRoot.value;
+  if (!root) return;
+  const el = root.querySelector(`[data-footnote-ref="${refIndex}"]`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+// 捕获当前编辑器的滚动锚点（content 字符偏移 + 视口顶部偏移），
+// 用于源码/WYSIWYG 切换后尽可能保持同一文档位置。
+function getLineStartBefore(text, offset) {
+  let i = Math.max(0, Math.min(offset, text.length));
+  while (i > 0 && text[i - 1] !== '\n') i--;
+  return i;
+}
+
+// 两个字符串的最长公共前缀长度（UTF-16 码元数，与 Rust 端偏移约定一致）
+function lcpLength(a, b) {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a[i] === b[i]) i++;
+  return i;
+}
+
+// 编辑态光标 → 源码精确偏移的原理（序列化对齐）：光标前 DOM 片段经
+// serialize_markdown 序列化后，与整块序列化求最长公共前缀——前缀终点即
+// 光标在块源码中的精确位置（前后两部分序列化在光标前必然一致，光标后开始分叉）。
+// 块内 Markdown 源码偏移 → 编辑态 DOM 纯文本偏移（精确）：逐文本节点用同一原理
+// 求其源码偏移，命中目标后按字符细化（节点内文本与源码基本 1:1）。
+async function markdownOffsetToPlainOffset(el, md, target) {
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let plain = 0;
+  let prevMdOff = 0;
+  let node;
+  while ((node = walker.nextNode())) {
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.setEnd(node, node.textContent.length);
+    const div = document.createElement('div');
+    div.append(range.cloneContents());
+    const beforeMd = await invoke('serialize_markdown', { blocks: domToBlockDtos(div) }).catch(() => '');
+    const mdOff = lcpLength(beforeMd, md);
+    if (mdOff >= target) {
+      const delta = target - prevMdOff;
+      return plain + Math.min(Math.max(0, delta), node.textContent.length);
+    }
+    plain += node.textContent.length;
+    prevMdOff = mdOff;
+  }
+  return plain;
+}
+
+// raw Markdown 源码偏移 → 编辑态 pre 中 escapeHtml 后的 DOM 文本偏移
+function rawOffsetToDomOffset(rawSource, rawOffset) {
+  let domOffset = 0;
+  const limit = Math.max(0, Math.min(rawOffset, rawSource.length));
+  for (let i = 0; i < limit; i++) {
+    const c = rawSource[i];
+    if (c === '&') domOffset += 5;
+    else if (c === '<') domOffset += 4;
+    else if (c === '>') domOffset += 4;
+    else if (c === '"') domOffset += 6;
+    else domOffset += 1;
+  }
+  return domOffset;
+}
+
+const RAW_BLOCK_TYPES = new Set([
+  'codeBlock',
+  'table',
+  'mathBlock',
+  'mermaidBlock',
+  'htmlBlock',
+  'sectionBlock',
+  'comment',
+  'rawMarkdown',
+  'footnoteDefinition',
+]);
+
+// 计算 textarea 内指定偏移光标的精确纵向位置（内容坐标）：
+// 用同宽同字体的隐藏镜像 div 测量——长段落折行后「硬换行数 × 行高」会严重偏小，
+// 镜像测量把折行也算进去（窗口越窄折行越多，估算误差越大）
+function caretContentTopInTextarea(source, offset) {
+  const style = window.getComputedStyle(source);
+  const mirror = document.createElement('div');
+  mirror.style.cssText =
+    'position:absolute;visibility:hidden;white-space:pre-wrap;overflow-wrap:break-word;box-sizing:border-box;' +
+    `width:${source.clientWidth}px;` +
+    `font-family:${style.fontFamily};font-size:${style.fontSize};font-weight:${style.fontWeight};` +
+    `line-height:${style.lineHeight};letter-spacing:${style.letterSpacing};` +
+    `padding:${style.padding};border-width:${style.borderWidth};tab-size:${style.tabSize};`;
+  mirror.textContent = source.value.slice(0, offset);
+  const marker = document.createElement('span');
+  marker.textContent = '​';
+  mirror.append(marker);
+  document.body.append(mirror);
+  const top = marker.offsetTop;
+  mirror.remove();
+  return top;
+}
+
+async function captureScrollPosition() {
+  const source = sourceRoot.value;
+  const wysiwyg = scrollRoot.value;
+  if (source) {
+    // 源码模式：textarea 的 selectionStart 即精确 UTF-16 偏移
+    savedAnchorOffset = source.selectionStart;
+    const style = window.getComputedStyle(source);
+    const lineHeight = parseFloat(style.lineHeight);
+    const textBefore = source.value.slice(0, savedAnchorOffset);
+    const topLine = lineHeight ? (textBefore.match(/\n/g) || []).length : 0;
+    savedTopMargin = source.scrollTop - topLine * lineHeight;
+  } else if (wysiwyg) {
+    const root = wysiwyg;
+    const el = currentEditable();
+    // 编辑态：先按「序列化对齐」求光标的精确源码偏移，再提交当前编辑
+    //（保证源码视图内容与编辑器一致；偏移在提交后的 content 中依然成立）
+    if (el && editingId.value !== null) {
+      const sel = window.getSelection();
+      if (sel.rangeCount && el.contains(sel.anchorNode)) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.setEnd(sel.anchorNode, sel.anchorOffset);
+        const beforeDiv = document.createElement('div');
+        beforeDiv.append(range.cloneContents());
+        const beforeMd = await invoke('serialize_markdown', { blocks: domToBlockDtos(beforeDiv) }).catch(() => '');
+        if (editingId.value === '__append__') {
+          const fullMd = (await invoke('serialize_markdown', { blocks: domToBlockDtos(el) }).catch(() => '')).trim();
+          const base = content.value ? content.value.replace(/\s*$/, '') : '';
+          const anchor = base ? base.length + 2 : 0;
+          savedAnchorOffset = fullMd ? anchor + lcpLength(beforeMd, fullMd) : base.length;
+        } else {
+          const block = blocks.value.find((b) => b.id === editingId.value);
+          const fullMd = await invoke('serialize_markdown', { blocks: domToBlockDtos(el) }).catch(() => '');
+          savedAnchorOffset = block && block.start != null ? block.start + lcpLength(beforeMd, fullMd) : 0;
+        }
+        const rect = sel.getRangeAt(0).getBoundingClientRect();
+        savedTopMargin = rect.top - root.getBoundingClientRect().top;
+        await commitEdit();
+        return;
+      }
+    }
+    // 无编辑态时回退到视口顶部块
+    const els = root.querySelectorAll('[data-block-id]');
+    let anchorEl = null;
+    for (const el2 of els) {
+      if (el2.offsetTop >= root.scrollTop) {
+        anchorEl = el2;
+        break;
+      }
+    }
+    if (!anchorEl && els.length) anchorEl = els[els.length - 1];
+    const blockId = anchorEl?.getAttribute('data-block-id');
+    const block = blocks.value.find((b) => b.id === blockId);
+    savedAnchorOffset = block?.start != null ? getLineStartBefore(content.value, block.start) : 0;
+    savedTopMargin = anchorEl ? anchorEl.offsetTop - root.scrollTop : 0;
+  } else {
+    savedAnchorOffset = 0;
+    savedTopMargin = 0;
+  }
+}
+
+function restoreScrollPosition() {
+  nextTick(() => {
+    requestAnimationFrame(() => {
+      const source = sourceRoot.value;
+      const wysiwyg = scrollRoot.value;
+      if (source) {
+        // 镜像测量光标真实纵坐标（含折行），再居中；先滚动后放选区避免原生滚动抢占
+        const caretY = caretContentTopInTextarea(source, savedAnchorOffset);
+        const targetTop = Math.max(0, caretY - source.clientHeight / 2);
+        source.scrollTop = targetTop;
+        source.focus({ preventScroll: true });
+        source.setSelectionRange(savedAnchorOffset, savedAnchorOffset);
+        setTimeout(() => {
+          if (source.isConnected) source.scrollTop = targetTop;
+        }, 0);
+      } else if (wysiwyg) {
+        const root = wysiwyg;
+        const block =
+          blocks.value.find((b) => b.start != null && b.start <= savedAnchorOffset && (b.end ?? Infinity) >= savedAnchorOffset) ??
+          blocks.value.find((b) => b.start != null && b.start >= savedAnchorOffset);
+        if (!block) return;
+        const el = root.querySelector(`[data-block-id="${block.id}"]`);
+        if (!el) return;
+        // 初始把目标块大致放到视口中央，随后 setEditableEl 会把光标精确居中
+        root.scrollTop = el.offsetTop - root.clientHeight / 2;
+        // 切回 WYSIWYG 后自动进入锚点块编辑态并放置光标，
+        // 后续在 setEditableEl 中再把光标精确滚动到窗口中间。
+        suppressBlurCommit = true;
+        editingId.value = block.id;
+        cursorAtStart = false;
+        restoreCaretAdjustment = true;
+        const rawOffset = Math.max(0, savedAnchorOffset - block.start);
+        if (RAW_BLOCK_TYPES.has(block.type)) {
+          // 原子/原文块：raw 源码与 DOM 文本 escape 换算后 1:1（精确）
+          const rawSource = content.value.slice(block.start, block.end);
+          pendingCaretOffset = rawOffsetToDomOffset(rawSource, rawOffset);
+        } else {
+          // 富文本块：交给 setEditableEl 经「序列化对齐」精确换算（见 pendingPreciseRawOffset）
+          pendingPreciseRawOffset = rawOffset;
+        }
+      }
+    });
+  });
+}
+
+provide('scrollToFootnote', (id) => scrollToFootnote(id));
+provide('scrollToFootnoteRef', (refIndex) => scrollToFootnoteRef(refIndex));
+
 // 滚动到指定块并短暂闪烁高亮（侧边栏目录/大纲点击定位）
 function scrollToBlock(id) {
+
   const root = scrollRoot.value;
   if (!root) return;
   const el = root.querySelector(`[data-block-id="${id}"]`);
@@ -1107,13 +1417,14 @@ function markSaved() {
   savedContent.value = content.value;
 }
 
-defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () => isDirty.value });
+defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () => isDirty.value, captureScrollPosition, restoreScrollPosition });
 </script>
 
 <template>
   <div class="flex h-full flex-col">
     <textarea
       v-if="sourceMode"
+      ref="sourceRoot"
       class="t-root flex-1 resize-none border-none font-mono outline-none"
       placeholder="开始写作..."
       v-model="content"
@@ -1124,7 +1435,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
 
     <div v-else ref="scrollRoot" class="t-root flex-1 overflow-y-auto" @scroll.passive="onEditorScroll">
       <div class="t-measure">
-      <template v-for="block in blocks" :key="block.id">
+      <template v-for="block in renderedBlocks" :key="block.id">
         <!-- Typora 式就地编辑：渲染后的内容直接在 contenteditable 中编辑 -->
         <div
           v-if="editingId === block.id"
@@ -1160,7 +1471,22 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         @blur="onEditableBlur"
       ></div>
       <div v-else class="min-h-24 cursor-text p-4" @click="startAppend">
-        <span v-if="blocks.length === 0" class="t-dim px-1">开始写作...</span>
+        <span v-if="renderedBlocks.length === 0" class="t-dim px-1">开始写作...</span>
+      </div>
+
+      <!-- 脚注定义集中显示在文档末尾，支持点击引用跳转与返回 -->
+      <div v-if="footnotes.length" class="md-footnotes">
+        <div class="md-footnotes-title">脚注</div>
+        <div
+          v-for="block in footnotes"
+          :key="block.id"
+          class="md-block cursor-text px-1"
+          :class="{ 'md-flash': flashId === 'fn-def-' + plainText(block.title) }"
+          :data-block-id="block.id"
+          @click="startEdit(block)"
+        >
+          <BlockView :block="block" :ordinal="1" @toggle-task="toggleTask" />
+        </div>
       </div>
       </div>
     </div>
@@ -1172,8 +1498,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
       <SlashMenu
         :items="langOpen ? langMenuItems : slashItems"
         :index="langOpen ? langIndex : slashIndex"
-        :heading-level="slashLevel"
-        :list-type="slashListType"
+        :text-index="slashTextIndex"
         :table-rows="slashTableRows"
         :table-cols="slashTableCols"
         :table-field="slashTableField"
@@ -1181,8 +1506,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         :top="langOpen ? langPos.top : slashPos.top"
         @pick="(item, option) => (langOpen ? applyLangItem(item.id) : applySlashItem(item, option))"
         @hover="(i) => (langOpen ? (langIndex = i) : (slashIndex = i))"
-        @heading-level="(lv) => (slashLevel = lv)"
-        @list-type="(t) => (slashListType = t)"
+        @text-index="(t) => (slashTextIndex = t)"
         @table-field="(f) => (slashTableField = f)"
       />
     </div>

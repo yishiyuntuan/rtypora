@@ -26,6 +26,11 @@
 .t-root ::selection {
   background: var(--t-selection);
 }
+.t-root:focus,
+.t-root :focus {
+  caret-color: #f59102;
+}
+
 /* 滚动条 */
 .t-root::-webkit-scrollbar {
   width: 10px;
@@ -127,6 +132,22 @@
 .t-root .md-pre .ts-property { color: var(--t-code-syntax-property); }
 .t-root .md-pre .ts-operator { color: var(--t-code-syntax-operator); }
 .t-root .md-pre .ts-punctuation { color: var(--t-code-syntax-punctuation); }
+
+/* 列表编辑态：原生 ul/ol 标记按层级区分（与渲染态 •/◦/▪、1./a./i. 一致）。
+   按「列表祖先数量」判定层级而非依赖类名，覆盖 blockToHtml 生成、快捷输入、
+   Tab 缩进等全部生成路径；任务列表保持 list-none 用勾选框。 */
+.t-root .md-editing :is(ul, ol) ul:not(.blk-task-list-item) {
+  list-style-type: circle;
+}
+.t-root .md-editing :is(ul, ol) ol {
+  list-style-type: lower-alpha;
+}
+.t-root .md-editing :is(ul, ol) :is(ul, ol) ul:not(.blk-task-list-item) {
+  list-style-type: square;
+}
+.t-root .md-editing :is(ul, ol) :is(ul, ol) ol {
+  list-style-type: lower-roman;
+}
 
 /* 列表标记与任务勾选框 */
 .t-root .md-marker {
@@ -267,6 +288,8 @@
 .t-root .md-editing {
   background: var(--t-source-mode-block-bg);
   border-radius: 4px;
+  outline: 1px solid #f59102;
+  outline-offset: 2px;
 }
 
 /* 大纲点击定位后的闪烁高亮 */
@@ -305,6 +328,7 @@
   position: fixed;
   z-index: 60;
   min-width: 200px;
+  max-width: 320px;
   max-height: 264px;
   overflow-y: auto;
   padding: 4px;
@@ -339,19 +363,24 @@
   display: block;
   margin: 0 auto;
 }
-/* 标题行的 H1-H6 徽章 */
+/* 标题行的 H1-H6 徽章（文本行合并徽章可折行显示；row-break 处强制两行 */
 .md-slash-levels {
   display: flex;
+  flex-wrap: wrap;
   gap: 3px;
 }
+.md-slash-row-break {
+  flex-basis: 100%;
+  height: 0;
+}
 .md-slash-level {
-  min-width: 24px;
+  min-width: 22px;
   padding: 1px 3px;
   border: 1px solid var(--t-table-border);
   border-radius: 4px;
   text-align: center;
   font-family: var(--t-code-font-family);
-  font-size: 11px;
+  font-size: 10px;
   color: var(--t-text-placeholder);
 }
 .md-slash-level-active {
@@ -364,8 +393,8 @@
   padding: 2px 4px;
 }
 .md-slash-level-icon svg {
-  width: 14px;
-  height: 14px;
+  width: 13px;
+  height: 13px;
   display: block;
 }
 .md-slash-level-icon.md-slash-level-active {
@@ -404,6 +433,57 @@
 /* 通用弱化文字（占位提示、列表标记、脚注等） */
 .t-dim {
   color: var(--t-text-placeholder);
+}
+
+/* 脚注区域：定义集中在文档末尾渲染，引用点击可跳转 */
+.t-root .md-footnotes {
+  border-top: 1px solid var(--t-separator-color);
+  margin-top: 40px;
+  padding-top: 16px;
+}
+.t-root .md-footnotes-title {
+  color: var(--t-text-placeholder);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 8px;
+}
+.t-root .blk-footnote-definition {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: start;
+  margin: 8px 0;
+  font-size: 0.85em;
+  color: var(--t-text-default);
+}
+.t-root .md-footnote-id {
+  white-space: nowrap;
+}
+.t-root .md-footnote-content {
+  min-width: 0;
+}
+.t-root .md-footnote-content p:first-child {
+  margin-top: 0;
+}
+.t-root .md-footnote-content p:last-child {
+  margin-bottom: 0;
+}
+.t-root .md-footnote-ref,
+.t-root .md-footnote-back a {
+  color: var(--t-text-link);
+  text-decoration: none;
+  cursor: pointer;
+}
+.t-root .md-footnote-ref:hover,
+.t-root .md-footnote-back a:hover {
+  text-decoration: underline;
+}
+.t-root .md-footnote-back {
+  white-space: nowrap;
+}
+.t-root .md-footnote-back-item {
+  margin-left: 4px;
 }
 
 /* 侧边栏标签页：单一指示条颜色，仅活跃标签显示，带切换过渡动画 */

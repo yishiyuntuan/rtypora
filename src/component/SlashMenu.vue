@@ -1,17 +1,15 @@
 <script setup>
 import { ref, watch } from 'vue';
-import { SLASH_LIST_TYPES } from '../utils/wysiwyg.js';
+import { SLASH_TEXT_BADGES } from '../utils/wysiwyg.js';
 
 // 斜杠命令菜单面板：只负责展示与事件转发。
-// 标题行（H1-H6 徽章）、列表行（无序/有序/任务徽章）、表格行（行×列数量，
+// 「文本」行（标题级别 + 三种列表 + 行内代码合并徽章）、表格行（行×列数量，
 // ↑/↓ 增减、←/→ 切换行列）；样式走 --t-* 主题变量，blocks.slashMenu* 可定制。
 const props = defineProps({
   items: { type: Array, default: () => [] },
   index: { type: Number, default: 0 },
-  // 标题行当前级别（1-6）
-  headingLevel: { type: Number, default: 1 },
-  // 列表行当前类型下标（0 无序 / 1 有序 / 2 任务）
-  listType: { type: Number, default: 0 },
+  // 文本行当前徽章下标（0-9，←/→ 或悬停徽章调整）
+  textIndex: { type: Number, default: 0 },
   // 表格行行列数量与当前调节字段（'rows' | 'cols'）
   tableRows: { type: Number, default: 2 },
   tableCols: { type: Number, default: 2 },
@@ -19,9 +17,9 @@ const props = defineProps({
   left: { type: Number, default: 0 },
   top: { type: Number, default: 0 },
 });
-const emit = defineEmits(['pick', 'hover', 'heading-level', 'list-type', 'table-field']);
+const emit = defineEmits(['pick', 'hover', 'text-index', 'table-field']);
 
-const listTypes = SLASH_LIST_TYPES;
+const textBadges = SLASH_TEXT_BADGES;
 
 // 键盘导航时让选中项保持可见：只调整菜单自身滚动位置
 //（不用 scrollIntoView——它会连带滚动编辑器/页面等外层滚动容器；
@@ -47,9 +45,9 @@ watch(
   <div ref="menuEl" class="md-slash-menu" :style="{ left: `${left}px`, top: `${top}px` }">
     <template v-if="items.length">
       <template v-for="(item, i) in items" :key="item.id">
-        <!-- 标题：一行 H1-H6 徽章，点击徽章直接应用对应级别 -->
+        <!-- 文本：一行合并徽章（H1-H6 + 无序/有序/任务列表 + 行内代码） -->
         <div
-          v-if="item.id === 'heading'"
+          v-if="item.id === 'text'"
           class="md-slash-item"
           :class="{ 'md-slash-item-active': i === index }"
           @mousedown.prevent="emit('pick', item)"
@@ -57,36 +55,17 @@ watch(
         >
           <span class="md-slash-icon" v-html="item.icon"></span>
           <span class="md-slash-levels">
-            <span
-              v-for="lv in 6"
-              :key="lv"
-              class="md-slash-level"
-              :class="{ 'md-slash-level-active': i === index && lv === headingLevel }"
-              @mousedown.prevent.stop="emit('pick', item, lv)"
-              @mouseenter="emit('heading-level', lv)"
-            >H{{ lv }}</span>
-          </span>
-        </div>
-        <!-- 列表：一行 无序/有序/任务 图标徽章 -->
-        <div
-          v-else-if="item.id === 'list'"
-          class="md-slash-item"
-          :class="{ 'md-slash-item-active': i === index }"
-          @mousedown.prevent="emit('pick', item)"
-          @mouseenter="emit('hover', i)"
-        >
-          <span class="md-slash-icon" v-html="item.icon"></span>
-          <span class="md-slash-levels">
-            <span
-              v-for="(t, ti) in listTypes"
-              :key="t.id"
-              class="md-slash-level md-slash-level-icon"
-              :class="{ 'md-slash-level-active': i === index && ti === listType }"
-              :title="t.label"
-              @mousedown.prevent.stop="emit('pick', item, ti)"
-              @mouseenter="emit('list-type', ti)"
-              v-html="t.icon"
-            ></span>
+            <template v-for="(b, bi) in textBadges" :key="b.id">
+              <!-- 第 7 个徽章前强制换行：H1-H6 一行，列表/任务/行内代码一行 -->
+              <span v-if="bi === 6" class="md-slash-row-break"></span>
+              <span
+                class="md-slash-level"
+                :class="{ 'md-slash-level-icon': !!b.icon, 'md-slash-level-active': i === index && bi === textIndex }"
+                :title="b.label"
+                @mousedown.prevent.stop="emit('pick', item, bi)"
+                @mouseenter="emit('text-index', bi)"
+              ><span v-if="b.icon" v-html="b.icon"></span><template v-else>{{ b.text }}</template></span>
+            </template>
           </span>
         </div>
         <!-- 表格：行×列数量徽章（点击徽章切换调节字段，行点击应用） -->

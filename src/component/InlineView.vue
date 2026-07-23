@@ -1,19 +1,33 @@
 <script setup>
+import { computed, inject } from 'vue';
 import MathView from './MathView.vue';
 
 // 行内渲染器：渲染 velotype InlineTextTree 的 fragments。
 // 每个 fragment 的样式为标志位组合，通过递归逐层包裹元素（link → 粗 → 斜 → 删 → 下划线 → 代码 → 上下标）。
-defineProps({
+const props = defineProps({
   tree: { type: Object, default: null },
   // 递归内部使用：直接渲染单个去掉了部分样式的 fragment
   fragment: { type: Object, default: null },
 });
+
+const currentBlockId = inject('currentBlockId', null);
+const getFootnoteRefIndex = inject('getFootnoteRefIndex', () => 0);
+const scrollToFootnote = inject('scrollToFootnote', () => {});
 
 const LINK_CLASS = 'underline underline-offset-2';
 const INLINE_CODE_CLASS = 'md-code px-1 py-0.5 font-mono';
 
 function linkHref(link) {
   return link?.destination || link?.target || '';
+}
+
+function refIndexOf(fragment) {
+  if (!fragment?.footnote || !currentBlockId) return 0;
+  return getFootnoteRefIndex(fragment.footnote.id, fragment.footnote.occurrenceIndex, currentBlockId);
+}
+
+function onFootnoteClick(fragment) {
+  if (fragment?.footnote) scrollToFootnote(fragment.footnote.id);
 }
 
 // 递归剥离一层样式包装
@@ -38,7 +52,13 @@ function withoutLink(fragment) {
 
   <!-- 单个 fragment：特殊载体优先，之后逐层剥样式 -->
   <template v-else-if="fragment">
-    <sup v-if="fragment.footnote" class="md-footnote-ref align-super text-[0.75em]">[{{ fragment.footnote.id }}]</sup>
+    <a
+      v-if="fragment.footnote"
+      :data-footnote-ref="refIndexOf(fragment)"
+      href="javascript:void(0)"
+      class="md-footnote-ref align-super text-[0.75em]"
+      @click.stop.prevent="onFootnoteClick(fragment)"
+    ><sup>[{{ fragment.footnote.id }}]</sup></a>
     <MathView v-else-if="fragment.math" :source="fragment.math.body" />
     <a
       v-else-if="fragment.link"

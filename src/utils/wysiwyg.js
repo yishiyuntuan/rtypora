@@ -100,27 +100,30 @@ function fragmentToHtml(f) {
 
 // 块 → 可编辑 HTML。rawSource 为该块在全文中的原始 Markdown 切片（原子块按原文编辑）。
 // 富编辑块带与渲染态一致的 blk-* 语义类（按块自定义样式在编辑态同样生效）。
-export function blockToHtml(block, rawSource) {
+// depth 为列表嵌套层级（0 起）：ul/ol 带 lst-d{1..3} 层级类，编辑态标记随层级
+// 区分（圆点 disc/circle/square、序号 decimal/lower-alpha/lower-roman，与渲染态一致）。
+export function blockToHtml(block, rawSource, depth = 0) {
+  const lstClass = `lst-d${Math.min(depth + 1, 3)}`;
   switch (block.type) {
     case 'paragraph':
       return `<p class="blk-paragraph ${P_CLASS}">${inlineToHtml(block.title)}</p>`;
     case 'heading':
       return `<h${block.level} class="blk-heading whitespace-pre-wrap ${headingClasses[block.level] || 'my-2'}">${inlineToHtml(block.title)}</h${block.level}>`;
     case 'bulletedListItem':
-      return `<ul class="blk-bulleted-list-item my-2 pl-6 list-disc"><li class="my-0.5">${listItemBodyHtml(block)}</li></ul>`;
+      return `<ul class="blk-bulleted-list-item ${lstClass} my-2 pl-6 list-disc"><li class="my-0.5">${listItemBodyHtml(block, depth)}</li></ul>`;
     case 'numberedListItem':
-      return `<ol class="blk-numbered-list-item my-2 pl-6 list-decimal"><li class="my-0.5">${listItemBodyHtml(block)}</li></ol>`;
+      return `<ol class="blk-numbered-list-item ${lstClass} my-2 pl-6 list-decimal"><li class="my-0.5">${listItemBodyHtml(block, depth)}</li></ol>`;
     case 'taskListItem': {
       // 勾选框不可编辑、不可点击（勾选在渲染态完成）
       const checkbox = `<input type="checkbox" class="pointer-events-none mt-[5px] shrink-0" data-checked="${block.checked ? 'x' : ' '}" ${block.checked ? 'checked' : ''} contenteditable="false">`;
-      const body = `<div class="flex items-start gap-1.5">${checkbox}<div class="min-w-0 flex-1">${listItemBodyHtml(block)}</div></div>`;
-      return `<ul class="blk-task-list-item my-2 list-none pl-4"><li class="my-0.5">${body}</li></ul>`;
+      const body = `<div class="flex items-start gap-1.5">${checkbox}<div class="min-w-0 flex-1">${listItemBodyHtml(block, depth)}</div></div>`;
+      return `<ul class="blk-task-list-item ${lstClass} my-2 list-none pl-4"><li class="my-0.5">${body}</li></ul>`;
     }
     case 'quote': {
       const title = plainText(block.title)
         ? `<p class="${P_CLASS}">${inlineToHtml(block.title)}</p>`
         : '';
-      return `<blockquote class="blk-quote ${QUOTE_CLASS}">${title}${(block.children || []).map((c) => blockToHtml(c)).join('')}</blockquote>`;
+      return `<blockquote class="blk-quote ${QUOTE_CLASS}">${title}${(block.children || []).map((c) => blockToHtml(c, undefined, depth)).join('')}</blockquote>`;
     }
     case 'codeBlock':
       // 编辑态不内嵌高亮（避免 contenteditable 拆分 span），渲染态经 Rust tree-sitter 高亮
@@ -142,9 +145,9 @@ export function blockToHtml(block, rawSource) {
   }
 }
 
-function listItemBodyHtml(block) {
+function listItemBodyHtml(block, depth = 0) {
   const title = plainText(block.title) ? inlineToHtml(block.title) : '<br>';
-  return title + (block.children || []).map((c) => blockToHtml(c)).join('');
+  return title + (block.children || []).map((c) => blockToHtml(c, undefined, depth + 1)).join('');
 }
 
 // ---------- contenteditable DOM → BlockDto JSON ----------
@@ -287,10 +290,19 @@ function domChildrenToBlocks(el) {
   return blocks;
 }
 
+// 去掉首尾由占位 <br> 产生的换行 fragment（空结构占位或输入残留；
+// 中间的 Shift+Enter 软换行保留）
+function trimEdgeNewlines(fragments) {
+  const out = [...fragments];
+  while (out.length && out[0].text === '\n') out.shift();
+  while (out.length && out[out.length - 1].text === '\n') out.pop();
+  return out;
+}
+
 function elementToBlocks(el) {
   const tag = el.tagName;
   if (/^H[1-6]$/.test(tag)) {
-    const fragments = domToInlines(el);
+    const fragments = trimEdgeNewlines(domToInlines(el));
     // 标题删空后降级为段落（与 Typora 行为一致，不再保留空标题渲染）
     if (!fragments.some((f) => f.text.trim() || f.footnote || f.math)) {
       return [makeBlock({ type: 'paragraph' })];
@@ -298,7 +310,7 @@ function elementToBlocks(el) {
     return [makeBlock({ type: 'heading', level: Number(tag[1]) }, { title: makeTree(fragments) })];
   }
   if (tag === 'P' || tag === 'DIV') {
-    return [makeBlock({ type: 'paragraph' }, { title: makeTree(domToInlines(el)) })];
+    return [makeBlock({ type: 'paragraph' }, { title: makeTree(trimEdgeNewlines(domToInlines(el))) })];
   }
   if (tag === 'PRE') {
     // 原子/保留类块按原文回写
@@ -595,9 +607,8 @@ export const SLASH_ICON = {
 };
 
 export const SLASH_ITEMS = [
-  { id: 'heading', label: '标题', icon: SLASH_ICON.heading, keywords: 'h1 h2 h3 h4 h5 h6 biaoti bt heading' },
+  { id: 'text', label: '文本', icon: SLASH_ICON.paragraph, keywords: 'h1 h2 h3 h4 h5 h6 heading biaoti bt list liebiao lb task todo renwu rw code daima wenben wb' },
   { id: 'paragraph', label: '正文段落', icon: SLASH_ICON.paragraph, keywords: 'p text duanluo dl zhengwen zw' },
-  { id: 'list', label: '列表', icon: SLASH_ICON.bulletedListItem, keywords: 'ul ol task list liebiao lb wuxu wx youxu yx renwu rw' },
   { id: 'quote', label: '引用', icon: SLASH_ICON.quote, keywords: 'quote yinyong yy' },
   { id: 'codeBlock', label: '代码块', icon: SLASH_ICON.codeBlock, keywords: 'code daima dm' },
   { id: 'table', label: '表格', icon: SLASH_ICON.table, keywords: 'table biaoge bg' },
@@ -639,6 +650,20 @@ export const SLASH_LIST_TYPES = [
   { id: 'bulletedListItem', icon: SLASH_ICON.bulletedListItem, label: '无序列表' },
   { id: 'numberedListItem', icon: SLASH_ICON.numberedListItem, label: '有序列表' },
   { id: 'taskListItem', icon: SLASH_ICON.taskListItem, label: '任务列表' },
+];
+
+// 「文本」行的合并徽章（标题级别 + 三种列表 + 行内代码，一行展示，←/→ 或点选）
+export const SLASH_TEXT_BADGES = [
+  { id: 'h1', text: 'H1', label: '一级标题' },
+  { id: 'h2', text: 'H2', label: '二级标题' },
+  { id: 'h3', text: 'H3', label: '三级标题' },
+  { id: 'h4', text: 'H4', label: '四级标题' },
+  { id: 'h5', text: 'H5', label: '五级标题' },
+  { id: 'h6', text: 'H6', label: '六级标题' },
+  { id: 'bulletedListItem', icon: SLASH_ICON.bulletedListItem, label: '无序列表' },
+  { id: 'numberedListItem', icon: SLASH_ICON.numberedListItem, label: '有序列表' },
+  { id: 'taskListItem', icon: SLASH_ICON.taskListItem, label: '任务列表' },
+  { id: 'inlineCode', text: '</>', label: '行内代码' },
 ];
 
 // 应用斜杠命令：清空触发文本（/query），按所选语法构建编辑态 DOM 并放置光标；
@@ -727,6 +752,16 @@ export function applySlashCommand(el, id, opts) {
       p.textContent = '![]()';
       el.append(p);
       placeCaretAtTextOffset(p, 3);
+      return true;
+    }
+    case 'inlineCode': {
+      // 行内代码：插入空 code 元素并补 <br> 占位光标（内联元素无占位无法保持光标）。
+      // 占位 br 产生的换行 fragment 在提交时由 trimEdgeNewlines 修剪，不影响渲染。
+      const p = styled('p', '', P_CLASS);
+      const code = styled('code', '', INLINE_CODE_CLASS);
+      p.append(code);
+      el.append(p);
+      placeCursorAtEnd(code);
       return true;
     }
     case 'table': {
