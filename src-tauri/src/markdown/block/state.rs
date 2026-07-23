@@ -537,10 +537,21 @@ impl BlockRecord {
     pub fn html(markdown: impl Into<String>) -> Self {
         let markdown = markdown.into();
         let html = parse_html_document(&markdown);
-        let mut record = Self::with_plain_text(BlockKind::HtmlBlock, markdown.clone());
-        record.html = Some(html);
-        record.raw_fallback = Some(markdown);
-        record
+        Self::html_with_document(markdown, html)
+    }
+
+    /// 以已解析的 HTML 文档构造（调用方已完成安全分级），避免同一份文本被
+    /// HTML tokenizer 重复解析（原链路分类/构造/sync 三处各解析一遍）。
+    pub fn html_with_document(markdown: impl Into<String>, document: HtmlDocument) -> Self {
+        let markdown = markdown.into();
+        Self {
+            id: Uuid::new_v4(),
+            kind: BlockKind::HtmlBlock,
+            title: InlineTextTree::plain(markdown.clone()),
+            table: None,
+            html: Some(document),
+            raw_fallback: Some(markdown),
+        }
     }
 
     pub fn math(markdown: impl Into<String>) -> Self {

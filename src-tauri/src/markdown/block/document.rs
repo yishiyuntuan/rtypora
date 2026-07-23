@@ -167,8 +167,9 @@ fn is_closing_fence(line: &str, opener: &FenceInfo) -> bool {
     if !trimmed.starts_with(opener.ch) {
         return false;
     }
+    // CommonMark：闭合围栏只需不短于开围栏（`!=` 会误拒合法的更长闭合围栏）
     let run_len = trimmed.chars().take_while(|&c| c == opener.ch).count();
-    if run_len != opener.len {
+    if run_len < opener.len {
         return false;
     }
     trimmed[opener.ch.len_utf8() * run_len..].trim().is_empty()
@@ -814,9 +815,8 @@ fn comment_block( markdown: String) -> BlockNode {
 fn html_or_raw_block( markdown: String) -> BlockNode {
     let document = parse_html_document(&markdown);
     if document.safety == HtmlSafetyClass::Semantic {
-        let mut record = BlockRecord::html(markdown);
-        record.html = Some(document);
-        BlockNode::leaf(record)
+        // 复用分类时的解析结果，不再二次解析
+        BlockNode::leaf(BlockRecord::html_with_document(markdown, document))
     } else {
         raw_block(markdown)
     }

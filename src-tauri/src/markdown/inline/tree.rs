@@ -1462,12 +1462,12 @@ impl NormalizeBuilder {
         }
         let html_style = merge_html_styles(html_style, token.html_style);
 
-        let text = token.ch.to_string();
+        // 先推进偏移表与长度，再决定合并或新建——避免合并路径上每字符一次 String 分配
         let start = self.normalized_len;
         for boundary in token.source_range.start..=token.source_range.end {
             self.visible_to_normalized[boundary] = start + (boundary - token.source_range.start);
         }
-        self.normalized_len += text.len();
+        self.normalized_len += token.ch.len_utf8();
 
         if let Some(last) = self.fragments.last_mut() {
             if last.style == style
@@ -1476,13 +1476,13 @@ impl NormalizeBuilder {
                 && last.footnote.is_none()
                 && last.math.is_none()
             {
-                last.text.push_str(&text);
+                last.text.push(token.ch);
                 return;
             }
         }
 
         self.fragments.push(InlineFragment {
-            text,
+            text: token.ch.to_string(),
             style,
             html_style,
             link: None,

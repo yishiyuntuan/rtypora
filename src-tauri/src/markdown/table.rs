@@ -547,7 +547,12 @@ fn is_delimiter_row(line: &str, columns: usize) -> bool {
 /// is never mistaken for a table; single-column pipeless candidates are also
 /// rejected because they are ambiguous with setext headings.
 pub fn collect_pipeless_table_region(lines: &[String], start: usize) -> Option<usize> {
-    let header = split_table_cells(lines.get(start)?)?;
+    // 快速守卫：不含 `|` 的散文行直接排除（避免 split_table_cells 的全量分配）
+    let line = lines.get(start)?;
+    if !line.contains('|') {
+        return None;
+    }
+    let header = split_table_cells(line)?;
     if header.len() < 2 {
         return None;
     }

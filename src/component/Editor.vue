@@ -164,7 +164,7 @@ function updateSlashMenu() {
   slashOpen.value = true;
 }
 
-function applySlashItem(item, option) {
+async function applySlashItem(item, option) {
   const el = currentEditable();
   if (!el || !item) return;
   slashOpen.value = false;
@@ -177,7 +177,7 @@ function applySlashItem(item, option) {
   // 不抑制则 onEditableBlur 抢先提交空内容（块被删，新内容插到已卸载节点上）
   suppressBlurCommit = true;
   try {
-    applySlashCommand(el, id, opts);
+    await applySlashCommand(el, id, opts);
   } finally {
     suppressBlurCommit = false;
   }
@@ -440,8 +440,7 @@ function setEditableEl(el) {
       // 源码 → WYSIWYG 切换：块内源码偏移经「序列化对齐」精确换算为 DOM 位置
       const target = pendingPreciseRawOffset;
       pendingPreciseRawOffset = null;
-      const md = block && block.start != null ? content.value.slice(block.start, block.end) : '';
-      markdownOffsetToPlainOffset(el, md, target).then((plain) => {
+      markdownOffsetToPlainOffset(el, target).then((plain) => {
         if (editableEl === el && el.isConnected) placeCaretAtTextOffset(el, plain);
       });
     } else if (pendingCaretOffset != null) {
@@ -742,9 +741,10 @@ async function mergeIntoPrevBlock(dto, index, isAppend) {
   try {
     const prev = blocks.value[index - 1];
     const curEnd = isAppend ? content.value.length : blocks.value[index].end;
-    const curMd = (await invoke('serialize_markdown', { blocks: [paragraphDtoFromTree(dto.title)] })).trim();
+    const curMd = await invoke('serialize_markdown', { blocks: [paragraphDtoFromTree(dto.title)] });
     const prevSource = content.value.slice(prev.start, prev.end);
-    const combined = prevSource + curMd;
+    // 合并规则（接缝处理）由 Rust 统一维护，前端只做机械区间替换
+    const combined = await invoke('merge_block_markdown', { prevSource, appendedMarkdown: curMd });
     const junction = blockPlainText(prev).length;
     editableEl = null;
     content.value = content.value.slice(0, prev.start) + combined + content.value.slice(curEnd);
@@ -1179,12 +1179,14 @@ function lcpLength(a, b) {
 // 编辑态光标 → 源码精确偏移的原理（序列化对齐）：光标前 DOM 片段经
 // serialize_markdown 序列化后，与整块序列化求最长公共前缀——前缀终点即
 // 光标在块源码中的精确位置（前后两部分序列化在光标前必然一致，光标后开始分叉）。
-// 块内 Markdown 源码偏移 → 编辑态 DOM 纯文本偏移（精确）：逐文本节点用同一原理
-// 求其源码偏移，命中目标后按字符细化（节点内文本与源码基本 1:1）。
-async function markdownOffsetToPlainOffset(el, md, target) {
+// 块内 Markdown 源码偏移 → 编辑态 DOM 纯文本偏移（精确）：本地收集每个文本节点
+// 结束位置的「光标前片段」DTO，经 Rust lcp_offsets 一次批量求出各位置源码偏移
+//（代替逐节点往返调用），命中目标后按字符细化（节点内文本与源码基本 1:1）。
+async function markdownOffsetToPlainOffset(el, target) {
   const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-  let plain = 0;
-  let prevMdOff = 0;
+  const fullDtos = domToBlockDtos(el);
+  const beforeParts = [];
+  const nodes = [];
   let node;
   while ((node = walker.nextNode())) {
     const range = document.createRange();
@@ -1192,13 +1194,19 @@ async function markdownOffsetToPlainOffset(el, md, target) {
     range.setEnd(node, node.textContent.length);
     const div = document.createElement('div');
     div.append(range.cloneContents());
-    const beforeMd = await invoke('serialize_markdown', { blocks: domToBlockDtos(div) }).catch(() => '');
-    const mdOff = lcpLength(beforeMd, md);
+    beforeParts.push(domToBlockDtos(div));
+    nodes.push(node);
+  }
+  const mdOffs = await invoke('lcp_offsets', { fullBlocks: fullDtos, beforeParts }).catch(() => []);
+  let plain = 0;
+  let prevMdOff = 0;
+  for (let i = 0; i < nodes.length; i++) {
+    const mdOff = mdOffs[i] ?? 0;
     if (mdOff >= target) {
       const delta = target - prevMdOff;
-      return plain + Math.min(Math.max(0, delta), node.textContent.length);
+      return plain + Math.min(Math.max(0, delta), nodes[i].textContent.length);
     }
-    plain += node.textContent.length;
+    plain += nodes[i].textContent.length;
     prevMdOff = mdOff;
   }
   return plain;

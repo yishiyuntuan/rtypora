@@ -11,6 +11,15 @@ fn 导出文件名推导() {
 }
 
 #[test]
+fn 导出html装配与转义() {
+    let html = tauri_app_lib::files::build_export_html("<p>内容</p>", ":root { --t-x: 1px; }", "a<b>&\"标题");
+    assert!(html.contains("<title>a&lt;b&gt;&amp;&quot;标题</title>"), "title 必须转义: {html}");
+    assert!(html.contains("<p>内容</p>"));
+    assert!(html.contains(":root { --t-x: 1px; }"));
+    assert!(html.starts_with("<!DOCTYPE html>"));
+}
+
+#[test]
 fn 目录排序升降序() {
     let dir = std::env::temp_dir().join(format!("tauri-app-listdir-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();

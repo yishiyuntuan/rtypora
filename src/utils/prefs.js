@@ -4,6 +4,9 @@ import { ref } from 'vue';
 
 // 偏好版本号：setPref 时递增，渲染层据此响应开关变化
 export const prefsVersion = ref(0);
+// 渲染开关版本号：仅 render_* 键变化时递增——数学/Mermaid/高亮/图文排版
+// 的 watcher 依赖它而非全局版本号，避免改字号等非渲染偏好时全文重渲染
+export const renderVersion = ref(0);
 
 const STORAGE_KEY = 'tauri-editor.prefs';
 
@@ -55,6 +58,7 @@ export function setPref(key, value) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
   applyEditorOverrides(prefs);
   prefsVersion.value += 1;
+  if (key.startsWith('render_')) renderVersion.value += 1;
 }
 
 // 把编辑器排版覆盖写入独立的 --t-*-pref 覆盖变量（CSS 以

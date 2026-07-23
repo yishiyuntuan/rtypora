@@ -2,7 +2,7 @@
 import { ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { themeVersion } from '../themes/index.js';
-import { getPref, prefsVersion } from '../utils/prefs.js';
+import { getPref, renderVersion } from '../utils/prefs.js';
 
 // 数学公式渲染：Rust ratex 渲染 SVG（display 传 $$..$$ 原文，inline 传 LaTeX 正文）。
 // 颜色/字号随当前主题（themeVersion 变化时重渲染）；语法错误回退源码展示。
@@ -14,7 +14,7 @@ const props = defineProps({
 const svg = ref('');
 
 watch(
-  () => [props.source, props.display, themeVersion.value, prefsVersion.value],
+  () => [props.source, props.display, themeVersion.value, renderVersion.value],
   async () => {
     svg.value = '';
     // 偏好设置可关闭公式渲染（回退源码展示）

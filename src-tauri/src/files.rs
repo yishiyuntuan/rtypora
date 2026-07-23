@@ -200,6 +200,20 @@ pub fn html_export_name(source_name: &str) -> String {
     format!("{stem}.html")
 }
 
+/// 装配独立导出 HTML 文档：模板与 title 转义在 Rust 完成；
+/// 前端只负责从渲染 DOM 提取内容 HTML 与样式文本（视图层提取）。
+#[tauri::command]
+pub fn build_export_html(content_html: &str, css_text: &str, title: &str) -> String {
+    let escaped_title = title
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;");
+    format!(
+        "<!DOCTYPE html>\n<html lang=\"zh-CN\">\n<head>\n<meta charset=\"utf-8\">\n<title>{escaped_title}</title>\n<style>\n{css_text}\n</style>\n</head>\n<body>\n<div class=\"t-root\"><div class=\"t-measure\">\n{content_html}\n</div></div>\n</body>\n</html>"
+    )
+}
+
 /// 导出 HTML：弹出保存对话框（.html 过滤器，建议文件名由源文件名推导）并写入；取消返回 None。
 #[tauri::command]
 pub fn save_html_as(app: tauri::AppHandle, content: &str, source_name: &str) -> Option<Result<String, String>> {

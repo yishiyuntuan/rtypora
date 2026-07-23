@@ -420,20 +420,22 @@ export async function convertFenceToCodeBlock(container) {
 }
 
 // `<section>` 行按 Enter：转换为 section 图文排版块的原文编辑
-// （<section>\n\n</section>，光标在中间空行；类型判定由 Rust detect_block_shortcut 完成）。
+// （模板由 Rust block_template 生成，光标在中间空行；类型判定由 Rust detect_block_shortcut 完成）。
 export async function convertSectionToHtmlBlock(container) {
   const text = container.textContent.trim();
   // 仅开标签才调用 Rust 判定
   if (!/^<section/i.test(text)) return false;
   const hit = await invoke('detect_block_shortcut', { line: text }).catch(() => null);
   if (!hit || hit.type !== 'sectionBlock') return false;
+  const tpl = await invoke('block_template', { kind: 'sectionBlock' }).catch(() => null);
+  if (!tpl) return false;
   const pre = document.createElement('pre');
   pre.className = PRE_CLASS;
   pre.setAttribute('data-raw', '');
-  pre.textContent = '<section>\n\n</section>';
+  pre.textContent = tpl.markdown;
   container.innerHTML = '';
   container.append(pre);
-  placeCaretAtTextOffset(pre, '<section>\n'.length);
+  placeCaretAtTextOffset(pre, tpl.caretOffset);
   return true;
 }
 
@@ -456,8 +458,13 @@ async function transformInlineShortcut() {
   if (parent && (parent.closest('pre') || parent.closest('code'))) return false;
   const offset = sel.anchorOffset;
   const before = node.textContent.slice(0, offset);
-  // 可能的行内结尾才调用 Rust 判定
+  // 可能的行内结尾才继续（性能闸门，判定在 Rust）
   if (!/[*`)\]]$/.test(before)) return false;
+  // 结尾符须有对应起始符才可能是完整行内结构（否则散文中的 ) ` ] 每键一次 IPC）
+  const last = before.at(-1);
+  if (last === '*' && !before.slice(0, -1).includes('*')) return false;
+  if (last === '`' && !before.slice(0, -1).includes('`')) return false;
+  if ((last === ')' || last === ']') && !before.includes('[')) return false;
   const hit = await invoke('inline_shortcut', { text: before }).catch(() => null);
   // 等待期间光标/文本变化则放弃
   const currentSel = window.getSelection();
@@ -505,8 +512,12 @@ async function transformBlockShortcut() {
   if (!p) return false;
   const text = p.textContent;
 
-  // 可能的块标记前缀才调用 Rust 判定
+  // 可能的块标记前缀才继续（性能闸门，判定在 Rust）：
+  // 块标记都在前几个字符内完成（`###### `=7、`- [ ] `=6、`1. `=3），
+  // 超出标记形态或为围栏/分割线才调用判定，避免「2024年计划」这类每键一次 IPC
   if (!/^[#>\-+*0-9~_]/.test(text)) return false;
+  const plausible = text.length <= 7 || /^(`{3,}|~{3,})/.test(text) || /^([-*_]\s*){3,}$/.test(text);
+  if (!plausible) return false;
   const hit = await invoke('detect_block_shortcut', { line: text }).catch(() => null);
   // 等待期间用户继续输入则放弃本次转换
   if (!hit || p.textContent !== text || !p.isConnected) return false;
@@ -667,9 +678,10 @@ export const SLASH_TEXT_BADGES = [
 ];
 
 // 应用斜杠命令：清空触发文本（/query），按所选语法构建编辑态 DOM 并放置光标；
-// 原子类结构（表格/公式/Mermaid/callout/section）以原文模板进入 raw 编辑，提交时经 Rust 解析。
+// 原子类结构（表格/公式/Mermaid/callout/section/图片）的原文模板由 Rust
+// block_template 生成（表格经 TableData 序列化，无平行实现），提交时经 Rust 解析。
 // opts.rows/cols 仅表格使用（数据行数/列数）。
-export function applySlashCommand(el, id, opts) {
+export async function applySlashCommand(el, id, opts) {
   el.innerHTML = '';
   const rawPre = (text, caretOffset) => {
     const pre = document.createElement('pre');
@@ -680,6 +692,16 @@ export function applySlashCommand(el, id, opts) {
     placeCaretAtTextOffset(pre, caretOffset);
     return true;
   };
+  // 原子类模板统一走 Rust block_template（Markdown 生成规则在 Rust 维护）
+  if (['table', 'mathBlock', 'mermaidBlock', 'callout', 'sectionBlock', 'image'].includes(id)) {
+    const tpl = await invoke('block_template', {
+      kind: id,
+      rows: opts?.rows,
+      cols: opts?.cols,
+    }).catch(() => null);
+    if (tpl) return rawPre(tpl.markdown, tpl.caretOffset);
+    return false;
+  }
   if (/^h[1-6]$/.test(id)) {
     const level = Number(id[1]);
     const h = styled(`h${level}`, '', `whitespace-pre-wrap ${headingClasses[level]}`);
@@ -746,14 +768,6 @@ export function applySlashCommand(el, id, opts) {
       placeCursorAtEnd(next);
       return true;
     }
-    case 'image': {
-      // 独立图片段落语法，光标落在括号内直接输入图片路径
-      const p = styled('p', '', P_CLASS);
-      p.textContent = '![]()';
-      el.append(p);
-      placeCaretAtTextOffset(p, 3);
-      return true;
-    }
     case 'inlineCode': {
       // 行内代码：插入空 code 元素并补 <br> 占位光标（内联元素无占位无法保持光标）。
       // 占位 br 产生的换行 fragment 在提交时由 trimEdgeNewlines 修剪，不影响渲染。
@@ -764,23 +778,6 @@ export function applySlashCommand(el, id, opts) {
       placeCursorAtEnd(code);
       return true;
     }
-    case 'table': {
-      // 表格模板：行列数来自菜单调节（行 = 数据行，列 = 列数，均 ≥1）
-      const cols = Math.max(1, opts?.cols ?? 2);
-      const rows = Math.max(1, opts?.rows ?? 2);
-      const header = `| ${Array.from({ length: cols }, (_, i) => `列${i + 1}`).join(' | ')} |`;
-      const delimiter = `| ${Array.from({ length: cols }, () => '---').join(' | ')} |`;
-      const body = Array.from({ length: rows }, () => `| ${Array.from({ length: cols }, () => ' ').join(' | ')} |`).join('\n');
-      return rawPre(`${header}\n${delimiter}\n${body}`, 2);
-    }
-    case 'mathBlock':
-      return rawPre('$$\n\n$$', 3);
-    case 'mermaidBlock':
-      return rawPre('```mermaid\n\n```', 11);
-    case 'callout':
-      return rawPre('> [!NOTE]\n> ', '> [!NOTE]\n> '.length);
-    case 'sectionBlock':
-      return rawPre('<section>\n\n</section>', '<section>\n'.length);
     default:
       return false;
   }

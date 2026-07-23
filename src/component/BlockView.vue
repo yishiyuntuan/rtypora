@@ -7,7 +7,7 @@ import SectionView from './SectionView.vue';
 import { plainText, numberedOrdinals } from '../utils/wysiwyg.js';
 import { highlightCodeHtml } from '../utils/highlight.js';
 import { resolveImageSrc } from '../utils/image.js';
-import { getPref, prefsVersion } from '../utils/prefs.js';
+import { getPref, renderVersion } from '../utils/prefs.js';
 
 // 递归块渲染器：渲染 velotype 移植版块模型（17 种块类型）。
 // 顶层块的编辑状态由 Editor.vue 管理，本组件只负责渲染与事件转发。
@@ -89,9 +89,9 @@ const rawText = computed(() => props.block.rawFallback ?? plainText(props.block.
 const escapedCode = computed(() =>
   props.block.type === 'codeBlock' ? escapeHtml(plainText(props.block.title)) : '',
 );
-// 代码块行号（偏好 render_code_line_numbers 控制，默认显示；prefsVersion 驱动响应）
+// 代码块行号（偏好 render_code_line_numbers 控制，默认显示；renderVersion 驱动响应）
 const showLineNumbers = computed(() => {
-  prefsVersion.value;
+  renderVersion.value;
   return props.block.type === 'codeBlock' && getPref('render_code_line_numbers');
 });
 const lineNumbersText = computed(() => {
@@ -103,7 +103,7 @@ function escapeHtml(text) {
   return String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 }
 watch(
-  () => [props.block.id, props.block.language, props.block.title, prefsVersion.value],
+  () => [props.block.id, props.block.language, props.block.title, renderVersion.value],
   async () => {
     // 偏好设置可关闭语法高亮（回退纯文本）
     highlightedCode.value = '';
@@ -116,7 +116,7 @@ watch(
 // Mermaid 图：Rust render_mermaid 渲染 SVG（围栏剥离在 Rust 端完成；失败返回源码占位）
 const mermaidSvg = ref('');
 watch(
-  () => [props.block.id, rawText.value, prefsVersion.value],
+  () => [props.block.id, rawText.value, renderVersion.value],
   async () => {
     mermaidSvg.value = '';
     // 偏好设置可关闭 Mermaid 渲染（回退源码占位）

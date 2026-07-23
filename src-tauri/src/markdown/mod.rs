@@ -44,12 +44,76 @@ pub fn parse_markdown(markdown: &str) -> Vec<model::BlockDto> {
     parse_to_dtos(markdown)
 }
 
+/// 批量「序列化对齐」最长公共前缀（UTF-16 码元数，与 JS `String.length` 一致）：
+/// 整块 DTO 序列化一次，再对每组光标前片段 DTO 求其序列化与整块的公共前缀长度。
+/// 用于源码/WYSIWYG 切换的光标精确映射——一次调用代替前端逐节点往返。
+#[tauri::command]
+pub fn lcp_offsets(
+    full_blocks: Vec<model::BlockDto>,
+    before_parts: Vec<Vec<model::BlockDto>>,
+) -> Vec<usize> {
+    let full = serialize_markdown(full_blocks);
+    before_parts
+        .into_iter()
+        .map(|part| lcp_utf16(&full, &serialize_markdown(part)))
+        .collect()
+}
+
+fn lcp_utf16(a: &str, b: &str) -> usize {
+    a.encode_utf16()
+        .zip(b.encode_utf16())
+        .take_while(|(x, y)| x == y)
+        .count()
+}
+
+/// 斜杠命令的块模板（返回结构见 BlockTemplate）。
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockTemplate {
+    /// 起始 Markdown 文本
+    pub markdown: String,
+    /// 建议光标位置（UTF-16 码元偏移）
+    pub caret_offset: usize,
+}
+
+/// 斜杠命令的块模板：生成所选语法的起始 Markdown 与光标位置。
+/// 表格经 `TableData` 序列化（与表格解析/往返同一规则，无平行实现）。
+#[tauri::command]
+pub fn block_template(kind: &str, rows: Option<usize>, cols: Option<usize>) -> BlockTemplate {
+    let (markdown, caret_offset) = match kind {
+        "table" => {
+            let mut table = table::TableData::new_empty(rows.unwrap_or(2), cols.unwrap_or(2));
+            for (index, cell) in table.header.iter_mut().enumerate() {
+                *cell = inline::tree::InlineTextTree::plain(format!("列{}", index + 1));
+            }
+            let markdown = table::serialize_table_markdown_lines(&table).join("\n");
+            (markdown, 2)
+        }
+        "mathBlock" => ("$$\n\n$$".to_string(), 3),
+        "mermaidBlock" => ("```mermaid\n\n```".to_string(), 11),
+        "callout" => ("> [!NOTE]\n> ".to_string(), "> [!NOTE]\n> ".len()),
+        "sectionBlock" => ("<section>\n\n</section>".to_string(), "<section>\n".len()),
+        "image" => ("![]()".to_string(), 3),
+        _ => (String::new(), 0),
+    };
+    BlockTemplate {
+        markdown,
+        caret_offset,
+    }
+}
+
+/// 块首退格合并：把当前段落的序列化文本并入上一块源码（块类型沿用上块），
+/// 接缝不加换行/空格（行内合并规则在 Rust 统一维护）。
+#[tauri::command]
+pub fn merge_block_markdown(prev_source: &str, appended_markdown: &str) -> String {
+    format!("{}{}", prev_source, appended_markdown.trim())
+}
+
 /// 解析 Markdown 片段（单个或少数块的源码），返回块树（JSON）。
 /// 偏移相对片段起点；前端在编辑提交后只重解析受影响的区域做增量更新，
 /// 避免整棵树重解析（未变化的块 id 保持稳定，前端局部重渲染）。
 #[tauri::command]
 pub fn parse_blocks(markdown: &str) -> Vec<model::BlockDto> {
-    println!("@@@ {:?}",markdown);
     parse_to_dtos(markdown)
 }
 

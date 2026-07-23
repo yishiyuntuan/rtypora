@@ -178,7 +178,8 @@ async function doSaveAs() {
 
 // ---------- 导出 HTML ----------
 
-// 当前渲染 DOM + 主题变量/语义样式 → 独立 HTML 文件（含已渲染的公式/图表/图片）
+// 渲染态内容 HTML + 主题样式文本（视图层提取）→ Rust build_export_html 装配
+//（文档模板与 title 转义在 Rust 完成）；含已渲染的公式/图表/图片
 async function doExport() {
   const root = document.querySelector(".t-root .t-measure");
   if (!root) return;
@@ -202,25 +203,8 @@ async function doExport() {
     }
   }
   const title = currentFileName.value || "document";
-  const html = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<title>${title}</title>
-<style>
-:root {
-${vars}
-}
-body { margin: 0; background: var(--t-editor-background); color: var(--t-text-default); }
-${rules.join("\n")}
-</style>
-</head>
-<body>
-<div class="t-root"><div class="t-measure">
-${clone.innerHTML}
-</div></div>
-</body>
-</html>`;
+  const cssText = `:root {\n${vars}\n}\nbody { margin: 0; background: var(--t-editor-background); color: var(--t-text-default); }\n${rules.join("\n")}`;
+  const html = await invoke("build_export_html", { contentHtml: clone.innerHTML, cssText, title });
   // 建议文件名由 Rust 端按源文件名推导（.md/.markdown → .html）
   const result = await invoke("save_html_as", { content: html, sourceName: title });
   if (result?.Err) alert(`导出失败：${result.Err}`);

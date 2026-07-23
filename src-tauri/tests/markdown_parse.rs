@@ -212,6 +212,51 @@ fn 列表项内缩进分割线成子块() {
 }
 
 #[test]
+fn 序列化对齐公共前缀() {
+    // 真实场景：光标前片段为完整结构（DTO 层），整块为其延伸——公共前缀终点即光标位置
+    let full = parse("# 标题 **粗体** 后续");
+    let before = parse("# 标题 **粗**");
+    let whole = full.clone();
+    let offsets = markdown::lcp_offsets(full, vec![before, whole]);
+    assert_eq!(offsets.len(), 2);
+    assert_eq!(offsets[0], "# 标题 **粗".encode_utf16().count());
+    // 第二段为整块（前缀即全长）
+    assert_eq!(offsets[1], "# 标题 **粗体** 后续".encode_utf16().count());
+}
+
+#[test]
+fn 块模板生成() {
+    let table = markdown::block_template("table", Some(2), Some(3));
+    assert_eq!(
+        table.markdown,
+        "| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |"
+    );
+    assert_eq!(table.caret_offset, 2);
+    // 模板可被解析器还原为表格（无平行实现）
+    let blocks = parse(&table.markdown);
+    assert!(matches!(blocks[0].kind, BlockKindDto::Table));
+    assert_eq!(blocks[0].table.as_ref().unwrap().header.len(), 3);
+    assert_eq!(blocks[0].table.as_ref().unwrap().rows.len(), 2);
+
+    let math = markdown::block_template("mathBlock", None, None);
+    assert_eq!(math.markdown, "$$\n\n$$");
+    assert_eq!(math.caret_offset, 3);
+    let section = markdown::block_template("sectionBlock", None, None);
+    assert_eq!(section.markdown, "<section>\n\n</section>");
+    assert_eq!(section.caret_offset, "<section>\n".len());
+}
+
+#[test]
+fn 合并块源码() {
+    assert_eq!(
+        markdown::merge_block_markdown("# foo", "bar\n"),
+        "# foobar"
+    );
+    // 并入文本按行内合并规则去首尾空白（与前端既有 trim 语义一致）
+    assert_eq!(markdown::merge_block_markdown("- [ ] a", " b "), "- [ ] ab");
+}
+
+#[test]
 fn section快捷判定() {
     let hit = markdown::detect_block_shortcut("<section>").expect("应命中 section");
     assert!(matches!(hit.kind, BlockKindDto::SectionBlock));
