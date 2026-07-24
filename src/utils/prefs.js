@@ -1,12 +1,15 @@
 // 偏好设置存取（localStorage 持久化）。
 // 编辑器排版覆盖在主题应用之后再写入同名 CSS 变量（优先于主题值）。
 import { ref } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 
 // 偏好版本号：setPref 时递增，渲染层据此响应开关变化
 export const prefsVersion = ref(0);
 // 渲染开关版本号：仅 render_* 键变化时递增——数学/Mermaid/高亮/图文排版
 // 的 watcher 依赖它而非全局版本号，避免改字号等非渲染偏好时全文重渲染
 export const renderVersion = ref(0);
+// 结构版本号：仅影响解析结构的偏好（html_to_md）变化时递增，Editor 据此重解析
+export const structureVersion = ref(0);
 
 const STORAGE_KEY = 'tauri-editor.prefs';
 
@@ -16,6 +19,7 @@ const DEFAULTS = {
   text_line_height: null,    // 行高覆盖
   content_max_width: null,   // 内容列最大宽度覆盖（px）
   editor_padding: null,      // 编辑区内边距覆盖（px）
+  first_line_indent: false,  // 段落首行缩进（2em）
   // 图像
   image_paste_behavior: 'document', // 'off' | 'document'（文档目录）| 'assets'（assets 子目录）
   // Markdown 渲染开关
@@ -30,6 +34,8 @@ const DEFAULTS = {
   auto_save_enabled: false,
   auto_save_trigger: 'blur',
   auto_save_delay_seconds: 3,
+  // HTML 标签转换：h1-h6/p/div/center 容器与内联样式标签转换为 Markdown 结构
+  html_to_md: true,
 };
 
 let cache = null;
@@ -59,6 +65,17 @@ export function setPref(key, value) {
   applyEditorOverrides(prefs);
   prefsVersion.value += 1;
   if (key.startsWith('render_')) renderVersion.value += 1;
+  if (key === 'html_to_md') {
+    structureVersion.value += 1;
+    syncRustPrefs();
+  }
+}
+
+// 把影响 Rust 解析的偏好同步到 Rust 端（应用启动与 html_to_md 变更时调用）
+export function syncRustPrefs() {
+  invoke('set_html_to_md', { enabled: !!load().html_to_md }).catch((e) =>
+    console.error('set_html_to_md 失败:', e),
+  );
 }
 
 // 把编辑器排版覆盖写入独立的 --t-*-pref 覆盖变量（CSS 以

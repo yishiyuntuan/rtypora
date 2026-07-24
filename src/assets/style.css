@@ -183,17 +183,41 @@
   cursor: default;
 }
 
-/* 表格 */
+/* 表格：圆角外框 + 内部细线 + 悬停行（斑马纹由主题 blocks.table 提供） */
+.t-root table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--t-table-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
 .t-root table th,
 .t-root table td {
-  border-color: var(--t-table-border);
+  border: none;
+  border-right: 1px solid var(--t-table-border);
+  border-bottom: 1px solid var(--t-table-border);
+  height: 1.8em;
+  padding: 5px 10px;
+}
+.t-root table th:last-child,
+.t-root table td:last-child {
+  border-right: none;
+}
+.t-root table tr:last-child td {
+  border-bottom: none;
 }
 .t-root table th {
   background: var(--t-table-header-bg);
   color: var(--t-table-header-text);
+  font-size: 0.88em;
+  font-weight: 600;
 }
 .t-root table td {
   background: var(--t-table-cell-bg);
+}
+.t-root table tbody tr:hover td {
+  background: var(--t-status-bar-button-hover);
 }
 
 /* Mermaid 渲染图 */
@@ -322,6 +346,140 @@
   color: var(--t-tab-indicator);
 }
 
+/* 表格编辑工具栏（Typora 式：左侧 尺寸/对齐，右侧 更多操作/删除；按钮 mousedown.prevent 保持单元格光标） */
+.md-table-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 4px 0 2px;
+  user-select: none;
+}
+.md-table-toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.md-table-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.08s, color 0.08s;
+}
+.md-table-btn svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+.md-table-btn:hover {
+  background: var(--t-status-bar-button-hover);
+}
+/* 当前列对齐/面板打开态：指示色高亮（与状态栏开关同一语义） */
+.md-table-btn.active {
+  background: color-mix(in srgb, var(--t-tab-indicator) 18%, transparent);
+  color: var(--t-tab-indicator) !important;
+}
+/* 多彩图标（与界面其余图标同一风格） */
+.md-table-btn.tbl-resize { color: #2f6dbb; }
+.md-table-btn.tbl-align { color: #0e9f6e; }
+.md-table-btn.tbl-more { color: #8a5cf6; }
+/* 「更多操作」文字平时收起只显示 ⋮ 图标，悬停/面板打开时展开（Typora 式） */
+.md-table-btn.tbl-more span {
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  opacity: 0;
+  transition: max-width 0.15s ease, opacity 0.15s ease;
+}
+.md-table-btn.tbl-more:hover span,
+.md-table-btn.tbl-more.active span {
+  max-width: 60px;
+  opacity: 1;
+}
+.md-table-btn.tbl-delete { color: #e02424; }
+
+/* 表格弹出层：尺寸网格选择器 / 更多操作菜单（Teleport 挂 .t-app，blocks 作用域主题规则生效） */
+.md-table-panel {
+  position: fixed;
+  z-index: 60;
+  padding: 8px;
+  background: var(--t-editor-background);
+  color: var(--t-text-default);
+  border: 1px solid var(--t-table-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  font-size: 13px;
+  user-select: none;
+}
+.md-table-grid {
+  display: grid;
+  gap: 3px;
+}
+.md-table-grid-cell {
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid var(--t-table-border);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.md-table-grid-cell.on {
+  background: color-mix(in srgb, var(--t-tab-indicator) 65%, transparent);
+  border-color: var(--t-tab-indicator);
+}
+.md-table-grid-indicator {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--t-table-border);
+  text-align: center;
+  font-size: 12px;
+}
+/* 更多操作菜单 */
+.md-table-menu {
+  min-width: 210px;
+  padding: 4px;
+}
+.md-table-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.md-table-menu-item:hover {
+  background: var(--t-status-bar-button-hover);
+}
+.md-table-menu-shortcut {
+  color: var(--t-text-placeholder);
+  font-size: 12px;
+}
+.md-table-menu-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--t-table-border);
+}
+
+/* 首行缩进（偏好设置开关）：顶层段落首行缩进 2em；
+   引用/列表/表格等容器内的段落不匹配（非 .blk-paragraph、非编辑容器直接子级） */
+.md-first-indent .blk-paragraph,
+.md-first-indent .md-editing > p {
+  text-indent: 2em;
+}
+
 /* 斜杠命令菜单（/ 召唤语法菜单；blocks.slashMenu / slashMenuItemActive 可定制。
    菜单经 Teleport 挂在 .t-app 包装内，blocks 作用域规则同样生效） */
 .md-slash-menu {
@@ -363,7 +521,25 @@
   display: block;
   margin: 0 auto;
 }
+/* 文本菜单项：前导「图标 + 文本」一行，下方为多行徽章组 */
+.md-slash-text {
+  flex-direction: column;
+  align-items: stretch;
+}
+.md-slash-text-lead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* 标题行的 H1-H6 徽章（文本行合并徽章可折行显示；row-break 处强制两行 */
+.md-slash-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  /* 徽章组缩进与前导「文本」文字对齐（图标宽 22 + 间距 8） */
+  padding-left: 22px;
+}
 .md-slash-levels {
   display: flex;
   flex-wrap: wrap;
@@ -374,31 +550,29 @@
   height: 0;
 }
 .md-slash-level {
-  min-width: 22px;
-  padding: 1px 3px;
-  border: 1px solid var(--t-table-border);
+  min-width: 30px;
+  height: 26px;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2px 5px;
   border-radius: 4px;
   text-align: center;
   font-family: var(--t-code-font-family);
-  font-size: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1;
   color: var(--t-text-placeholder);
 }
 .md-slash-level-active {
-  background: var(--t-tab-indicator);
-  border-color: var(--t-tab-indicator);
-  color: var(--t-editor-background);
+  background: color-mix(in srgb, var(--t-tab-indicator) 16%, transparent);
 }
-/* 列表行的图标徽章与表格的行列数量徽章 */
-.md-slash-level-icon {
-  padding: 2px 4px;
-}
+/* 图标徽章与文字徽章统一盒尺寸（26px 高），图标略大 */
 .md-slash-level-icon svg {
-  width: 13px;
-  height: 13px;
+  width: 18px;
+  height: 18px;
   display: block;
-}
-.md-slash-level-icon.md-slash-level-active {
-  color: var(--t-editor-background);
 }
 .md-slash-dim {
   padding: 1px 6px;
@@ -408,9 +582,7 @@
   color: var(--t-text-placeholder);
 }
 .md-slash-dim.md-slash-level-active {
-  background: var(--t-tab-indicator);
-  border-color: var(--t-tab-indicator);
-  color: var(--t-editor-background);
+  background: color-mix(in srgb, var(--t-tab-indicator) 16%, transparent);
 }
 .md-slash-dim-x {
   color: var(--t-text-placeholder);

@@ -187,7 +187,7 @@ const outlineItems = computed(() => {
           :class="activeTab === 'toc' ? 't-tab-active' : 't-dim hover:bg-(--t-status-bar-button-hover)'"
           @click="activeTab = 'toc'"
         >
-          <svg viewBox="0 0 16 16" class="size-[13px]" aria-hidden="true">
+          <svg viewBox="0 0 16 16" class="size-[13px]" aria-hidden="true" style="color: #f59102">
             <path d="M2 3.5A1.5 1.5 0 0 1 3.5 2h2.6l1.4 1.6h5A1.5 1.5 0 0 1 14 5.1v6.4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-8z" fill="none" stroke="currentColor" stroke-width="1.2" />
           </svg>
           目录
@@ -197,7 +197,7 @@ const outlineItems = computed(() => {
           :class="activeTab === 'outline' ? 't-tab-active' : 't-dim hover:bg-(--t-status-bar-button-hover)'"
           @click="activeTab = 'outline'"
         >
-          <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[13px]">
+          <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[13px]" style="color: #3e69d7">
             <circle cx="3" cy="3" r="1.4" fill="currentColor" />
             <circle cx="3" cy="8" r="1.4" fill="currentColor" />
             <circle cx="3" cy="13" r="1.4" fill="currentColor" />
@@ -304,13 +304,13 @@ const outlineItems = computed(() => {
         <!-- 底部工具栏（与状态栏同高 h-7，图标文字垂直居中） -->
         <div class="relative flex h-7 items-center justify-between border-t border-(--t-table-border) px-2">
           <template v-if="workspaceDir">
-            <div class="t-btn flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1 text-[14px] leading-none" title="在当前文件夹新建文件" @click="emit('create-file')">+</div>
+            <div class="t-btn flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1 text-[14px] leading-none" style="color: #03b736" title="在当前文件夹新建文件" @click="emit('create-file')">+</div>
             <div
               class="t-btn flex min-w-0 flex-1 cursor-pointer items-center justify-center rounded px-1.5 py-1 text-[12px]"
               :title="workspaceDir"
               @click="opsMenuOpen = !opsMenuOpen"
             >
-              <svg viewBox="0 0 16 16" class="mr-1 size-[12px] shrink-0" aria-hidden="true">
+              <svg viewBox="0 0 16 16" class="mr-1 size-[12px] shrink-0" aria-hidden="true" style="color: #f59102">
                 <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6l1.4 1.6h5A1.5 1.5 0 0 1 14 6.1v5.4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7z" fill="none" stroke="currentColor" stroke-width="1.2" />
               </svg>
               <span class="truncate font-medium">{{ dirName(workspaceDir) }}</span>
@@ -327,12 +327,12 @@ const outlineItems = computed(() => {
               :title="viewMode === 'tree' ? '树形显示' : '列表显示'"
               @click="viewMode = viewMode === 'tree' ? 'list' : 'tree'"
             >
-              <svg v-if="viewMode === 'tree'" viewBox="0 0 16 16" class="size-[13px]" aria-hidden="true">
+              <svg v-if="viewMode === 'tree'" viewBox="0 0 16 16" class="size-[13px]" aria-hidden="true" style="color: #3e69d7">
                 <!-- 文件树图标（当前为树形显示） -->
                 <path d="M2 2.5h4l1.2 1.4H8v9.6H2v-11z" fill="none" stroke="currentColor" stroke-width="1.2" />
                 <path d="M9.5 6.5h4.5v2h-4.5v-2zM11 9.5h3v2h-3v-2zM11 12.5h3v2h-3v-2z" fill="none" stroke="currentColor" stroke-width="1.1" />
               </svg>
-              <svg v-else viewBox="0 0 16 16" class="size-[13px]" aria-hidden="true">
+              <svg v-else viewBox="0 0 16 16" class="size-[13px]" aria-hidden="true" style="color: #3e69d7">
                 <!-- 列表图标（当前为列表显示） -->
                 <line x1="2" y1="4" x2="14" y2="4" stroke="currentColor" stroke-width="1.3" />
                 <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.3" />

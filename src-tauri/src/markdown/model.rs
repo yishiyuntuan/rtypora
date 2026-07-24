@@ -40,11 +40,13 @@ pub enum BlockKindDto {
 }
 
 /// section 图文排版容器判定：HTML 块原文以 `<section` 开标签开头（后跟 `>`/空白）。
+/// 按字节比较，避免多字节字符落在前缀边界时切片 panic。
 fn is_section_html_block(raw: &str) -> bool {
     let trimmed = raw.trim_start();
-    trimmed.len() > "<section".len()
-        && trimmed[.."<section".len()].eq_ignore_ascii_case("<section")
-        && matches!(trimmed.as_bytes()["<section".len()], b'>' | b' ' | b'\t')
+    let bytes = trimmed.as_bytes();
+    bytes.len() > "<section".len()
+        && bytes[.."<section".len()].eq_ignore_ascii_case(b"<section")
+        && matches!(bytes["<section".len()], b'>' | b' ' | b'\t')
 }
 
 /// 公式源码是否使用 AMS 编号环境：align/gather/equation/multline/flalign/alignat/

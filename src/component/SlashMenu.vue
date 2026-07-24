@@ -1,15 +1,17 @@
 <script setup>
 import { ref, watch } from 'vue';
-import { SLASH_TEXT_BADGES } from '../utils/wysiwyg.js';
+import { SLASH_TEXT_GROUPS } from '../utils/wysiwyg.js';
 
 // 斜杠命令菜单面板：只负责展示与事件转发。
-// 「文本」行（标题级别 + 三种列表 + 行内代码合并徽章）、表格行（行×列数量，
-// ↑/↓ 增减、←/→ 切换行列）；样式走 --t-* 主题变量，blocks.slashMenu* 可定制。
+// 「文本」行（三行徽章：行内格式 B/I/U/S/==/</> + 标题 H1-H6 + 三种列表，
+// ←/→ 移列、↑/↓ 移行）、表格行（行×列数量，↑/↓ 增减、←/→ 切换行列）；
+// 样式走 --t-* 主题变量，blocks.slashMenu* 可定制。
 const props = defineProps({
   items: { type: Array, default: () => [] },
   index: { type: Number, default: 0 },
-  // 文本行当前徽章下标（0-9，←/→ 或悬停徽章调整）
-  textIndex: { type: Number, default: 0 },
+  // 文本行当前徽章行列（←/→ 移列、↑/↓ 移行、悬停徽章同步）
+  textRow: { type: Number, default: 0 },
+  textCol: { type: Number, default: 0 },
   // 表格行行列数量与当前调节字段（'rows' | 'cols'）
   tableRows: { type: Number, default: 2 },
   tableCols: { type: Number, default: 2 },
@@ -17,9 +19,9 @@ const props = defineProps({
   left: { type: Number, default: 0 },
   top: { type: Number, default: 0 },
 });
-const emit = defineEmits(['pick', 'hover', 'text-index', 'table-field']);
+const emit = defineEmits(['pick', 'hover', 'text-cell', 'table-field']);
 
-const textBadges = SLASH_TEXT_BADGES;
+const groups = SLASH_TEXT_GROUPS;
 
 // 键盘导航时让选中项保持可见：只调整菜单自身滚动位置
 //（不用 scrollIntoView——它会连带滚动编辑器/页面等外层滚动容器；
@@ -45,27 +47,31 @@ watch(
   <div ref="menuEl" class="md-slash-menu" :style="{ left: `${left}px`, top: `${top}px` }">
     <template v-if="items.length">
       <template v-for="(item, i) in items" :key="item.id">
-        <!-- 文本：一行合并徽章（H1-H6 + 无序/有序/任务列表 + 行内代码） -->
+        <!-- 文本：前导图标独占一行 + 三行多彩徽章（标题 / 行内格式 / 列表） -->
         <div
           v-if="item.id === 'text'"
-          class="md-slash-item"
+          class="md-slash-item md-slash-text"
           :class="{ 'md-slash-item-active': i === index }"
           @mousedown.prevent="emit('pick', item)"
           @mouseenter="emit('hover', i)"
         >
-          <span class="md-slash-icon" v-html="item.icon"></span>
-          <span class="md-slash-levels">
-            <template v-for="(b, bi) in textBadges" :key="b.id">
-              <!-- 第 7 个徽章前强制换行：H1-H6 一行，列表/任务/行内代码一行 -->
-              <span v-if="bi === 6" class="md-slash-row-break"></span>
+          <span class="md-slash-text-lead">
+            <span class="md-slash-icon" :style="{ color: item.iconColor }" v-html="item.icon"></span>
+            <span>{{ item.label }}</span>
+          </span>
+          <span class="md-slash-groups">
+            <span v-for="(group, gi) in groups" :key="gi" class="md-slash-levels">
               <span
+                v-for="(b, bi) in group"
+                :key="b.id"
                 class="md-slash-level"
-                :class="{ 'md-slash-level-icon': !!b.icon, 'md-slash-level-active': i === index && bi === textIndex }"
+                :style="{ color: b.color }"
+                :class="{ 'md-slash-level-icon': !!b.icon, 'md-slash-level-active': i === index && gi === textRow && bi === textCol }"
                 :title="b.label"
-                @mousedown.prevent.stop="emit('pick', item, bi)"
-                @mouseenter="emit('text-index', bi)"
+                @mousedown.prevent.stop="emit('pick', item, { row: gi, col: bi })"
+                @mouseenter="emit('text-cell', { row: gi, col: bi })"
               ><span v-if="b.icon" v-html="b.icon"></span><template v-else>{{ b.text }}</template></span>
-            </template>
+            </span>
           </span>
         </div>
         <!-- 表格：行×列数量徽章（点击徽章切换调节字段，行点击应用） -->
@@ -76,7 +82,7 @@ watch(
           @mousedown.prevent="emit('pick', item)"
           @mouseenter="emit('hover', i)"
         >
-          <span class="md-slash-icon" v-html="item.icon"></span>
+          <span class="md-slash-icon" :style="{ color: item.iconColor }" v-html="item.icon"></span>
           <span>{{ item.label }}</span>
           <span class="md-slash-levels">
             <span
@@ -101,7 +107,7 @@ watch(
           @mousedown.prevent="emit('pick', item)"
           @mouseenter="emit('hover', i)"
         >
-          <span class="md-slash-icon" v-html="item.icon"></span>
+          <span class="md-slash-icon" :style="{ color: item.iconColor }" v-html="item.icon"></span>
           <span>{{ item.label }}</span>
         </div>
       </template>

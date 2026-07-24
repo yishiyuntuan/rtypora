@@ -42,6 +42,8 @@ pub fn run() {
             markdown::lcp_offsets,
             markdown::block_template,
             markdown::merge_block_markdown,
+            markdown::set_html_to_md,
+            markdown::format_table_source,
             files::build_export_html,
             mermaid::render_mermaid,
             latex::render_display_math,

@@ -125,12 +125,27 @@ export function blockToHtml(block, rawSource, depth = 0) {
         : '';
       return `<blockquote class="blk-quote ${QUOTE_CLASS}">${title}${(block.children || []).map((c) => blockToHtml(c, undefined, depth)).join('')}</blockquote>`;
     }
+    case 'table': {
+      // 表格富编辑：thead/tbody 单元格就地编辑（对齐信息写在单元格 textAlign，
+      // 提交时经 tableToBlock 提取为 DTO 对齐列，与渲染/序列化同一数据源）
+      const table = block.table || { header: [], rows: [], alignments: [] };
+      const cellHtml = (tree, tag, i) => {
+        const align = table.alignments?.[i];
+        const style = align && align !== 'default' ? ` style="text-align:${align}"` : '';
+        const inner = plainText(tree) ? inlineToHtml(tree) : '<br>';
+        return `<${tag}${style}>${inner}</${tag}>`;
+      };
+      const thead = `<thead><tr>${table.header.map((cell, i) => cellHtml(cell, 'th', i)).join('')}</tr></thead>`;
+      const tbody = `<tbody>${table.rows
+        .map((row) => `<tr>${row.map((cell, i) => cellHtml(cell, 'td', i)).join('')}</tr>`)
+        .join('')}</tbody>`;
+      return `<table class="blk-table">${thead}${tbody}</table>`;
+    }
     case 'codeBlock':
       // 编辑态不内嵌高亮（避免 contenteditable 拆分 span），渲染态经 Rust tree-sitter 高亮
       return `<pre class="${PRE_CLASS} blk-code-block" data-language="${escapeHtml(block.language || '')}"><code>${escapeHtml(plainText(block.title))}</code></pre>`;
     // 原子/保留类块：编辑原始 Markdown 切片，保证不丢内容
     case 'separator':
-    case 'table':
     case 'callout':
     case 'footnoteDefinition':
     case 'mathBlock':
@@ -596,7 +611,7 @@ export const SLASH_ICON = {
   numberedListItem:
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><text x="1.2" y="5.6" font-size="5.5" fill="currentColor" stroke="none">1</text><text x="1.2" y="9.8" font-size="5.5" fill="currentColor" stroke="none">2</text><text x="1.2" y="14" font-size="5.5" fill="currentColor" stroke="none">3</text><path d="M6.5 4.5h7M6.5 8.7h7M6.5 12.8h7"/></svg>',
   taskListItem:
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2.4" width="5.2" height="5.2" rx="1"/><path d="M3.2 5l1.3 1.3L6.9 3.8"/><path d="M9 5h4.5M3 11.5h10M3 14h7"/></svg>',
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="4.6" cy="5" r="2.6"/><path d="M3.3 5l1.1 1.1L6.5 4"/><path d="M9 5h4.5M3 11.5h10M3 14h7"/></svg>',
   quote:
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 3v10" stroke-width="2.2"/><path d="M6.5 4.5h7M6.5 8h7M6.5 11.5h5"/></svg>',
   codeBlock:
@@ -615,19 +630,19 @@ export const SLASH_ICON = {
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="4" width="5" height="8" rx="0.8"/><path d="M8.5 5h5M8.5 8h5M8.5 11h3.5" stroke-linecap="round"/></svg>',
   separator:
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2.5 8h11" stroke-dasharray="2.5 2"/></svg>',
+  link: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6.7 8.7a3.3 3.3 0 005 .3l2-2a3.33 3.33 0 00-4.7-4.7l-1.2 1.1"/><path d="M9.3 7.3a3.3 3.3 0 00-5-.3l-2 2a3.33 3.33 0 004.7 4.7l1.2-1.1"/></svg>',
 };
 
 export const SLASH_ITEMS = [
-  { id: 'text', label: '文本', icon: SLASH_ICON.paragraph, keywords: 'h1 h2 h3 h4 h5 h6 heading biaoti bt list liebiao lb task todo renwu rw code daima wenben wb' },
-  { id: 'paragraph', label: '正文段落', icon: SLASH_ICON.paragraph, keywords: 'p text duanluo dl zhengwen zw' },
-  { id: 'quote', label: '引用', icon: SLASH_ICON.quote, keywords: 'quote yinyong yy' },
-  { id: 'codeBlock', label: '代码块', icon: SLASH_ICON.codeBlock, keywords: 'code daima dm' },
-  { id: 'table', label: '表格', icon: SLASH_ICON.table, keywords: 'table biaoge bg' },
-  { id: 'image', label: '图片', icon: SLASH_ICON.image, keywords: 'img image tupian tp' },
-  { id: 'mathBlock', label: '数学公式', icon: SLASH_ICON.mathBlock, keywords: 'math latex gongshi gs' },
-  { id: 'callout', label: '高亮块（Callout）', icon: SLASH_ICON.callout, keywords: 'callout note gaoliang gl' },
-  { id: 'sectionBlock', label: '图文排版（section）', icon: SLASH_ICON.sectionBlock, keywords: 'section tuwen tw paiban pb' },
-  { id: 'separator', label: '分割线', icon: SLASH_ICON.separator, keywords: 'hr fenge fg' },
+  { id: 'text', label: '文本', icon: SLASH_ICON.paragraph, iconColor: '#3e69d7', keywords: 'h1 h2 h3 h4 h5 h6 heading biaoti bt list liebiao lb task todo renwu rw code daima wenben wb bold jiacu italic xieti underline xiahuaxian strikethrough shanchuxian highlight gaoliang link lianjie lj quote yinyong yy' },
+  { id: 'quote', label: '引用', icon: SLASH_ICON.quote, iconColor: '#f59102', keywords: 'quote yinyong yy' },
+  { id: 'codeBlock', label: '代码块', icon: SLASH_ICON.codeBlock, iconColor: '#03b736', keywords: 'code daima dm' },
+  { id: 'table', label: '表格', icon: SLASH_ICON.table, iconColor: '#2f6dbb', keywords: 'table biaoge bg' },
+  { id: 'image', label: '图片', icon: SLASH_ICON.image, iconColor: '#d35d2e', keywords: 'img image tupian tp' },
+  { id: 'mathBlock', label: '数学公式', icon: SLASH_ICON.mathBlock, iconColor: '#8250df', keywords: 'math latex gongshi gs' },
+  { id: 'callout', label: '高亮块（Callout）', icon: SLASH_ICON.callout, iconColor: '#c9a227', keywords: 'callout note gaoliang gl' },
+  { id: 'sectionBlock', label: '图文排版（section）', icon: SLASH_ICON.sectionBlock, iconColor: '#2f9dbb', keywords: 'section tuwen tw paiban pb' },
+  { id: 'separator', label: '分割线', icon: SLASH_ICON.separator, iconColor: '#8a8a8a', keywords: 'hr fenge fg' },
 ];
 
 // 语言补全菜单的徽章图标（按语言缩写 + 品牌色，mermaid/math 为特殊渲染围栏）
@@ -663,18 +678,35 @@ export const SLASH_LIST_TYPES = [
   { id: 'taskListItem', icon: SLASH_ICON.taskListItem, label: '任务列表' },
 ];
 
-// 「文本」行的合并徽章（标题级别 + 三种列表 + 行内代码，一行展示，←/→ 或点选）
-export const SLASH_TEXT_BADGES = [
-  { id: 'h1', text: 'H1', label: '一级标题' },
-  { id: 'h2', text: 'H2', label: '二级标题' },
-  { id: 'h3', text: 'H3', label: '三级标题' },
-  { id: 'h4', text: 'H4', label: '四级标题' },
-  { id: 'h5', text: 'H5', label: '五级标题' },
-  { id: 'h6', text: 'H6', label: '六级标题' },
-  { id: 'bulletedListItem', icon: SLASH_ICON.bulletedListItem, label: '无序列表' },
-  { id: 'numberedListItem', icon: SLASH_ICON.numberedListItem, label: '有序列表' },
-  { id: 'taskListItem', icon: SLASH_ICON.taskListItem, label: '任务列表' },
-  { id: 'inlineCode', text: '</>', label: '行内代码' },
+// 「文本」行的徽章分组（三行展示：标题级别 / 行内格式 / 列表·引用·超链接；
+// ←/→ 移列、↑/↓ 移行、点选直用）。color 为徽章多彩配色（文字与图标着色，品牌色不走主题变量）。
+export const SLASH_TEXT_GROUPS = [
+  // 标题级别（蓝色系渐变）
+  [
+    { id: 'h1', text: 'H1', label: '一级标题', color: '#2f56c7' },
+    { id: 'h2', text: 'H2', label: '二级标题', color: '#3e69d7' },
+    { id: 'h3', text: 'H3', label: '三级标题', color: '#4f7ce0' },
+    { id: 'h4', text: 'H4', label: '四级标题', color: '#6090e9' },
+    { id: 'h5', text: 'H5', label: '五级标题', color: '#70a3f1' },
+    { id: 'h6', text: 'H6', label: '六级标题', color: '#81b7f9' },
+  ],
+  // 行内格式
+  [
+    { id: 'bold', text: 'B', label: '加粗', color: '#d35d2e' },
+    { id: 'italic', text: 'I', label: '斜体', color: '#8250df' },
+    { id: 'underline', text: 'U', label: '下划线', color: '#3e69d7' },
+    { id: 'strikethrough', text: 'S', label: '删除线', color: '#c0392b' },
+    { id: 'highlight', text: '==', label: '高亮', color: '#c9a227' },
+    { id: 'inlineCode', text: '</>', label: '行内代码', color: '#03b736' },
+  ],
+  // 列表·引用·超链接（图标徽章）
+  [
+    { id: 'bulletedListItem', icon: SLASH_ICON.bulletedListItem, label: '无序列表', color: '#2f9dbb' },
+    { id: 'numberedListItem', icon: SLASH_ICON.numberedListItem, label: '有序列表', color: '#03b736' },
+    { id: 'taskListItem', icon: SLASH_ICON.taskListItem, label: '任务列表', color: '#f59102' },
+    { id: 'quote', icon: SLASH_ICON.quote, label: '引用', color: '#f59102' },
+    { id: 'link', icon: SLASH_ICON.link, label: '超链接', color: '#2f6dbb' },
+  ],
 ];
 
 // 应用斜杠命令：清空触发文本（/query），按所选语法构建编辑态 DOM 并放置光标；
@@ -692,8 +724,9 @@ export async function applySlashCommand(el, id, opts) {
     placeCaretAtTextOffset(pre, caretOffset);
     return true;
   };
-  // 原子类模板统一走 Rust block_template（Markdown 生成规则在 Rust 维护）
-  if (['table', 'mathBlock', 'mermaidBlock', 'callout', 'sectionBlock', 'image'].includes(id)) {
+  // 原子类模板统一走 Rust block_template（Markdown 生成规则在 Rust 维护）；
+  // 链接插入原始 Markdown 文本编辑（渲染态 <a> 不便就地编辑），与图片同一交互
+  if (['table', 'mathBlock', 'mermaidBlock', 'callout', 'sectionBlock', 'image', 'link'].includes(id)) {
     const tpl = await invoke('block_template', {
       kind: id,
       rows: opts?.rows,
@@ -769,13 +802,29 @@ export async function applySlashCommand(el, id, opts) {
       return true;
     }
     case 'inlineCode': {
-      // 行内代码：插入空 code 元素并补 <br> 占位光标（内联元素无占位无法保持光标）。
-      // 占位 br 产生的换行 fragment 在提交时由 trimEdgeNewlines 修剪，不影响渲染。
+      // 行内代码：插入空 code 元素并补 <br> 占位，光标放在占位 br 之前——
+      // 若放在 br 之后，浏览器会把输入插到元素外（样式丢失、渲染成普通文本）；
+      // 尾部占位 br 产生的换行 fragment 在提交时由 trimEdgeNewlines 修剪。
       const p = styled('p', '', P_CLASS);
       const code = styled('code', '', INLINE_CODE_CLASS);
       p.append(code);
       el.append(p);
-      placeCursorAtEnd(code);
+      placeCursorAtStart(code);
+      return true;
+    }
+    // 行内格式（加粗/斜体/下划线/删除线/高亮）：插入空样式元素，光标在其中输入
+    case 'bold':
+    case 'italic':
+    case 'underline':
+    case 'strikethrough':
+    case 'highlight': {
+      const tag = { bold: 'strong', italic: 'em', underline: 'u', strikethrough: 's', highlight: 'mark' }[id];
+      const cls = id === 'bold' ? 'font-semibold' : '';
+      const p = styled('p', '', P_CLASS);
+      const inner = styled(tag, '', cls);
+      p.append(inner);
+      el.append(p);
+      placeCursorAtStart(inner);
       return true;
     }
     default:

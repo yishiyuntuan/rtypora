@@ -68,7 +68,7 @@ async function onThemeFile(e) {
         :class="{ active: sidebarVisible }"
         @click="emit('toggle-sidebar')"
       >
-        <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]">
+        <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]" style="color: #3e69d7">
           <rect x="1" y="2" width="5" height="12" rx="1" fill="currentColor" />
           <rect :x="sidebarVisible ? 9 : 7" y="2" :width="sidebarVisible ? 6 : 8" height="12" rx="1" fill="none" stroke="currentColor" stroke-width="1" />
         </svg>
@@ -79,7 +79,7 @@ async function onThemeFile(e) {
         :class="{ active: sourceMode }"
         @click="emit('toggle-source')"
       >
-        <span>&lt;/&gt;</span>
+        <span style="color: #03b736">&lt;/&gt;</span>
       </div>
 
       <div
@@ -88,7 +88,7 @@ async function onThemeFile(e) {
         title="代码行号显示"
         @click="setPref('render_code_line_numbers', !lineNumbersOn)"
       >
-        <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]">
+        <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]" style="color: #8250df">
           <rect x="2" y="2.5" width="3.2" height="11" rx="0.8" fill="currentColor" opacity="0.45" />
           <rect x="7" y="4" width="7" height="1.6" rx="0.8" fill="currentColor" />
           <rect x="7" y="7.5" width="7" height="1.6" rx="0.8" fill="currentColor" />
@@ -102,7 +102,7 @@ async function onThemeFile(e) {
         title="自动保存（触发方式见 菜单 → 偏好设置 → 编辑器）"
         @click="setPref('auto_save_enabled', !autoSaveOn)"
       >
-        <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round">
+        <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" style="color: #f59102">
           <path d="M3 2.5h7.5l2.5 2.5v8.5H3z" />
           <path d="M5.5 2.5v3h5v-3M5.5 13.5v-4.5h5v4.5" />
         </svg>

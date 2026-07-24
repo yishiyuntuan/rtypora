@@ -44,6 +44,20 @@ pub fn parse_markdown(markdown: &str) -> Vec<model::BlockDto> {
     parse_to_dtos(markdown)
 }
 
+/// HTML 标签转 Markdown 开关（偏好设置 html_to_md 驱动）：
+/// 开启后 h1-h6/p/div/center 容器标签按原生块解析（内联样式标签由行内引擎始终映射）。
+#[tauri::command]
+pub fn set_html_to_md(enabled: bool) {
+    HTML_TO_MD.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+static HTML_TO_MD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// 是否启用容器 HTML 标签 → Markdown 块转换（document.rs 的 HTML 块处理读取）
+pub(crate) fn html_to_md_enabled() -> bool {
+    HTML_TO_MD.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// 批量「序列化对齐」最长公共前缀（UTF-16 码元数，与 JS `String.length` 一致）：
 /// 整块 DTO 序列化一次，再对每组光标前片段 DTO 求其序列化与整块的公共前缀长度。
 /// 用于源码/WYSIWYG 切换的光标精确映射——一次调用代替前端逐节点往返。
@@ -94,6 +108,8 @@ pub fn block_template(kind: &str, rows: Option<usize>, cols: Option<usize>) -> B
         "callout" => ("> [!NOTE]\n> ".to_string(), "> [!NOTE]\n> ".len()),
         "sectionBlock" => ("<section>\n\n</section>".to_string(), "<section>\n".len()),
         "image" => ("![]()".to_string(), 3),
+        // 链接：光标落在 URL 括号内（文字占位「链接」），与图片模板同一交互
+        "link" => ("[链接]()".to_string(), 4),
         _ => (String::new(), 0),
     };
     BlockTemplate {
@@ -125,6 +141,15 @@ pub fn serialize_markdown(blocks: Vec<model::BlockDto>) -> String {
         .map(model::BlockDto::into_node)
         .collect::<Vec<_>>();
     block::tree::serialize_blocks(&nodes)
+}
+
+/// 格式化表格源码：解析单个表格块并按列宽对齐管道（Typora「格式化表格源码」）。
+/// 内容与对齐不变，仅重排空白；输入不是合法表格时返回 None（前端保持原样）。
+#[tauri::command]
+pub fn format_table_source(markdown: &str) -> Option<String> {
+    let lines = markdown.lines().map(str::to_string).collect::<Vec<_>>();
+    let table = table::parse_root_table_region(&lines)?;
+    Some(table::serialize_table_markdown_lines_padded(&table).join("\n"))
 }
 
 /// 任务列表勾选：把源码中第 occurrence 个（0 基，默认首个）任务标记替换为勾选状态。

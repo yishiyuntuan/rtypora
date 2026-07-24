@@ -105,6 +105,15 @@ function update(key, value) {
                   @change="update('editor_padding', $event.target.valueAsNumber || null)"
                 />
               </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.first_line_indent"
+                  @change="update('first_line_indent', $event.target.checked)"
+                />
+                <span>段落首行缩进（2 字符宽）</span>
+              </label>
+              <p class="t-dim text-[12px]">仅对普通段落生效；引用、列表、表格等容器内的段落不缩进。</p>
 
               <div>
                 <span class="t-dim mb-2 block text-[12px]">自动保存触发方式（开关在状态栏，默认关闭）</span>
@@ -200,6 +209,14 @@ function update(key, value) {
                   @change="update('render_html_block', $event.target.checked)"
                 />
                 <span>&lt;section&gt; 图文排版渲染</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.html_to_md"
+                  @change="update('html_to_md', $event.target.checked)"
+                />
+                <span>HTML 标签转换为 Markdown 语法</span>
               </label>
               <label class="flex items-center justify-between gap-2">
                 <span>公式自动编号</span>

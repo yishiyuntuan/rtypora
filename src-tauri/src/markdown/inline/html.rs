@@ -1104,6 +1104,8 @@ pub(crate) fn is_inline_tag(name: &str) -> bool {
             | "mark"
             | "del"
             | "ins"
+            | "s"
+            | "strike"
             | "code"
             | "kbd"
             | "sup"

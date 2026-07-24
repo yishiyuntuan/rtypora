@@ -613,6 +613,94 @@ pub fn serialize_table_markdown_lines(table: &TableData) -> Vec<String> {
     lines
 }
 
+/// Minimum delimiter-cell width per alignment, keeping the delimiter row
+/// parseable (`parse_alignment_cell` requires at least three dashes).
+fn delimiter_min_width(alignment: TableColumnAlignment) -> usize {
+    match alignment {
+        TableColumnAlignment::Default => 3,
+        TableColumnAlignment::Left | TableColumnAlignment::Right => 4,
+        TableColumnAlignment::Center => 5,
+    }
+}
+
+/// Serializes native table data to pipe-table Markdown with every column
+/// padded to a uniform width so the pipes line up (Typora 的「格式化表格源码」）。
+/// 宽度按 Unicode 字符数计（不补偿 CJK 全角宽度）；内容与对齐保持不变。
+pub fn serialize_table_markdown_lines_padded(table: &TableData) -> Vec<String> {
+    let columns = table.column_count();
+    let header = table
+        .header
+        .iter()
+        .map(serialize_table_cell_markdown)
+        .collect::<Vec<_>>();
+    let body = table
+        .rows
+        .iter()
+        .map(|row| row.iter().map(serialize_table_cell_markdown).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+
+    let mut widths = vec![3usize; columns];
+    for (i, width) in widths.iter_mut().enumerate() {
+        *width = (*width).max(delimiter_min_width(
+            table
+                .alignments
+                .get(i)
+                .copied()
+                .unwrap_or(TableColumnAlignment::Default),
+        ));
+        if let Some(cell) = header.get(i) {
+            *width = (*width).max(cell.chars().count());
+        }
+        for row in &body {
+            if let Some(cell) = row.get(i) {
+                *width = (*width).max(cell.chars().count());
+            }
+        }
+    }
+
+    let pad = |cell: &str, width: usize| {
+        let len = cell.chars().count();
+        if len >= width {
+            cell.to_string()
+        } else {
+            format!("{}{}", cell, " ".repeat(width - len))
+        }
+    };
+    let padded_row = |cells: &[String]| {
+        format!(
+            "| {} |",
+            cells
+                .iter()
+                .enumerate()
+                .map(|(i, cell)| pad(cell, widths.get(i).copied().unwrap_or(3)))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        )
+    };
+
+    let mut lines = Vec::with_capacity(2 + body.len());
+    lines.push(padded_row(&header));
+    lines.push(format!(
+        "| {} |",
+        (0..columns)
+            .map(|i| {
+                let width = widths[i];
+                match table.alignments.get(i).copied().unwrap_or(TableColumnAlignment::Default) {
+                    TableColumnAlignment::Default => "-".repeat(width),
+                    TableColumnAlignment::Left => format!(":{}", "-".repeat(width - 1)),
+                    TableColumnAlignment::Right => format!("{}:", "-".repeat(width - 1)),
+                    TableColumnAlignment::Center => {
+                        format!(":{}:", "-".repeat(width.saturating_sub(2)))
+                    }
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    ));
+    lines.extend(body.iter().map(|row| padded_row(row)));
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

@@ -244,6 +244,9 @@ fn 块模板生成() {
     let section = markdown::block_template("sectionBlock", None, None);
     assert_eq!(section.markdown, "<section>\n\n</section>");
     assert_eq!(section.caret_offset, "<section>\n".len());
+    let link = markdown::block_template("link", None, None);
+    assert_eq!(link.markdown, "[链接]()");
+    assert_eq!(link.caret_offset, 4);
 }
 
 #[test]
@@ -254,6 +257,90 @@ fn 合并块源码() {
     );
     // 并入文本按行内合并规则去首尾空白（与前端既有 trim 语义一致）
     assert_eq!(markdown::merge_block_markdown("- [ ] a", " b "), "- [ ] ab");
+}
+
+#[test]
+fn 格式化表格源码() {
+    // 列宽不齐的源码按最宽单元格补齐，管道对齐
+    let formatted = markdown::format_table_source("| A | Longer | C |\n| --- | :---: | ---: |\n| 1 | 22 | 333 |")
+        .expect("表格应可格式化");
+    assert_eq!(
+        formatted,
+        "| A   | Longer | C    |\n| --- | :----: | ---: |\n| 1   | 22     | 333  |"
+    );
+
+    // 往返：格式化后的源码解析出的表格数据与原表一致
+    let original = parse("| A | Longer | C |\n| --- | :---: | ---: |\n| 1 | 22 | 333 |");
+    let reparsed = parse(&formatted);
+    assert_eq!(original[0].table, reparsed[0].table);
+
+    // 非表格输入返回 None（前端保持原样）
+    assert!(markdown::format_table_source("# 标题").is_none());
+    assert!(markdown::format_table_source("普通段落").is_none());
+}
+
+#[test]
+fn 格式化表格源码_短列对齐行仍合法() {
+    // 极短列：分隔行需补足到合法宽度（居中至少 `:---:`）
+    let formatted = markdown::format_table_source("| a | b |\n| :---: | --- |\n| 1 | 2 |")
+        .expect("表格应可格式化");
+    assert_eq!(formatted, "| a     | b   |\n| :---: | --- |\n| 1     | 2   |");
+    let reparsed = parse(&formatted);
+    assert!(matches!(reparsed[0].kind, BlockKindDto::Table));
+}
+
+#[test]
+fn 行内html标签不触发块级html() {
+    // 回归：整行行内 HTML（<u>/<kbd> 等行内标签）应按段落行内解析，
+    // 不得误判为块级 HtmlBlock（块级标签 div 不受影响）
+    let blocks = parse("<u>下划线</u>\n");
+    assert_eq!(blocks.len(), 1);
+    assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
+    assert!(blocks[0].title.fragments.iter().any(|f| f.style.underline && f.text.contains("下划线")));
+
+    let blocks = parse("<kbd>Ctrl+C</kbd>\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
+    assert!(blocks[0].title.fragments.iter().any(|f| f.style.kbd));
+
+    let blocks = parse("<div>\n<p>x</p>\n</div>\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::HtmlBlock));
+
+    let blocks = parse("<section>\n<span>x</span>\n</section>\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::SectionBlock));
+}
+
+#[test]
+fn html容器标签转换() {
+    // 默认开启：h1-h6/p/div/center 单一容器按原生块解析（内联样式标签同步映射）
+    let blocks = parse("<h2>标题 **粗体**</h2>\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Heading { level: 2 }));
+    assert!(blocks[0].title.fragments.iter().any(|f| f.style.bold));
+
+    let blocks = parse("<p>段落 <s>删除</s> 与 <mark>高亮</mark></p>\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
+    assert!(blocks[0].title.fragments.iter().any(|f| f.style.strikethrough));
+    assert!(blocks[0].title.fragments.iter().any(|f| f.style.highlight));
+
+    let blocks = parse("<div>\n内容 <code>x</code>\n</div>\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
+    assert!(blocks[0].title.fragments.iter().any(|f| f.style.code));
+
+    let blocks = parse("<center>居中</center>\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
+
+    // 嵌套同名容器或含块级标签不转换（走原文路径）
+    let blocks = parse("<div><div>x</div></div>\n");
+    assert!(
+        !matches!(blocks[0].kind, BlockKindDto::Paragraph),
+        "嵌套容器不应转换为段落: {:?}",
+        blocks[0].kind
+    );
+    let blocks = parse("<div>\n<p>x</p>\n</div>\n");
+    assert!(
+        !matches!(blocks[0].kind, BlockKindDto::Paragraph),
+        "内层块级标签不应转换为段落: {:?}",
+        blocks[0].kind
+    );
 }
 
 #[test]

@@ -11,7 +11,7 @@ import MenuDrawer from "./component/MenuDrawer.vue";
 import PrefsDialog from "./component/PrefsDialog.vue";
 import AboutDialog from "./component/AboutDialog.vue";
 import ConfirmDialog from "./component/ConfirmDialog.vue";
-import { applyEditorOverrides, getPref } from "./utils/prefs.js";
+import { applyEditorOverrides, getPref, syncRustPrefs } from "./utils/prefs.js";
 
 const appWindow = new Window("main");
 
@@ -67,6 +67,8 @@ function recordRecent(path) {
 
 onMounted(async () => {
   applyEditorOverrides();
+  // 把影响 Rust 解析的偏好（html_to_md）同步到 Rust 端
+  syncRustPrefs();
   // 焦点切换触发：窗口失焦时按偏好自动保存
   unlistenWindowBlur = await appWindow.listen("tauri://blur", () => {
     if (getPref("auto_save_trigger") === "blur") autoSave();

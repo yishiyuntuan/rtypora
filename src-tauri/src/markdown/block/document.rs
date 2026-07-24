@@ -7,7 +7,7 @@ use super::math::{is_math_info_string, parse_display_math_source};
 use super::mermaid::is_mermaid_info_string;
 use super::state::{BlockKind, BlockRecord, CalloutVariant, CodeFenceOpening};
 use crate::markdown::inline::footnote::parse_footnote_definition_head;
-use crate::markdown::inline::html::{HtmlSafetyClass, parse_html_document};
+use crate::markdown::inline::html::{HtmlSafetyClass, is_inline_tag, parse_html_document};
 use crate::markdown::inline::image::parse_standalone_image;
 use crate::markdown::inline::tree::InlineTextTree;
 use crate::markdown::table::{
@@ -572,6 +572,11 @@ fn parse_html_block_start(line: &str) -> Option<HtmlBlockStart> {
     }
 
     let name = &tagged[..name_len];
+    // 行内标签（u/kbd/span/mark/del/sup/sub 等）不构成块级 HTML：
+    // `<u>xxx</u>` 这类整行内联 HTML 应按段落行内解析（否则被当成 HtmlBlock 原文展示）
+    if is_inline_tag(name) {
+        return None;
+    }
     let suffix = &tagged[name_len..];
     let next = suffix.chars().next()?;
     if !matches!(next, '>' | ' ' | '\t' | '/') {
@@ -813,6 +818,12 @@ fn comment_block( markdown: String) -> BlockNode {
 }
 
 fn html_or_raw_block( markdown: String) -> BlockNode {
+    // 偏好「HTML 标签转换为 Markdown 语法」：单一容器标签按原生块解析
+    if crate::markdown::html_to_md_enabled()
+        && let Some(node) = convert_html_container_to_native(&markdown)
+    {
+        return node;
+    }
     let document = parse_html_document(&markdown);
     if document.safety == HtmlSafetyClass::Semantic {
         // 复用分类时的解析结果，不再二次解析
@@ -821,6 +832,56 @@ fn html_or_raw_block( markdown: String) -> BlockNode {
         raw_block(markdown)
     }
 }
+
+/// 把单一容器标签的 HTML 块转换为原生 Markdown 块：
+/// `<h1>..</h1>` → 标题，`<p>/<div>/<center> ..</..>` → 段落（内部内容走行内解析）。
+/// 仅处理单一容器（`<tag attrs>inner</tag>` 单行，或开/闭标签各占首尾行）。
+fn convert_html_container_to_native(markdown: &str) -> Option<BlockNode> {
+    let (name, inner) = unwrap_simple_container(markdown.trim())?;
+    let title = InlineTextTree::from_markdown(inner.trim());
+    let record = match name.as_str() {
+        "h1" => BlockRecord::new(BlockKind::Heading { level: 1 }, title),
+        "h2" => BlockRecord::new(BlockKind::Heading { level: 2 }, title),
+        "h3" => BlockRecord::new(BlockKind::Heading { level: 3 }, title),
+        "h4" => BlockRecord::new(BlockKind::Heading { level: 4 }, title),
+        "h5" => BlockRecord::new(BlockKind::Heading { level: 5 }, title),
+        "h6" => BlockRecord::new(BlockKind::Heading { level: 6 }, title),
+        "p" | "div" | "center" => BlockRecord::new(BlockKind::Paragraph, title),
+        _ => return None,
+    };
+    Some(BlockNode::leaf(record))
+}
+
+/// 去掉单一容器标签：`<tag attrs>inner</tag>`（单行）或 `<tag>` 与 `</tag>` 各占首尾行。
+/// 内层存在同名嵌套标签或块级标签（p/div/center/h1-6/section/ul/ol/table 等）时不处理
+///（返回 None 走 HtmlBlock 原文路径，避免块级结构被拍平为纯文本）。
+fn unwrap_simple_container(markdown: &str) -> Option<(String, String)> {
+    let rest = markdown.strip_prefix('<')?;
+    let name_len = rest
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric())
+        .count();
+    if name_len == 0 {
+        return None;
+    }
+    let name = rest[..name_len].to_ascii_lowercase();
+    let open_end = rest.find('>')?;
+    let inner = &rest[open_end + 1..];
+    let close = format!("</{name}>");
+    let inner = inner.strip_suffix(&close)?;
+    let inner_trimmed = inner.trim();
+    if inner_trimmed.contains(&format!("<{name}")) || inner_trimmed.contains(&close) {
+        return None;
+    }
+    // 内层含块级标签：保持 HtmlBlock 原文（不在本转换范围）
+    for block_tag in ["<p", "<div", "<center", "<h1", "<h2", "<h3", "<h4", "<h5", "<h6", "<section", "<ul", "<ol", "<table", "<blockquote", "<pre"] {
+        if inner_trimmed.contains(block_tag) {
+            return None;
+        }
+    }
+    Some((name, inner_trimmed.to_string()))
+}
+
 
 fn math_or_raw_block( markdown: String) -> BlockNode {
     if parse_display_math_source(&markdown).is_some() {
