@@ -1,10 +1,12 @@
 <script setup>
 import { ref, watch } from 'vue';
-import { SLASH_TEXT_GROUPS } from '../utils/wysiwyg.js';
+import { SLASH_TEXT_GROUPS, CALLOUT_TYPES, FONT_COLORS } from '../utils/wysiwyg.js';
 
 // 斜杠命令菜单面板：只负责展示与事件转发。
-// 「文本」行（三行徽章：行内格式 B/I/U/S/==/</> + 标题 H1-H6 + 三种列表，
-// ←/→ 移列、↑/↓ 移行）、表格行（行×列数量，↑/↓ 增减、←/→ 切换行列）；
+// 「文本」行（四行徽章：标题 H1-H6 / 行内格式 B/I/U/S/== / 列表·引用·链接 / 代码·公式，
+// ←/→ 移列、↑/↓ 移行）、表格行（行×列数量，↑/↓ 增减、←/→ 切换行列）、
+// 警告框行（[!TYPE] 类型徽章两行，←/→ 切换、Enter 应用、点选直用）、
+// 字体颜色行（色板 + RGB 输入内联一行，←/→ 切换色板、Enter 应用）；
 // 样式走 --t-* 主题变量，blocks.slashMenu* 可定制。
 const props = defineProps({
   items: { type: Array, default: () => [] },
@@ -16,12 +18,33 @@ const props = defineProps({
   tableRows: { type: Number, default: 2 },
   tableCols: { type: Number, default: 2 },
   tableField: { type: String, default: 'rows' },
+  // 警告框当前类型（CALLOUT_TYPES 下标）
+  calloutType: { type: Number, default: 0 },
+  // 字体颜色当前色板下标与 RGB 非法值标记
+  fontColorIndex: { type: Number, default: 0 },
+  rgbError: { type: Boolean, default: false },
   left: { type: Number, default: 0 },
   top: { type: Number, default: 0 },
 });
-const emit = defineEmits(['pick', 'hover', 'text-cell', 'table-field']);
+const emit = defineEmits([
+  'pick',
+  'hover',
+  'text-cell',
+  'table-field',
+  'callout-type',
+  'font-color-index',
+  'rgb-apply',
+  'rgb-focus',
+  'rgb-cancel',
+]);
 
 const groups = SLASH_TEXT_GROUPS;
+const calloutTypes = CALLOUT_TYPES;
+// 警告框类型分两行展示（与「文本」项同布局：前导行 + 徽章行）
+const calloutRows = [CALLOUT_TYPES.slice(0, 3), CALLOUT_TYPES.slice(3)];
+const fontColors = FONT_COLORS;
+// 字体颜色行的 RGB 输入（本地未受控文本，Enter/Esc 经事件上交）
+const rgbText = ref('');
 
 // 键盘导航时让选中项保持可见：只调整菜单自身滚动位置
 //（不用 scrollIntoView——它会连带滚动编辑器/页面等外层滚动容器；
@@ -98,6 +121,73 @@ watch(
               title="列数（←/→ 进入字段，↑/↓ 增减）"
               @mousedown.prevent.stop="emit('table-field', 'cols')"
             >列 {{ tableCols }}</span>
+          </span>
+        </div>
+        <!-- 警告框：前导行 + 两行 [!TYPE] 类型徽章（与「文本」同布局；点击直用，←/→ 切换、Enter 应用当前类型） -->
+        <div
+          v-else-if="item.id === 'callout'"
+          class="md-slash-item md-slash-text"
+          :class="{ 'md-slash-item-active': i === index }"
+          @mousedown.prevent="emit('pick', item)"
+          @mouseenter="emit('hover', i)"
+        >
+          <span class="md-slash-text-lead">
+            <span class="md-slash-icon" :style="{ color: item.iconColor }" v-html="item.icon"></span>
+            <span>{{ item.label }}</span>
+          </span>
+          <span class="md-slash-groups">
+            <span v-for="(row, ri) in calloutRows" :key="ri" class="md-slash-levels">
+              <span
+                v-for="t in row"
+                :key="t.id"
+                class="md-slash-dim"
+                :style="{ color: t.color }"
+                :class="{ 'md-slash-level-active': i === index && calloutTypes.indexOf(t) === calloutType }"
+                :title="t.label"
+                @mousedown.prevent.stop="emit('pick', item, { calloutVariant: t.id })"
+                @mouseenter="emit('callout-type', calloutTypes.indexOf(t))"
+              >{{ t.id }}</span>
+            </span>
+          </span>
+        </div>
+        <!-- 字体颜色：前导行 + 内联色板行 + RGB 输入行（无二级面板；点选直用，←/→ 切换、Enter 应用当前色板） -->
+        <div
+          v-else-if="item.id === 'fontColor'"
+          class="md-slash-item md-slash-text"
+          :class="{ 'md-slash-item-active': i === index }"
+          @mousedown.prevent="emit('pick', item)"
+          @mouseenter="emit('hover', i)"
+        >
+          <span class="md-slash-text-lead">
+            <span class="md-slash-icon" :style="{ color: item.iconColor }" v-html="item.icon"></span>
+            <span>{{ item.label }}</span>
+          </span>
+          <span class="md-slash-groups">
+            <span class="md-color-swatches">
+              <button
+                v-for="(c, ci) in fontColors"
+                :key="c.label"
+                type="button"
+                class="md-color-swatch"
+                :class="{ 'md-color-swatch-active': i === index && ci === fontColorIndex }"
+                :title="c.label"
+                :style="{ background: c.css }"
+                @mousedown.prevent.stop="emit('pick', item, { fontColor: c.color })"
+                @mouseenter="emit('font-color-index', ci)"
+              ></button>
+            </span>
+            <span class="md-color-rgb">
+              <input
+                v-model="rgbText"
+                class="md-color-input"
+                :class="{ error: rgbError }"
+                placeholder="207,34,46 / #cf222e / red"
+                @mousedown.stop
+                @focus="emit('rgb-focus')"
+                @keydown.enter.prevent="emit('rgb-apply', rgbText)"
+                @keydown.esc.prevent="emit('rgb-cancel')"
+              />
+            </span>
           </span>
         </div>
         <div

@@ -36,6 +36,9 @@ const DEFAULTS = {
   auto_save_delay_seconds: 3,
   // HTML 标签转换：h1-h6/p/div/center 容器与内联样式标签转换为 Markdown 结构
   html_to_md: true,
+  // 警告框扩展语法统一转换：Obsidian 别名（[!hint] 等）与 :::type / !!! type
+  // 容器按 GitHub 五变体解析，保存时落源为标准 [!TYPE] 引用格式
+  callout_unify: true,
 };
 
 let cache = null;
@@ -65,16 +68,19 @@ export function setPref(key, value) {
   applyEditorOverrides(prefs);
   prefsVersion.value += 1;
   if (key.startsWith('render_')) renderVersion.value += 1;
-  if (key === 'html_to_md') {
+  if (key === 'html_to_md' || key === 'callout_unify') {
     structureVersion.value += 1;
     syncRustPrefs();
   }
 }
 
-// 把影响 Rust 解析的偏好同步到 Rust 端（应用启动与 html_to_md 变更时调用）
+// 把影响 Rust 解析的偏好同步到 Rust 端（应用启动与 html_to_md/callout_unify 变更时调用）
 export function syncRustPrefs() {
   invoke('set_html_to_md', { enabled: !!load().html_to_md }).catch((e) =>
     console.error('set_html_to_md 失败:', e),
+  );
+  invoke('set_callout_unify', { enabled: !!load().callout_unify }).catch((e) =>
+    console.error('set_callout_unify 失败:', e),
   );
 }
 

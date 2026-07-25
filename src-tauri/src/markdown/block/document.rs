@@ -513,7 +513,14 @@ fn collect_footnote_definition_region(lines: &[String], start: usize) -> usize {
 fn is_display_math_start(line: &str) -> bool {
     strip_fence_indent(line)
         .map(str::trim_end)
-        .is_some_and(|rest| rest.starts_with("$$") || rest.starts_with("\\["))
+        .is_some_and(|rest| {
+            if rest.starts_with("$$") {
+                return true;
+            }
+            // `\[!` 开头是转义的警告框标记（\[!NOTE] 等），不是 LaTeX \[ 展示公式
+            //（公式以负间距 \! 开头的情形极罕见，让位于警告框转义）
+            rest.starts_with("\\[") && !rest.starts_with("\\[!")
+        })
 }
 
 fn collect_display_math_region(lines: &[String], start: usize) -> usize {
@@ -1038,6 +1045,22 @@ fn build_blocks_from_lines_internal(
         let mut roots: Vec<RootBlock> = Vec::new();
         let mut index = 0;
 
+        // YAML Front Matter：文档以 `---` 行开头且存在闭合 `---`/`...` 行时，
+        // 整体按注释类块解析（原文无损保留、渲染为信息块，与 HTML 注释同一路径）
+        if lines.first().is_some_and(|line| line.trim() == "---")
+            && let Some(close) = lines[1..]
+                .iter()
+                .position(|line| matches!(line.trim(), "---" | "..."))
+        {
+            let end = close + 2; // position 相对 lines[1..]，+1 绝对行号，再 +1 含闭合行
+            roots.push(RootBlock::spanned(
+                comment_block(lines[0..end].join("\n")),
+                0,
+                end,
+            ));
+            index = end;
+        }
+
         while index < lines.len() {
             let line = &lines[index];
             if line.trim().is_empty() {
@@ -1187,6 +1210,15 @@ fn build_blocks_from_lines_internal(
                 continue;
             }
 
+            // 警告框容器语法（Docusaurus `:::type` / MkDocs `!!! type`；统一转换开启时识别）
+            if crate::markdown::callout_unify_enabled()
+                && let Some((block, next_index)) = collect_fenced_callout_block(lines, index)
+            {
+                roots.push(RootBlock::spanned(block, index, next_index));
+                index = next_index;
+                continue;
+            }
+
             if is_quote_start(line) {
                 let (block, next_index) = collect_quote_block(lines, index);
                 roots.push(RootBlock::spanned(block, index, next_index));
@@ -1293,6 +1325,82 @@ fn build_blocks_from_lines_internal(
         )
     }
 
+    // 警告框容器语法（统一转换开启时由根块调度调用）：
+    // Docusaurus `:::type`（可带 [标题]，以 ::: 闭合）；
+    // MkDocs `!!! type "标题"`（内容行缩进 4 空格，遇非缩进非空行结束）。
+    // 类型经 CalloutVariant::from_marker 映射（与引用式警告框同一清单），
+    // 内容复用 build_native_callout_block（与引用式同一构建路径）。
+    fn collect_fenced_callout_block(
+        lines: &[String],
+        start: usize,
+    ) -> Option<(BlockNode, usize)> {
+        let opener = lines[start].trim_end();
+        // Docusaurus: :::type[标题]
+        if let Some(rest) = opener.strip_prefix(":::") {
+            let rest = rest.trim();
+            if rest.is_empty() {
+                return None; // 孤立 :::（闭合围栏），不当容器起点
+            }
+            let (marker, title) = match rest.find('[') {
+                Some(bracket) if rest.ends_with(']') => {
+                    (&rest[..bracket], rest[bracket + 1..rest.len() - 1].trim().to_string())
+                }
+                _ => (rest, String::new()),
+            };
+            let variant = CalloutVariant::from_marker(marker.trim())?;
+            let mut inner: Vec<String> = Vec::new();
+            let mut index = start + 1;
+            while index < lines.len() && lines[index].trim() != ":::" {
+                inner.push(lines[index].clone());
+                index += 1;
+            }
+            if index >= lines.len() {
+                return None; // 未闭合：按普通文本处理
+            }
+            let block = build_native_callout_block(&inner, variant, title)
+                .unwrap_or_else(|| raw_block(lines[start..=index].join("\n")));
+            return Some((block, index + 1));
+        }
+        // MkDocs: !!! type "标题"（内容缩进 4 空格）
+        if let Some(rest) = opener.strip_prefix("!!!") {
+            let rest = rest.trim();
+            let (marker, title) = match rest.find('"') {
+                Some(q) if rest.ends_with('"') && rest.len() > q + 1 => {
+                    (&rest[..q], rest[q + 1..rest.len() - 1].to_string())
+                }
+                _ => (rest, String::new()),
+            };
+            let variant = CalloutVariant::from_marker(marker.trim())?;
+            let mut inner: Vec<String> = Vec::new();
+            let mut index = start + 1;
+            while index < lines.len() {
+                let line = &lines[index];
+                if line.trim().is_empty() {
+                    inner.push(String::new());
+                    index += 1;
+                    continue;
+                }
+                let Some(content) = line.strip_prefix("    ") else {
+                    break;
+                };
+                inner.push(content.to_string());
+                index += 1;
+            }
+            // 尾部空行不属于容器（避免吞掉块间空行）
+            while inner.last().is_some_and(|l| l.trim().is_empty()) {
+                inner.pop();
+                index -= 1;
+            }
+            if inner.is_empty() {
+                return None;
+            }
+            let block = build_native_callout_block(&inner, variant, title)
+                .unwrap_or_else(|| raw_block(lines[start..index].join("\n")));
+            return Some((block, index));
+        }
+        None
+    }
+
     fn collect_quote_block(
         lines: &[String],
         start: usize,
@@ -1319,11 +1427,21 @@ fn build_blocks_from_lines_internal(
         (block, end)
     }
 
+    /// 警告框头部解析：统一转换开启时接受 Obsidian 别名与折叠后缀（扩展语法），
+    /// 否则仅 GitHub 五标准标记。
+    fn parse_callout_header(line: &str) -> Option<(CalloutVariant, String)> {
+        if crate::markdown::callout_unify_enabled() {
+            CalloutVariant::parse_header_line_extended(line)
+        } else {
+            CalloutVariant::parse_header_line(line)
+        }
+    }
+
     fn build_native_quote_block(
         lines: &[String],
     ) -> Option<BlockNode> {
         if let Some(header_index) = lines.iter().position(|line| !line.trim().is_empty())
-            && let Some((variant, title)) = CalloutVariant::parse_header_line(&lines[header_index])
+            && let Some((variant, title)) = parse_callout_header(&lines[header_index])
         {
             return build_native_callout_block(&lines[header_index + 1..],
                 variant,

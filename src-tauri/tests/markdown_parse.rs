@@ -226,7 +226,7 @@ fn 序列化对齐公共前缀() {
 
 #[test]
 fn 块模板生成() {
-    let table = markdown::block_template("table", Some(2), Some(3));
+    let table = markdown::block_template("table", Some(2), Some(3), None);
     assert_eq!(
         table.markdown,
         "| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |"
@@ -238,15 +238,31 @@ fn 块模板生成() {
     assert_eq!(blocks[0].table.as_ref().unwrap().header.len(), 3);
     assert_eq!(blocks[0].table.as_ref().unwrap().rows.len(), 2);
 
-    let math = markdown::block_template("mathBlock", None, None);
+    let math = markdown::block_template("mathBlock", None, None, None);
     assert_eq!(math.markdown, "$$\n\n$$");
     assert_eq!(math.caret_offset, 3);
-    let section = markdown::block_template("sectionBlock", None, None);
+    let section = markdown::block_template("sectionBlock", None, None, None);
     assert_eq!(section.markdown, "<section>\n\n</section>");
     assert_eq!(section.caret_offset, "<section>\n".len());
-    let link = markdown::block_template("link", None, None);
+    let link = markdown::block_template("link", None, None, None);
     assert_eq!(link.markdown, "[链接]()");
     assert_eq!(link.caret_offset, 4);
+    let inline_math = markdown::block_template("inlineMath", None, None, None);
+    assert_eq!(inline_math.markdown, "$$");
+    assert_eq!(inline_math.caret_offset, 1);
+    let footnote_def = markdown::block_template("footnoteDef", None, None, None);
+    assert_eq!(footnote_def.markdown, "[^1]: ");
+    let link_ref = markdown::block_template("linkRef", None, None, None);
+    assert_eq!(link_ref.markdown, "[1]: url \"title\"");
+    assert_eq!(link_ref.caret_offset, 5);
+    // 警告框类型：默认 NOTE，指定类型生效，未知类型回落 NOTE
+    let note = markdown::block_template("callout", None, None, None);
+    assert_eq!(note.markdown, "> [!NOTE]\n> ");
+    let caution = markdown::block_template("callout", None, None, Some("CAUTION".into()));
+    assert_eq!(caution.markdown, "> [!CAUTION]\n> ");
+    assert_eq!(caution.caret_offset, caution.markdown.len());
+    let unknown = markdown::block_template("callout", None, None, Some("FOO".into()));
+    assert_eq!(unknown.markdown, "> [!NOTE]\n> ");
 }
 
 #[test]
@@ -415,10 +431,298 @@ fn 引用与callout() {
 }
 
 #[test]
+fn callout别名与折叠后缀() {
+    use markdown::block::state::CalloutVariant;
+    // Obsidian 别名 → 标准变体（统一转换默认开启）
+    let blocks = parse("> [!hint]\n> 提示内容\n");
+    match &blocks[0].kind {
+        BlockKindDto::Callout { variant } => assert_eq!(*variant, CalloutVariant::Tip),
+        other => panic!("应为 callout: {other:?}"),
+    }
+    let blocks = parse("> [!danger]\n> 危险\n");
+    match &blocks[0].kind {
+        BlockKindDto::Callout { variant } => assert_eq!(*variant, CalloutVariant::Caution),
+        other => panic!("应为 callout: {other:?}"),
+    }
+    // 折叠后缀剥离（不入标题）
+    let blocks = parse("> [!warning]- 折叠标题\n> 内容\n");
+    match &blocks[0].kind {
+        BlockKindDto::Callout { variant } => assert_eq!(*variant, CalloutVariant::Warning),
+        other => panic!("应为 callout: {other:?}"),
+    }
+    assert_eq!(title_text(&blocks[0]), "折叠标题");
+    // quote/cite 别名不映射（按普通引用处理，语义一致）
+    let blocks = parse("> [!quote] 引文\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Quote));
+    // 自定义标题保留
+    let blocks = parse("> [!note] 自定义标题\n> 内容\n");
+    match &blocks[0].kind {
+        BlockKindDto::Callout { variant } => assert_eq!(*variant, CalloutVariant::Note),
+        other => panic!("应为 callout: {other:?}"),
+    }
+    assert_eq!(title_text(&blocks[0]), "自定义标题");
+    // 序列化统一为标准 [!TYPE]（别名落源为标准标记）
+    let md = markdown::serialize_markdown(blocks);
+    assert!(md.contains("[!NOTE]"), "别名应统一为标准标记: {md}");
+    // 普通引用以别名头部开头时转义防误判（往返保持引用）
+    let blocks = parse("> \\[!hint] 只是引用\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Quote));
+    let md = markdown::serialize_markdown(blocks.clone());
+    assert!(md.contains("\\[!hint]"), "引用头部应保留转义: {md}");
+    // 标准标记同理（\[! 不得误判为 LaTeX \[ 展示公式起始）
+    let blocks = parse("> \\[!NOTE] 也是引用\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Quote));
+    let md = markdown::serialize_markdown(blocks);
+    assert!(md.contains("\\[!NOTE]"), "标准标记引用头部应保留转义: {md}");
+}
+
+#[test]
+fn callout容器语法() {
+    use markdown::block::state::CalloutVariant;
+    // Docusaurus :::type（带 [标题]）
+    let blocks = parse(":::warning[数据丢失风险]\n删除操作不可恢复。\n:::\n");
+    match &blocks[0].kind {
+        BlockKindDto::Callout { variant } => assert_eq!(*variant, CalloutVariant::Warning),
+        other => panic!("应为 callout: {other:?}"),
+    }
+    assert_eq!(title_text(&blocks[0]), "数据丢失风险");
+    assert!(!blocks[0].children.is_empty(), "容器内容应在 children");
+    // 序列化统一为标准引用格式
+    let md = markdown::serialize_markdown(blocks);
+    assert!(md.contains("> [!WARNING] 数据丢失风险"), "容器应统一为引用式: {md}");
+
+    // MkDocs !!! type "标题"（内容缩进 4 空格）
+    let blocks = parse("!!! danger \"严重后果\"\n    直接操作生产数据库。\n");
+    match &blocks[0].kind {
+        BlockKindDto::Callout { variant } => assert_eq!(*variant, CalloutVariant::Caution),
+        other => panic!("应为 callout: {other:?}"),
+    }
+    assert_eq!(title_text(&blocks[0]), "严重后果");
+    // 尾部空行不吞并后续块
+    let blocks = parse("!!! warning\n    内容。\n\n后续段落\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Callout { .. }));
+    assert_eq!(blocks.len(), 2, "尾部空行后的段落不应被吞: {}", blocks.len());
+
+    // 未闭合 ::: 不识别（按普通文本）
+    let blocks = parse(":::warning\n没有闭合。\n");
+    assert!(!matches!(blocks[0].kind, BlockKindDto::Callout { .. }));
+    // 无缩进内容的 !!! 不识别
+    let blocks = parse("!!! warning\n没有缩进内容。\n");
+    assert!(!matches!(blocks[0].kind, BlockKindDto::Callout { .. }));
+}
+
+#[test]
 fn 分割线() {
     let blocks = parse("上文\n\n---\n\n下文\n");
     assert_eq!(blocks.len(), 3);
     assert!(matches!(blocks[1].kind, BlockKindDto::Separator));
+}
+
+#[test]
+fn yaml_front_matter() {
+    // 文档头 --- 且有闭合：整体为注释类块（原文无损，后续内容正常解析）
+    let blocks = parse("---\ntitle: 标题\ntags: [a, b]\n---\n\n正文\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Comment));
+    assert_eq!(markdown::serialize_markdown(blocks.clone()), "---\ntitle: 标题\ntags: [a, b]\n---\n\n正文");
+    assert!(blocks.iter().any(|b| matches!(b.kind, BlockKindDto::Paragraph)));
+
+    // `...` 也可闭合
+    let blocks = parse("---\ntitle: x\n...\n正文\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Comment));
+
+    // 文档头 --- 但无闭合：维持分割线语义（不是 front matter）
+    let blocks = parse("---\n\n正文\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Separator));
+
+    // 文档中部的 --- 区块不是 front matter
+    let blocks = parse("正文\n\n---\ntitle: x\n---\n");
+    assert!(matches!(blocks[1].kind, BlockKindDto::Separator));
+}
+
+#[test]
+fn font标签行内解析() {
+    // <font color> 行内映射为 HtmlInlineStyle（与 span style 同一路径，
+    // 序列化统一为 <span style="color:…">）
+    let blocks = parse("这是 <font color=\"red\">红色</font> 文字\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
+    assert_eq!(blocks[0].title.fragments[1].text, "红色");
+    let md = markdown::serialize_markdown(blocks);
+    assert!(
+        md.contains("<span style=\"color: rgba(255,0,0,1.000);\">红色</span>"),
+        "font color 应映射为行内样式: {md}"
+    );
+
+    // <font size="5"> → 24px（HTML 档位映射）
+    let blocks = parse("<font size=\"5\">大字</font> 普通\n");
+    assert!(
+        matches!(blocks[0].kind, BlockKindDto::Paragraph),
+        "font 行首应按段落解析: {:?}",
+        blocks[0].kind
+    );
+    let md = markdown::serialize_markdown(blocks);
+    assert!(md.contains("font-size: 24px"), "font size 应映射为字号: {md}");
+
+    // font 独占一行也不再误判为 HTML 块
+    let blocks = parse("<font color=\"red\">红色</font>\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
+}
+
+#[test]
+fn 独立img行携带图片信息() {
+    let blocks = parse("<img src=\"./img/a.png\" alt=\"示意\" style=\"zoom:50%\" />\n");
+    let image = blocks[0].image.as_ref().expect("独立 img 行应携带 image");
+    assert_eq!(image.src, "./img/a.png");
+    assert_eq!(image.alt, "示意");
+    assert_eq!(image.zoom, Some(0.5));
+    // 原文保留（rawFallback），序列化不丢样式属性
+    let md = markdown::serialize_markdown(blocks);
+    assert!(md.contains("zoom:50%"), "原文应保留: {md}");
+
+    // 无 zoom 属性时 zoom 为 None
+    let blocks = parse("<img src=\"a.png\" />\n");
+    assert_eq!(blocks[0].image.as_ref().unwrap().zoom, None);
+}
+
+#[test]
+fn a标签转链接() {
+    // 无 href：空 destination 的链接（Typora 式渲染为链接样式）
+    let blocks = parse("<a>ssss</a>\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
+    let f = &blocks[0].title.fragments[0];
+    assert_eq!(f.text, "ssss");
+    assert!(f.link.is_some(), "<a> 应转为链接: {:?}", blocks[0].title.fragments);
+    // 序列化为 markdown 链接语法
+    assert_eq!(markdown::serialize_markdown(blocks), "[ssss]()");
+
+    // 带 href 与混排文本
+    let blocks = parse("这是 <a href=\"https://example.com\">链接</a> 文字\n");
+    assert_eq!(title_text(&blocks[0]), "这是 链接 文字");
+    let linked: Vec<_> = blocks[0]
+        .title
+        .fragments
+        .iter()
+        .filter(|f| f.link.is_some())
+        .collect();
+    assert_eq!(linked.len(), 1);
+    assert_eq!(linked[0].text, "链接");
+    let md = markdown::serialize_markdown(blocks);
+    assert_eq!(md, "这是 [链接](https://example.com) 文字");
+}
+
+#[test]
+fn html标签自动闭合() {
+    let cases = [
+        ("<div>", Some("</div>")),
+        ("<font color=\"red\">", Some("</font>")),
+        ("<span class=\"x\">", Some("</span>")),
+        ("<h2>", Some("</h2>")),
+        ("<section>", Some("</section>")),
+        ("<ul>", Some("</ul>")),
+        ("<table>", Some("</table>")),
+        ("文字 <kbd>", Some("</kbd>")),
+        // void / 自闭合 / 闭合标签 / 注释声明 / 未知标签 / 散文比较符：不触发
+        ("<br>", None),
+        ("<hr>", None),
+        ("<img src=\"a.png\">", None),
+        ("<div/>", None),
+        ("</div>", None),
+        ("<!-- 注释 -->", None),
+        ("<unknown>", None),
+        ("a < y >", None),
+        ("x <y>", None),
+        // 未输入 > 不触发
+        ("<div", None),
+        // 属性含 > 保守放弃
+        ("<div class=\"a>b\">", None),
+    ];
+    for (input, expected) in cases {
+        assert_eq!(
+            markdown::inline_html_autoclose(input).as_deref(),
+            expected,
+            "输入 {input:?}"
+        );
+    }
+}
+
+#[test]
+fn html容器标签展开判定() {
+    let cases = [
+        ("<div>", "</div>", Some("div")),
+        ("<div class=\"a\">", "</div>", Some("div")),
+        ("<section>", "</section>", Some("section")),
+        ("<table>", "</table>", Some("table")),
+        ("<ul>", "</ul>", Some("ul")),
+        ("<h2>", "</h2>", Some("h2")),
+        // 标签内有内容也可展开（光标在内容之后）
+        ("<div>内容", "</div>", Some("div")),
+        // 行内标签不展开
+        ("<span>", "</span>", None),
+        ("<font color=\"red\">", "</font>", None),
+        ("<kbd>", "</kbd>", None),
+        // 闭标签不配对 / 缺失
+        ("<div>", "</span>", None),
+        ("<div>", "", None),
+        ("<div>", "文本", None),
+        // void / 未知标签
+        ("<br>", "</br>", None),
+        ("<unknown>", "</unknown>", None),
+    ];
+    for (before, after, expected) in cases {
+        assert_eq!(
+            markdown::html_container_tag_between(before, after).as_deref(),
+            expected,
+            "before={before:?} after={after:?}"
+        );
+    }
+}
+
+#[test]
+fn html闭标签跳过判定() {
+    let cases = [
+        ("<div>", "</div>", Some("</div>")),
+        ("<div class=\"a\">", "</div>", Some("</div>")),
+        ("<section>", "</section>", Some("</section>")),
+        // 标签内有内容：光标在内容之后、闭标签之前
+        ("<a>ssss", "</a>", Some("</a>")),
+        ("<div>文字", "</div>", Some("</div>")),
+        // 行内标签同样适用（跳过不限制块级容器）
+        ("<span>", "</span>", Some("</span>")),
+        ("<font color=\"red\">", "</font>", Some("</font>")),
+        // 不配对 / 缺失 / void / 未知标签 / 已闭合
+        ("<div>", "</span>", None),
+        ("<div>", "", None),
+        ("文本", "</div>", None),
+        ("<div></div>", "</div>", None),
+        ("<br>", "</br>", None),
+        ("<unknown>", "</unknown>", None),
+    ];
+    for (before, after, expected) in cases {
+        assert_eq!(
+            markdown::html_closing_tag_at(before, after).as_deref(),
+            expected,
+            "before={before:?} after={after:?}"
+        );
+    }
+}
+
+#[test]
+fn 字体颜色值解析() {
+    // 各种 CSS 写法与裸 RGB 三元组（序列化为 htmlStyle.color 的 JSON 形状）
+    let red = serde_json::json!({"rgba": {"red": 207, "green": 34, "blue": 46, "alpha": 1.0}});
+    for input in ["#cf222e", "rgb(207,34,46)", "207,34,46", " 207 , 34 , 46 "] {
+        let color = markdown::parse_html_color(input).expect(input);
+        assert_eq!(serde_json::to_value(&color).unwrap(), red, "输入 {input:?}");
+    }
+    // 命名颜色与 currentColor
+    assert!(markdown::parse_html_color("red").is_some());
+    assert_eq!(
+        serde_json::to_value(markdown::parse_html_color("currentColor").unwrap()).unwrap(),
+        serde_json::json!("currentColor")
+    );
+    // 非法值
+    assert!(markdown::parse_html_color("not-a-color").is_none());
+    assert!(markdown::parse_html_color("1,2").is_none());
+    assert!(markdown::parse_html_color("").is_none());
 }
 
 #[test]

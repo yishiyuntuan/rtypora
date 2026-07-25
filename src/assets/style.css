@@ -473,6 +473,230 @@
   background: var(--t-table-border);
 }
 
+/* 字体颜色面板：常见色板 + RGB 输入 */
+.md-color-swatches {
+  display: grid;
+  grid-template-columns: repeat(5, 22px);
+  gap: 6px;
+}
+.md-color-swatch {
+  width: 22px;
+  height: 22px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  border-radius: 5px;
+  cursor: pointer;
+  transition: transform 0.08s;
+}
+.md-color-swatch:hover {
+  transform: scale(1.15);
+}
+/* 键盘导航的当前色板（←/→ 切换、Enter 应用） */
+.md-color-swatch-active {
+  outline: 2px solid var(--t-tab-indicator);
+  outline-offset: 1px;
+}
+.md-color-rgb {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.md-color-input {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--t-table-border);
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.md-color-input:focus {
+  border-color: var(--t-tab-indicator);
+}
+.md-color-input.error {
+  border-color: #e02424;
+}
+.md-color-apply {
+  padding: 3px 10px;
+  border: none;
+  border-radius: 5px;
+  background: var(--t-tab-indicator);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+}
+.md-color-error {
+  margin-top: 6px;
+  color: #e02424;
+  font-size: 11px;
+}
+
+/* 内容目录（[TOC] 块）：文档大纲渲染，点击标题定位 */
+.md-toc {
+  padding: 8px 12px;
+  border: 1px solid var(--t-table-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--t-editor-background) 96%, var(--t-text-default));
+}
+.md-toc-item {
+  padding: 2px 4px;
+  border-radius: 4px;
+  color: var(--t-text-link, var(--t-tab-indicator));
+  font-size: 13px;
+  line-height: 1.7;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.md-toc-item:hover {
+  background: var(--t-status-bar-button-hover);
+  text-decoration: underline;
+}
+
+/* 右键菜单（Typora 式：图标行 + 文本项 + hover 子菜单；主题变量，blocks 可定制） */
+.md-ctx-menu {
+  position: fixed;
+  z-index: 70;
+  min-width: 190px;
+  padding: 6px;
+  background: var(--t-editor-background);
+  color: var(--t-text-default);
+  border: 1px solid var(--t-table-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+  font-size: 13px;
+  user-select: none;
+}
+.md-ctx-icons {
+  display: flex;
+  gap: 4px;
+  padding: 2px;
+}
+.md-ctx-icons button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.08s;
+}
+.md-ctx-icons button:hover {
+  background: var(--t-status-bar-button-hover);
+}
+.md-ctx-icons svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+.md-ctx-sep {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--t-table-border);
+}
+.md-ctx-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.md-ctx-item:hover,
+.md-ctx-item.open {
+  background: var(--t-status-bar-button-hover);
+}
+.md-ctx-arrow {
+  color: var(--t-text-placeholder);
+  font-size: 11px;
+}
+.md-ctx-sub {
+  position: absolute;
+  top: -7px;
+  left: calc(100% - 4px);
+  min-width: 210px;
+  padding: 6px;
+  background: var(--t-editor-background);
+  border: 1px solid var(--t-table-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+.md-ctx-sub.flip {
+  left: auto;
+  right: calc(100% - 4px);
+}
+.md-ctx-sub-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 5px 10px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+.md-ctx-sub-item:hover {
+  background: var(--t-status-bar-button-hover);
+}
+.md-ctx-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.md-ctx-check {
+  display: inline-block;
+  width: 14px;
+  color: var(--t-tab-indicator);
+  font-weight: 600;
+}
+.md-ctx-shortcut {
+  color: var(--t-text-placeholder);
+  font-size: 12px;
+}
+/* 文字颜色按钮的色板飞出 */
+.md-ctx-icon-fly {
+  position: relative;
+  flex: 1;
+  display: flex;
+}
+.md-ctx-icon-fly > button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  cursor: pointer;
+}
+.md-ctx-icon-fly > button:hover {
+  background: var(--t-status-bar-button-hover);
+}
+.md-ctx-icon-fly svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+.md-ctx-color-sub {
+  top: auto;
+  bottom: calc(100% + 2px);
+  left: auto;
+  right: -8px;
+  min-width: 0;
+}
+.md-ctx-color-sub.flip {
+  right: auto;
+  left: -8px;
+}
+
 /* 首行缩进（偏好设置开关）：顶层段落首行缩进 2em；
    引用/列表/表格等容器内的段落不匹配（非 .blk-paragraph、非编辑容器直接子级） */
 .md-first-indent .blk-paragraph,

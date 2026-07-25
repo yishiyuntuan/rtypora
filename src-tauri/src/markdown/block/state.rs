@@ -81,6 +81,41 @@ impl CalloutVariant {
         Some((variant, title))
     }
 
+    /// 扩展标记映射（Obsidian 别名 → GitHub 五变体），
+    /// 仅在「警告框语法统一转换」开启时由扩展头部解析使用。
+    /// NOTE 组：note/info/todo/abstract/summary/tldr/example；
+    /// TIP 组：tip/hint/success/check/done；IMPORTANT：important；
+    /// WARNING 组：warning/question/help/faq/attention；
+    /// CAUTION 组：caution/failure/fail/missing/danger/error/bug。
+    /// （quote/cite 不映射：按普通引用处理，语义一致）
+    pub fn from_marker(marker: &str) -> Option<Self> {
+        Some(match marker.to_ascii_uppercase().as_str() {
+            "NOTE" | "INFO" | "TODO" | "ABSTRACT" | "SUMMARY" | "TLDR" | "EXAMPLE" => Self::Note,
+            "TIP" | "HINT" | "SUCCESS" | "CHECK" | "DONE" => Self::Tip,
+            "IMPORTANT" => Self::Important,
+            "WARNING" | "QUESTION" | "HELP" | "FAQ" | "ATTENTION" => Self::Warning,
+            "CAUTION" | "FAILURE" | "FAIL" | "MISSING" | "DANGER" | "ERROR" | "BUG" => {
+                Self::Caution
+            }
+            _ => return None,
+        })
+    }
+
+    /// 扩展头部解析：接受 Obsidian 别名标记与折叠后缀（`[!warning]-`/`[!warning]+`，
+    /// 后缀剥离不入标题）。GitHub 五标准标记同样命中（from_marker 覆盖）。
+    pub fn parse_header_line_extended(line: &str) -> Option<(Self, String)> {
+        let trimmed = line.trim_start();
+        let rest = trimmed.strip_prefix("[!")?;
+        let marker_end = rest.find(']')?;
+        let variant = Self::from_marker(&rest[..marker_end])?;
+        let mut title = &rest[marker_end + 1..];
+        // Obsidian 折叠后缀：紧随 ] 的 -（默认折叠）或 +（默认展开）
+        if let Some(stripped) = title.strip_prefix(['-', '+']) {
+            title = stripped;
+        }
+        Some((variant, title.trim_start().to_string()))
+    }
+
     pub fn header_markdown(self, title_markdown: &str) -> String {
         if title_markdown.trim().is_empty() {
             format!("[!{}]", self.marker())
@@ -93,7 +128,13 @@ impl CalloutVariant {
         let mut lines = title_markdown.splitn(2, '\n');
         let first = lines.next().unwrap_or_default();
         let rest = lines.next();
-        let escaped_first = if Self::parse_header_line(first).is_some() {
+        // 统一转换开启时别名头部（[!hint] 等）同样会被识别为警告框，需一并转义
+        let is_callout_header = if crate::markdown::callout_unify_enabled() {
+            Self::parse_header_line_extended(first).is_some()
+        } else {
+            Self::parse_header_line(first).is_some()
+        };
+        let escaped_first = if is_callout_header {
             format!("\\{first}")
         } else {
             first.to_string()

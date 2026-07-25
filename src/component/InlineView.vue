@@ -1,6 +1,7 @@
 <script setup>
 import { computed, inject } from 'vue';
 import MathView from './MathView.vue';
+import { htmlStyleCss } from '../utils/wysiwyg.js';
 
 // 行内渲染器：渲染 velotype InlineTextTree 的 fragments。
 // 每个 fragment 的样式为标志位组合，通过递归逐层包裹元素（link → 粗 → 斜 → 删 → 下划线 → 代码 → 上下标）。
@@ -40,6 +41,9 @@ function strip(fragment, key) {
 function withoutLink(fragment) {
   return { ...fragment, link: null };
 }
+function withoutHtmlStyle(fragment) {
+  return { ...fragment, htmlStyle: null };
+}
 </script>
 
 <template>
@@ -60,6 +64,8 @@ function withoutLink(fragment) {
       @click.stop.prevent="onFootnoteClick(fragment)"
     ><sup>[{{ fragment.footnote.id }}]</sup></a>
     <MathView v-else-if="fragment.math" :source="fragment.math.body" />
+    <!-- HTML 行内样式（<span style>/<font>）：最外层包裹，颜色/背景/字号作用于内部全部样式 -->
+    <span v-else-if="fragment.htmlStyle" :style="htmlStyleCss(fragment.htmlStyle)"><InlineView :fragment="withoutHtmlStyle(fragment)" /></span>
     <a
       v-else-if="fragment.link"
       :href="linkHref(fragment.link)"

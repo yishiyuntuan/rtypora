@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 use super::block::document::BlockNode;
 use super::block::state::{BlockKind, BlockRecord, CalloutVariant};
+use super::inline::html;
 use super::inline::image::{ImageTarget, parse_standalone_image};
 use super::inline::tree::InlineTextTree;
 use super::table::TableData;
@@ -129,6 +130,9 @@ pub struct ImageDto {
     pub src: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// 缩放倍率（独立 `<img style="zoom:50%">` HTML 图片行；`![]()` 图片无此值）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zoom: Option<f32>,
 }
 
 /// 前端块树节点（JSON）。
@@ -172,10 +176,25 @@ impl BlockDto {
                         alt: syntax.alt,
                         src,
                         title,
+                        zoom: None,
                     }),
                     ImageTarget::Reference { .. } => None,
                 }
             })
+        } else if matches!(node.record.kind, BlockKind::HtmlBlock | BlockKind::RawMarkdown) {
+            // 独立 <img> HTML 行：携带图片信息（含 zoom），前端按图片渲染；
+            // 原文保留在 raw_fallback（编辑/序列化不丢样式属性）
+            node.record
+                .raw_fallback
+                .as_deref()
+                .and_then(html::parse_html_image_block)
+                .map(|img| ImageDto {
+                    alt: img.alt.clone(),
+                    src: img.src.clone(),
+                    title: None,
+                    zoom: ((img.zoom_factor() - 1.0).abs() > f32::EPSILON)
+                        .then_some(img.zoom_factor()),
+                })
         } else {
             None
         };

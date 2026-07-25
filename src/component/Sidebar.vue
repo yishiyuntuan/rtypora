@@ -17,6 +17,31 @@ const emit = defineEmits(['update:visible', 'select-block', 'open-file', 'open-f
 
 const activeTab = ref('toc');
 
+// ---------- 宽度（默认 280，右缘拖拽调整，localStorage 持久化） ----------
+const SIDEBAR_WIDTH_KEY = 'tauri-editor.sidebar-width';
+const width = ref(Math.min(480, Math.max(200, Number(localStorage.getItem(SIDEBAR_WIDTH_KEY)) || 280)));
+
+function startResize(e) {
+  e.preventDefault();
+  const startX = e.clientX;
+  const startWidth = width.value;
+  const onMove = (ev) => {
+    width.value = Math.min(480, Math.max(200, startWidth + ev.clientX - startX));
+  };
+  const onUp = () => {
+    document.removeEventListener('pointermove', onMove);
+    document.removeEventListener('pointerup', onUp);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width.value));
+  };
+  // 拖拽期间全局接管光标与选中，避免经过编辑器时选中文本
+  document.body.style.cursor = 'col-resize';
+  document.body.style.userSelect = 'none';
+  document.addEventListener('pointermove', onMove);
+  document.addEventListener('pointerup', onUp);
+}
+
 // ---------- 目录：文件面板 ----------
 
 // 视图模式：tree（树形）| list（列表）
@@ -179,8 +204,11 @@ const outlineItems = computed(() => {
   <Transition name="sidebar">
     <div
       v-show="visible"
-      class="t-app flex h-full w-60 flex-col border-r border-(--t-table-border) text-[13px]"
+      class="t-app relative flex h-full flex-col border-r border-(--t-table-border) text-[13px]"
+      :style="{ width: `${width}px` }"
     >
+      <!-- 右缘拖拽调宽手柄 -->
+      <div class="sidebar-resizer" title="拖拽调整宽度" @pointerdown="startResize"></div>
       <div class="flex border-b border-(--t-table-border)">
         <div
           class="t-tab flex flex-1 cursor-pointer items-center justify-center gap-1.5 px-4 pb-2 pt-3 text-center text-[12px] font-medium"
@@ -436,6 +464,21 @@ const outlineItems = computed(() => {
 .sidebar-leave-to {
   transform: translateX(-100%);
   opacity: 0;
+}
+
+/* 右缘拖拽调宽手柄：窄热区 + 悬停高亮（主题指示色） */
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+}
+.sidebar-resizer:hover,
+.sidebar-resizer:active {
+  background: color-mix(in srgb, var(--t-tab-indicator) 35%, transparent);
 }
 
 /* 大纲树形缩进引导线与层级徽标 */

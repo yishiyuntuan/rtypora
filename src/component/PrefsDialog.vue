@@ -218,6 +218,15 @@ function update(key, value) {
                 />
                 <span>HTML 标签转换为 Markdown 语法</span>
               </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.callout_unify"
+                  @change="update('callout_unify', $event.target.checked)"
+                />
+                <span>警告框扩展语法统一为标准格式</span>
+              </label>
+              <p class="t-dim text-[12px]">开启后 Obsidian 别名（[!hint] 等）与 :::warning / !!! warning 容器按标准 [!TYPE] 警告框解析并在保存时统一为该格式。</p>
               <label class="flex items-center justify-between gap-2">
                 <span>公式自动编号</span>
                 <select

@@ -95,7 +95,50 @@ function fragmentToHtml(f) {
   if (f.link) {
     html = `<a class="${LINK_CLASS}" href="${escapeHtml(linkHref(f.link))}">${html}</a>`;
   }
+  // HTML 行内样式（<span style>/<font>）：样式上屏 + JSON 存 data 属性无损往返
+  if (f.htmlStyle) {
+    html = `<span style="${htmlStyleCss(f.htmlStyle)}" data-html-style="${escapeHtml(JSON.stringify(f.htmlStyle))}">${html}</span>`;
+  }
   return html;
+}
+
+// HTML 行内样式（颜色/背景/字号白名单）→ CSS 字符串（渲染态 :style 与编辑态 span 共用）
+export function htmlStyleCss(hs) {
+  const colorCss = (c) => {
+    if (!c) return undefined;
+    if (c === 'currentColor') return 'currentColor';
+    const r = c.rgba;
+    return r ? `rgba(${r.red},${r.green},${r.blue},${r.alpha})` : undefined;
+  };
+  const sizeCss = (f) => {
+    if (!f) return undefined;
+    if (f.px != null) return `${f.px}px`;
+    if (f.em != null) return `${f.em}em`;
+    if (f.rem != null) return `${f.rem}rem`;
+    if (f.percent != null) return `${f.percent}%`;
+    // 关键字（xxSmall → xx-small 等）
+    if (f.keyword) return f.keyword.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase());
+    return undefined;
+  };
+  const parts = [];
+  const color = colorCss(hs.color);
+  const backgroundColor = colorCss(hs.backgroundColor);
+  const fontSize = sizeCss(hs.fontSize);
+  if (color) parts.push(`color: ${color}`);
+  if (backgroundColor) parts.push(`background-color: ${backgroundColor}`);
+  if (fontSize) parts.push(`font-size: ${fontSize}`);
+  return parts.join('; ');
+}
+
+// 嵌套 htmlStyle 合并：内层字段优先（外层补空缺）
+function mergeHtmlStyle(outer, inner) {
+  if (!outer) return inner || null;
+  if (!inner) return outer;
+  return {
+    color: inner.color ?? outer.color ?? null,
+    backgroundColor: inner.backgroundColor ?? outer.backgroundColor ?? null,
+    fontSize: inner.fontSize ?? outer.fontSize ?? null,
+  };
 }
 
 // 块 → 可编辑 HTML。rawSource 为该块在全文中的原始 Markdown 切片（原子块按原文编辑）。
@@ -244,6 +287,19 @@ function domToInlines(el, style = {}, out = []) {
     // 行内模型无图片节点：回写图片语法文本，交由 Rust 重新解析
     if (tag === 'IMG') {
       out.push(makeFragment(`![${node.getAttribute('alt') || ''}](${node.getAttribute('src') || ''})`, style));
+      continue;
+    }
+    // HTML 行内样式 span（<span style>/<font> 编辑态占位）：data-html-style JSON 无损往返
+    if (tag === 'SPAN' && node.hasAttribute('data-html-style')) {
+      const inner = domToInlines(node, style, []);
+      let hs = null;
+      try {
+        hs = JSON.parse(node.getAttribute('data-html-style'));
+      } catch {
+        hs = null; // 损坏数据按无样式处理
+      }
+      for (const f of inner) f.htmlStyle = mergeHtmlStyle(hs, f.htmlStyle);
+      out.push(...inner);
       continue;
     }
     if (tag === 'CODE') {
@@ -461,6 +517,124 @@ function styled(tag, text, className) {
   return el;
 }
 
+// HTML 标签自动闭合：输入 > 完成开始标签时，在光标后补闭合标签（光标停在开闭之间）。
+// 触发判定在 Rust（inline_html_autoclose，已知标签白名单），这里只做文本插入。
+export async function applyHtmlAutoclose() {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const node = sel.anchorNode;
+  if (node.nodeType !== Node.TEXT_NODE) return false;
+  // 代码/pre 内不触发
+  if (node.parentElement?.closest('pre, code')) return false;
+  const offset = sel.anchorOffset;
+  const before = node.textContent.slice(0, offset);
+  // 性能闸门：刚输入的字符是 > 才可能触发
+  if (!before.endsWith('>')) return false;
+  const closing = await invoke('inline_html_autoclose', { text: before }).catch(() => null);
+  if (!closing) return false;
+  // 等待期间光标/文本变化则放弃
+  const currentSel = window.getSelection();
+  if (!currentSel.rangeCount || currentSel.anchorNode !== node || currentSel.anchorOffset !== offset) {
+    return false;
+  }
+  node.textContent = node.textContent.slice(0, offset) + closing + node.textContent.slice(offset);
+  // 光标保持原位（开闭标签之间）
+  const range = document.createRange();
+  range.setStart(node, offset);
+  range.collapse(true);
+  currentSel.removeAllRanges();
+  currentSel.addRange(range);
+  return true;
+}
+
+// HTML 块级容器 Ctrl+Enter 展开：光标位于 <name> 与 </name> 之间时，拆为
+// 开标签/空行/闭标签 三行原文编辑（与 section 模板同一形态），光标落中间行。
+// 配对与容器判定在 Rust（html_container_tag_between）。
+export async function expandHtmlTagAtCaret(container) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const node = sel.anchorNode;
+  if (node.nodeType !== Node.TEXT_NODE) return false;
+  if (node.parentElement?.closest('pre, code')) return false;
+  const offset = sel.anchorOffset;
+  const text = node.textContent;
+  const before = text.slice(0, offset);
+  const after = text.slice(offset);
+  // 性能闸门：光标恰在闭合标签 </ 之前（标签内可有内容）
+  if (!after.startsWith('</')) return false;
+  // 容器内还有其他文本则不展开（交给常规拆分）
+  if (container.textContent !== before + after) return false;
+  const name = await invoke('html_container_tag_between', { before, after }).catch(() => null);
+  if (!name) return false;
+  const pre = document.createElement('pre');
+  pre.className = PRE_CLASS;
+  pre.setAttribute('data-raw', '');
+  pre.textContent = `${before}\n\n${after}`;
+  container.innerHTML = '';
+  container.append(pre);
+  placeCaretAtTextOffset(pre, before.length + 1);
+  return true;
+}
+
+// `<tag>|</tag>` 之间按 Enter：光标跳到闭合标签之后（不展开结构、不拆分块）。
+// 配对判定在 Rust（html_closing_tag_at；行内标签同样适用）。
+export async function skipHtmlClosingTag(container) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const node = sel.anchorNode;
+  if (node.nodeType !== Node.TEXT_NODE) return false;
+  if (node.parentElement?.closest('pre, code')) return false;
+  const offset = sel.anchorOffset;
+  const text = node.textContent;
+  const before = text.slice(0, offset);
+  const after = text.slice(offset);
+  // 性能闸门：光标恰在闭合标签 </ 之前（标签内可有内容，如 <a>文字|</a>）
+  if (!after.startsWith('</')) return false;
+  // 容器内还有其他文本则不处理（交给常规拆分）
+  if (container.textContent !== before + after) return false;
+  const closing = await invoke('html_closing_tag_at', { before, after }).catch(() => null);
+  if (!closing) return false;
+  // 光标移到闭合标签之后（同一文本节点内）
+  const range = document.createRange();
+  range.setStart(node, offset + closing.length);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  return true;
+}
+
+// 行内包装（右键菜单/行内格式统一入口）：有选区包选区，无选区插入空元素并把光标放入其中。
+// 与斜杠行内格式同一元素映射（bold/italic/underline/strikethrough/highlight/inlineCode/link）。
+const INLINE_WRAPPERS = {
+  bold: { tag: 'strong', cls: 'font-semibold' },
+  italic: { tag: 'em' },
+  underline: { tag: 'u' },
+  strikethrough: { tag: 's' },
+  highlight: { tag: 'mark' },
+  inlineCode: { tag: 'code', cls: INLINE_CODE_CLASS },
+  link: { tag: 'a', cls: LINK_CLASS, href: '' },
+};
+
+export function insertInlineWrapper(el, id) {
+  const conf = INLINE_WRAPPERS[id];
+  if (!conf) return false;
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !el.contains(sel.getRangeAt(0).startContainer)) return false;
+  const node = document.createElement(conf.tag);
+  if (conf.cls) node.className = conf.cls;
+  if (conf.href != null) node.setAttribute('href', conf.href);
+  const range = sel.getRangeAt(0);
+  if (sel.isCollapsed) {
+    range.insertNode(node);
+    placeCursorAtStart(node);
+  } else {
+    node.append(range.extractContents());
+    range.insertNode(node);
+    placeCursorAtEnd(node);
+  }
+  return true;
+}
+
 // 行内快捷转换：光标前文本以完整行内结构结尾时替换为样式元素。
 // 结构识别由 Rust 命令 inline_shortcut 完成，这里只负责 DOM 替换。
 async function transformInlineShortcut() {
@@ -474,12 +648,13 @@ async function transformInlineShortcut() {
   const offset = sel.anchorOffset;
   const before = node.textContent.slice(0, offset);
   // 可能的行内结尾才继续（性能闸门，判定在 Rust）
-  if (!/[*`)\]]$/.test(before)) return false;
-  // 结尾符须有对应起始符才可能是完整行内结构（否则散文中的 ) ` ] 每键一次 IPC）
+  if (!/[*`)\]~]$/.test(before)) return false;
+  // 结尾符须有对应起始符才可能是完整行内结构（否则散文中的 ) ` ] ~ 每键一次 IPC）
   const last = before.at(-1);
   if (last === '*' && !before.slice(0, -1).includes('*')) return false;
   if (last === '`' && !before.slice(0, -1).includes('`')) return false;
   if ((last === ')' || last === ']') && !before.includes('[')) return false;
+  if (last === '~' && !before.slice(0, -1).includes('~')) return false;
   const hit = await invoke('inline_shortcut', { text: before }).catch(() => null);
   // 等待期间光标/文本变化则放弃
   const currentSel = window.getSelection();
@@ -615,7 +790,7 @@ export const SLASH_ICON = {
   quote:
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M3 3v10" stroke-width="2.2"/><path d="M6.5 4.5h7M6.5 8h7M6.5 11.5h5"/></svg>',
   codeBlock:
-    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 4L2.5 8 6 12M10 4l3.5 4L10 12"/></svg>',
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 4.5L1 8l3.5 3.5M11.5 4.5L15 8l-3.5 3.5M9.5 2.5l-3 11"/></svg>',
   table:
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.5" y="3" width="11" height="10" rx="1"/><path d="M2.5 6.3h11M2.5 9.6h11M8 3v10"/></svg>',
   image:
@@ -631,16 +806,24 @@ export const SLASH_ICON = {
   separator:
     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><path d="M2.5 8h11" stroke-dasharray="2.5 2"/></svg>',
   link: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6.7 8.7a3.3 3.3 0 005 .3l2-2a3.33 3.33 0 00-4.7-4.7l-1.2 1.1"/><path d="M9.3 7.3a3.3 3.3 0 00-5-.3l-2 2a3.33 3.33 0 004.7 4.7l1.2-1.1"/></svg>',
+  fontColor:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12L8 3.5 11.5 12M5.9 9h4.2"/><path d="M3 14.5h10" stroke-width="2.2"/></svg>',
+  // 行内代码（<>）与普通公式（fx）的文本菜单徽章图标
+  inlineCode:
+    '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3.5L2 8l3.5 4.5M10.5 3.5L14 8l-3.5 4.5"/></svg>',
+  mathDisplay:
+    '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12.1873 4.1404C11.2229 3.41705 9.84236 4.0694 9.78883 5.2738L9.71211 6.99991H12C12.5523 6.99991 13 7.44762 13 7.99991C13 8.55219 12.5523 8.99991 12 8.99991H9.62322L9.22988 17.85C9.0996 20.7814 5.63681 22.2609 3.42857 20.3287L3.34151 20.2525C2.92587 19.8888 2.88375 19.257 3.24743 18.8414C3.61112 18.4258 4.24288 18.3836 4.65852 18.7473L4.74558 18.8235C5.69197 19.6516 7.17602 19.0175 7.23186 17.7612L7.62125 8.99991H6C5.44772 8.99991 5 8.55219 5 7.99991C5 7.44762 5.44772 6.99991 6 6.99991H7.71014L7.7908 5.185C7.9157 2.37474 11.1369 0.852583 13.3873 2.5404L13.6 2.6999C14.0418 3.03127 14.1314 3.65807 13.8 4.0999C13.4686 4.54173 12.8418 4.63127 12.4 4.2999L12.1873 4.1404Z"/><path d="M13.082 13.0461C13.3348 12.907 13.6525 13.0102 13.7754 13.2713L14.5879 14.9978L11.2928 18.2928C10.9023 18.6834 10.9023 19.3165 11.2928 19.707C11.6834 20.0976 12.3165 20.0976 12.707 19.707L15.493 16.9211L16.2729 18.5785C16.9676 20.0548 18.8673 20.4807 20.1259 19.4424L20.6363 19.0213C21.0623 18.6698 21.1228 18.0396 20.7713 17.6136C20.4198 17.1875 19.7896 17.1271 19.3636 17.4786L18.8531 17.8997C18.6014 18.1073 18.2215 18.0221 18.0825 17.7269L16.996 15.4181L19.707 12.707C20.0976 12.3165 20.0976 11.6834 19.707 11.2928C19.3165 10.9023 18.6834 10.9023 18.2928 11.2928L16.0909 13.4947L15.585 12.4197C14.9708 11.1143 13.3822 10.5984 12.1182 11.2936L11.518 11.6237C11.0341 11.8899 10.8576 12.4979 11.1237 12.9819C11.3899 13.4658 11.998 13.6423 12.4819 13.3761L13.082 13.0461Z"/></svg>',
 };
 
 export const SLASH_ITEMS = [
-  { id: 'text', label: '文本', icon: SLASH_ICON.paragraph, iconColor: '#3e69d7', keywords: 'h1 h2 h3 h4 h5 h6 heading biaoti bt list liebiao lb task todo renwu rw code daima wenben wb bold jiacu italic xieti underline xiahuaxian strikethrough shanchuxian highlight gaoliang link lianjie lj quote yinyong yy' },
+  { id: 'text', label: '文本', icon: SLASH_ICON.paragraph, iconColor: '#3e69d7', keywords: 'h1 h2 h3 h4 h5 h6 heading biaoti bt list liebiao lb task todo renwu rw code daima wenben wb bold jiacu italic xieti underline xiahuaxian strikethrough shanchuxian highlight gaoliang link lianjie lj quote yinyong yy math gongshi gs' },
   { id: 'quote', label: '引用', icon: SLASH_ICON.quote, iconColor: '#f59102', keywords: 'quote yinyong yy' },
   { id: 'codeBlock', label: '代码块', icon: SLASH_ICON.codeBlock, iconColor: '#03b736', keywords: 'code daima dm' },
   { id: 'table', label: '表格', icon: SLASH_ICON.table, iconColor: '#2f6dbb', keywords: 'table biaoge bg' },
   { id: 'image', label: '图片', icon: SLASH_ICON.image, iconColor: '#d35d2e', keywords: 'img image tupian tp' },
+  { id: 'fontColor', label: '字体颜色', icon: SLASH_ICON.fontColor, iconColor: '#d35d2e', keywords: 'color font yanse ys ziti color rgb' },
   { id: 'mathBlock', label: '数学公式', icon: SLASH_ICON.mathBlock, iconColor: '#8250df', keywords: 'math latex gongshi gs' },
-  { id: 'callout', label: '高亮块（Callout）', icon: SLASH_ICON.callout, iconColor: '#c9a227', keywords: 'callout note gaoliang gl' },
+  { id: 'callout', label: '警告框（Callout）', icon: SLASH_ICON.callout, iconColor: '#c9a227', keywords: 'callout note warning gaoliang gl jinggao jgk' },
   { id: 'sectionBlock', label: '图文排版（section）', icon: SLASH_ICON.sectionBlock, iconColor: '#2f9dbb', keywords: 'section tuwen tw paiban pb' },
   { id: 'separator', label: '分割线', icon: SLASH_ICON.separator, iconColor: '#8a8a8a', keywords: 'hr fenge fg' },
 ];
@@ -678,7 +861,31 @@ export const SLASH_LIST_TYPES = [
   { id: 'taskListItem', icon: SLASH_ICON.taskListItem, label: '任务列表' },
 ];
 
-// 「文本」行的徽章分组（三行展示：标题级别 / 行内格式 / 列表·引用·超链接；
+// 警告框类型徽章（GitHub 风格 [!TYPE]，与 Rust CalloutVariant 一致；
+// 警告框菜单项内 ←/→ 切换、Enter 应用当前类型、点选直用）
+export const CALLOUT_TYPES = [
+  { id: 'NOTE', label: '注意（Note）', color: '#0969da' },
+  { id: 'TIP', label: '提示（Tip）', color: '#1a7f37' },
+  { id: 'IMPORTANT', label: '重要（Important）', color: '#8250df' },
+  { id: 'WARNING', label: '警告（Warning）', color: '#9a6700' },
+  { id: 'CAUTION', label: '谨慎（Caution）', color: '#cf222e' },
+];
+
+// 字体颜色面板的常见色板（color 为 htmlStyle.color 的 JSON 形状，直接落 data-html-style）
+export const FONT_COLORS = [
+  { label: '默认', css: '#24292f', color: { rgba: { red: 36, green: 41, blue: 47, alpha: 1 } } },
+  { label: '灰', css: '#6e7781', color: { rgba: { red: 110, green: 119, blue: 129, alpha: 1 } } },
+  { label: '红', css: '#cf222e', color: { rgba: { red: 207, green: 34, blue: 46, alpha: 1 } } },
+  { label: '橙', css: '#bc4c00', color: { rgba: { red: 188, green: 76, blue: 0, alpha: 1 } } },
+  { label: '黄', css: '#9a6700', color: { rgba: { red: 154, green: 103, blue: 0, alpha: 1 } } },
+  { label: '绿', css: '#1a7f37', color: { rgba: { red: 26, green: 127, blue: 55, alpha: 1 } } },
+  { label: '青', css: '#1b7c83', color: { rgba: { red: 27, green: 124, blue: 131, alpha: 1 } } },
+  { label: '蓝', css: '#0969da', color: { rgba: { red: 9, green: 105, blue: 218, alpha: 1 } } },
+  { label: '紫', css: '#8250df', color: { rgba: { red: 130, green: 80, blue: 223, alpha: 1 } } },
+  { label: '粉', css: '#bf3989', color: { rgba: { red: 191, green: 57, blue: 137, alpha: 1 } } },
+];
+
+// 「文本」行的徽章分组（四行展示：标题级别 / 行内格式 / 列表·引用·链接 / 行内代码·代码块·公式；
 // ←/→ 移列、↑/↓ 移行、点选直用）。color 为徽章多彩配色（文字与图标着色，品牌色不走主题变量）。
 export const SLASH_TEXT_GROUPS = [
   // 标题级别（蓝色系渐变）
@@ -697,15 +904,21 @@ export const SLASH_TEXT_GROUPS = [
     { id: 'underline', text: 'U', label: '下划线', color: '#3e69d7' },
     { id: 'strikethrough', text: 'S', label: '删除线', color: '#c0392b' },
     { id: 'highlight', text: '==', label: '高亮', color: '#c9a227' },
-    { id: 'inlineCode', text: '</>', label: '行内代码', color: '#03b736' },
   ],
-  // 列表·引用·超链接（图标徽章）
+  // 列表·引用·链接（图标徽章）
   [
     { id: 'bulletedListItem', icon: SLASH_ICON.bulletedListItem, label: '无序列表', color: '#2f9dbb' },
     { id: 'numberedListItem', icon: SLASH_ICON.numberedListItem, label: '有序列表', color: '#03b736' },
     { id: 'taskListItem', icon: SLASH_ICON.taskListItem, label: '任务列表', color: '#f59102' },
     { id: 'quote', icon: SLASH_ICON.quote, label: '引用', color: '#f59102' },
     { id: 'link', icon: SLASH_ICON.link, label: '超链接', color: '#2f6dbb' },
+  ],
+  // 行内代码（<_>）·代码块（<>）·行内公式（∑）·普通公式（$$）（图标徽章，与其他行同尺寸对齐）
+  [
+    { id: 'inlineCode', icon: SLASH_ICON.inlineCode, label: '行内代码', color: '#03b736' },
+    { id: 'codeBlock', icon: SLASH_ICON.codeBlock, label: '代码块', color: '#03b736' },
+    { id: 'inlineMath', icon: SLASH_ICON.mathBlock, label: '行内公式', color: '#8250df' },
+    { id: 'mathBlock', icon: SLASH_ICON.mathDisplay, label: '普通公式', color: '#8250df' },
   ],
 ];
 
@@ -725,12 +938,14 @@ export async function applySlashCommand(el, id, opts) {
     return true;
   };
   // 原子类模板统一走 Rust block_template（Markdown 生成规则在 Rust 维护）；
-  // 链接插入原始 Markdown 文本编辑（渲染态 <a> 不便就地编辑），与图片同一交互
-  if (['table', 'mathBlock', 'mermaidBlock', 'callout', 'sectionBlock', 'image', 'link'].includes(id)) {
+  // 链接插入原始 Markdown 文本编辑（渲染态 <a> 不便就地编辑），与图片同一交互；
+  // opts.variant 仅警告框使用（NOTE/TIP/IMPORTANT/WARNING/CAUTION）
+  if (['table', 'mathBlock', 'inlineMath', 'mermaidBlock', 'callout', 'sectionBlock', 'image', 'link', 'footnoteDef', 'linkRef', 'toc'].includes(id)) {
     const tpl = await invoke('block_template', {
       kind: id,
       rows: opts?.rows,
       cols: opts?.cols,
+      variant: opts?.variant,
     }).catch(() => null);
     if (tpl) return rawPre(tpl.markdown, tpl.caretOffset);
     return false;

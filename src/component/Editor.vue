@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick, inject, provide, onMounted, onBeforeUnm
 import { invoke } from '@tauri-apps/api/core';
 import BlockView from './BlockView.vue';
 import SlashMenu from './SlashMenu.vue';
+import ContextMenu from './ContextMenu.vue';
 import {
   blockToHtml,
   domToBlockDtos,
@@ -10,9 +11,15 @@ import {
   applyMarkdownShortcuts,
   convertFenceToCodeBlock,
   convertSectionToHtmlBlock,
+  applyHtmlAutoclose,
+  expandHtmlTagAtCaret,
+  skipHtmlClosingTag,
   SLASH_ITEMS,
   SLASH_TEXT_GROUPS,
+  CALLOUT_TYPES,
+  FONT_COLORS,
   LANG_BADGES,
+  htmlStyleCss,
   applySlashCommand,
   placeCursorAtEnd,
   placeCursorAtStart,
@@ -26,6 +33,7 @@ import {
   handleListTab,
   paragraphDtoFromTree,
   demoteEditableToParagraph,
+  insertInlineWrapper,
   plainText,
 } from '../utils/wysiwyg.js';
 import { getPref, prefsVersion, structureVersion } from '../utils/prefs.js';
@@ -464,7 +472,366 @@ const slashTextCol = ref(0);
 const slashTableRows = ref(2);
 const slashTableCols = ref(2);
 const slashTableField = ref('item');
+// 警告框当前类型（CALLOUT_TYPES 下标；警告框菜单项 ←/→ 切换、Enter 应用、悬停徽章同步）
+const slashCalloutType = ref(0);
 const slashPos = ref({ left: 0, top: 0 });
+
+// ---------- 字体颜色（/ 菜单「字体颜色」行内色板 + RGB 输入） ----------
+// 色板当前下标（←/→ 循环、Enter 应用、悬停同步）
+const slashFontColorIndex = ref(0);
+// RGB 输入非法值标记（菜单内输入框红框提示）
+const rgbError = ref(false);
+
+// 应用所选颜色：删除 / 触发文本后，有选区包选区、块内已有文字整段上色、空块插入颜色 span 供输入
+function applyFontColor(color) {
+  const el = currentEditable();
+  if (!el) return;
+  suppressBlurCommit = true;
+  try {
+    // 删除触发文本（块首到光标的 /query）
+    const sel = window.getSelection();
+    if (sel.rangeCount && el.contains(sel.anchorNode)) {
+      const caret = sel.getRangeAt(0);
+      const trigger = document.createRange();
+      trigger.selectNodeContents(el);
+      trigger.setEnd(caret.startContainer, caret.startOffset);
+      trigger.deleteContents();
+    }
+    const span = buildColorSpan(color);
+    const sel2 = window.getSelection();
+    if (sel2.rangeCount && !sel2.isCollapsed && el.contains(sel2.anchorNode)) {
+      // 有选区：选区内容上色
+      const range = sel2.getRangeAt(0);
+      span.append(range.extractContents());
+      range.insertNode(span);
+      placeCursorAtEnd(span);
+    } else if (el.textContent.trim()) {
+      // 块内已有文字（/ 触发符在文首）：整段上色
+      while (el.firstChild) span.append(el.firstChild);
+      el.append(span);
+      placeCursorAtEnd(span);
+    } else {
+      // 空块：插入颜色 span，光标入内，输入即彩色文字
+      el.append(span);
+      placeCursorAtStart(span);
+    }
+  } finally {
+    suppressBlurCommit = false;
+  }
+  if (document.activeElement !== el) el.focus({ preventScroll: true });
+}
+
+// RGB 输入应用：Rust 解析色值（CSS 颜色 / 裸三元组），非法值提示不关闭菜单
+async function applyRgbInput(text) {
+  const color = await invoke('parse_html_color', { text: (text || '').trim() }).catch(() => null);
+  if (!color) {
+    rgbError.value = true;
+    return;
+  }
+  rgbError.value = false;
+  applyFontColor(color);
+}
+
+// 菜单内 RGB 输入框获得焦点：编辑容器 blur 的提交需抑制（/ 触发文本保持未提交态）
+function onRgbFocus() {
+  suppressBlurCommit = true;
+}
+// RGB 输入框 Esc：关闭菜单并恢复编辑焦点与提交通路
+function onRgbCancel() {
+  slashOpen.value = false;
+  suppressBlurCommit = false;
+  currentEditable()?.focus({ preventScroll: true });
+}
+
+// ---------- 右键菜单（Typora 式：剪贴板 / 复制粘贴为 / 格式 / 段落 / 插入） ----------
+const ctxMenu = ref(null); // { x, y }
+
+function onContextMenu(e) {
+  if (props.sourceMode) return;
+  e.preventDefault();
+  // 已处于编辑态：保留当前选区；否则进入被点击块的编辑
+  const el = currentEditable();
+  if (!(el && el.contains(e.target))) {
+    const blockEl = e.target.closest?.('[data-block-id]');
+    const block = blocks.value.find((b) => b.id === blockEl?.getAttribute('data-block-id'));
+    if (!block) return;
+    startEdit(block);
+  }
+  ctxMenu.value = { x: e.clientX, y: e.clientY };
+}
+
+function closeCtxMenu() {
+  ctxMenu.value = null;
+}
+
+// 段落子菜单勾选态（heading 块映射为 h1-h6）
+const ctxCurrentType = computed(() => {
+  const b = editingBlock.value;
+  if (!b) return 'paragraph';
+  return b.type === 'heading' ? `h${b.level}` : b.type;
+});
+
+async function onMenuAction(id, payload) {
+  closeCtxMenu();
+  const el = currentEditable();
+  switch (id) {
+    case 'cut':
+      el?.focus({ preventScroll: true });
+      document.execCommand('cut');
+      return;
+    case 'copy':
+      document.execCommand('copy');
+      return;
+    case 'delete':
+      document.execCommand('delete');
+      return;
+    case 'paste':
+    case 'pastePlain':
+      return pastePlainText();
+    case 'copyMarkdown':
+      return copySelection('markdown');
+    case 'copyHtml':
+      return copySelection('html');
+    case 'copySimplified':
+      return copySelection('simplified');
+    case 'copyPlain':
+      return copySelection('plain');
+    // 行内格式：统一走 insertInlineWrapper（有选区包选区，无选区插空元素光标入内）
+    case 'bold':
+    case 'italic':
+    case 'underline':
+    case 'strikethrough':
+    case 'highlight':
+    case 'inlineCode':
+    case 'link':
+      if (el) {
+        suppressBlurCommit = true;
+        try {
+          insertInlineWrapper(el, id);
+        } finally {
+          suppressBlurCommit = false;
+        }
+        if (document.activeElement !== el) el.focus({ preventScroll: true });
+      }
+      return;
+    // 文字颜色：色板子菜单选择（payload 为 htmlStyle.color JSON）
+    case 'fontColor':
+      return ctxApplyFontColor(payload);
+    case 'quote':
+    case 'bulletedListItem':
+    case 'numberedListItem':
+    case 'taskListItem':
+    case 'paragraph':
+    case 'h1':
+    case 'h2':
+    case 'h3':
+    case 'h4':
+    case 'h5':
+    case 'h6':
+      return convertBlockType(id);
+    case 'image':
+    case 'separator':
+    case 'table':
+    case 'codeBlock':
+    case 'mathBlock':
+    case 'linkRef':
+    case 'toc':
+      return insertBlockFromMenu(id);
+    case 'footnote':
+      return insertFootnote();
+    case 'yamlFrontMatter':
+      return insertYamlFrontMatter();
+    case 'paraAbove':
+      return insertParagraphSibling(true);
+    case 'paraBelow':
+      return insertParagraphSibling(false);
+  }
+}
+
+// 颜色 span 构建（slash 颜色与右键颜色共用）
+function buildColorSpan(color) {
+  const span = document.createElement('span');
+  span.setAttribute('style', htmlStyleCss({ color }));
+  span.setAttribute('data-html-style', JSON.stringify({ color }));
+  return span;
+}
+
+// 右键菜单文字颜色：有选区包选区，无选区插空颜色 span 光标入内
+function ctxApplyFontColor(color) {
+  const el = currentEditable();
+  if (!el || !color) return;
+  suppressBlurCommit = true;
+  try {
+    const span = buildColorSpan(color);
+    const sel = window.getSelection();
+    if (sel.rangeCount && !sel.isCollapsed && el.contains(sel.anchorNode)) {
+      const range = sel.getRangeAt(0);
+      span.append(range.extractContents());
+      range.insertNode(span);
+      placeCursorAtEnd(span);
+    } else {
+      const range = sel.rangeCount && el.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
+      if (range) range.insertNode(span);
+      else el.append(span);
+      placeCursorAtStart(span);
+    }
+  } finally {
+    suppressBlurCommit = false;
+  }
+  if (document.activeElement !== el) el.focus({ preventScroll: true });
+}
+
+// 插入 YAML Front Matter：文档头插入（已有则不重复）；模板由 Rust block_template 生成
+async function insertYamlFrontMatter() {
+  if (content.value.startsWith('---\n')) return;
+  const tpl = await invoke('block_template', { kind: 'yamlFrontMatter' }).catch(() => null);
+  if (!tpl) return;
+  if (editingId.value !== null) await commitEdit();
+  syncing.value = true;
+  try {
+    content.value = tpl.markdown + '\n' + content.value;
+    await reparse();
+    const target = blocks.value[0];
+    suppressBlurCommit = true;
+    pendingCaretOffset = tpl.caretOffset; // 光标落 title: 之后
+    editingId.value = target ? target.id : null;
+    if (!target) {
+      suppressBlurCommit = false;
+      pendingCaretOffset = null;
+    }
+  } finally {
+    syncing.value = false;
+  }
+}
+
+// 粘贴为纯文本（剪贴板 → 光标处；浏览器 insertText 自动处理多行分段）
+async function pastePlainText() {
+  const text = await navigator.clipboard.readText().catch(() => null);
+  const el = currentEditable();
+  if (text == null || !el) return;
+  el.focus({ preventScroll: true });
+  document.execCommand('insertText', false, text);
+}
+
+// 复制选区（无选区取当前整块）：markdown=Rust 序列化 / html=DOM HTML /
+// simplified=按块分段的纯文本 / plain=纯文本
+async function copySelection(kind) {
+  const el = currentEditable();
+  if (!el) return;
+  const sel = window.getSelection();
+  const div = document.createElement('div');
+  if (sel.rangeCount && !sel.isCollapsed && el.contains(sel.anchorNode)) {
+    div.append(sel.getRangeAt(0).cloneContents());
+  } else {
+    div.innerHTML = el.innerHTML;
+  }
+  let text = '';
+  if (kind === 'markdown') {
+    text = await invoke('serialize_markdown', { blocks: domToBlockDtos(div) }).catch(() => '');
+  } else if (kind === 'html') {
+    text = div.innerHTML;
+  } else if (kind === 'simplified') {
+    text = [...div.childNodes]
+      .map((n) => n.textContent)
+      .filter((t) => t.trim())
+      .join('\n\n');
+  } else {
+    text = sel.rangeCount && !sel.isCollapsed ? sel.toString() : div.textContent;
+  }
+  if (text) await navigator.clipboard.writeText(text).catch(() => {});
+}
+
+// 段落/块类型转换：保留当前文字（applySlashCommand 重建结构后插回文本）
+async function convertBlockType(id) {
+  const el = currentEditable();
+  if (!el) return;
+  const text = el.textContent.replace(/\n+$/g, '');
+  suppressBlurCommit = true;
+  try {
+    await applySlashCommand(el, id);
+    if (text) document.execCommand('insertText', false, text);
+  } finally {
+    suppressBlurCommit = false;
+  }
+  if (document.activeElement !== el) el.focus({ preventScroll: true });
+}
+
+// 插入类块（图像/分割线/表格/代码块/公式块/链接引用）：
+// 当前块有内容时先在末尾拆出新空块（保住原内容），再按斜杠模板插入
+async function insertBlockFromMenu(id) {
+  let el = currentEditable();
+  if (!el) return;
+  if (el.textContent.trim()) {
+    placeCursorAtEnd(el);
+    await splitAndCommit();
+    el = currentEditable();
+    if (!el) return;
+  }
+  if (id === 'table') {
+    await applyTableTemplate(el, { rows: 2, cols: 2 });
+    return;
+  }
+  suppressBlurCommit = true;
+  try {
+    await applySlashCommand(el, id);
+  } finally {
+    suppressBlurCommit = false;
+  }
+  if (document.activeElement !== el) el.focus({ preventScroll: true });
+}
+
+// 插入脚注：光标处插入 [^n] 引用（编号 = 现有最大编号 +1），提交后在文末追加定义块并进入编辑
+async function insertFootnote() {
+  const el = currentEditable();
+  if (!el) return;
+  let max = 0;
+  for (const b of footnotes.value) {
+    const n = parseInt(plainText(b.title), 10);
+    if (!Number.isNaN(n)) max = Math.max(max, n);
+  }
+  const id = max + 1;
+  insertTextAtCursor(`[^${id}]`);
+  await commitEdit();
+  const tpl = await invoke('block_template', { kind: 'footnoteDef' }).catch(() => null);
+  if (!tpl) return;
+  const def = tpl.markdown.replace('[^1]', `[^${id}]`);
+  syncing.value = true;
+  try {
+    const base = content.value ? content.value.replace(/\s*$/, '') : '';
+    const anchor = base ? base.length + 2 : 0;
+    content.value = base ? base + '\n\n' + def : def;
+    const parsed = await parseAnchoredBlocks(def, anchor);
+    blocks.value.push(...parsed);
+    publishBlocks();
+    const target = parsed[parsed.length - 1];
+    suppressBlurCommit = true;
+    cursorAtStart = false; // 光标落块尾（定义文本后）
+    editingId.value = target ? target.id : null;
+    if (!target) suppressBlurCommit = false;
+  } finally {
+    syncing.value = false;
+  }
+}
+
+// 段落（上方/下方）：上方 = 块首拆分后进入前一个空段落；下方 = 块尾拆分（默认进入新空段落）
+async function insertParagraphSibling(above) {
+  const el = currentEditable();
+  if (!el || !editingBlock.value) return;
+  if (above) {
+    placeCursorAtStart(el);
+    await splitAndCommit();
+    const idx = blocks.value.findIndex((b) => b.id === editingId.value);
+    const prev = blocks.value[idx - 1];
+    if (prev) {
+      suppressBlurCommit = true;
+      cursorAtStart = true;
+      editingId.value = prev.id;
+    }
+  } else {
+    placeCursorAtEnd(el);
+    await splitAndCommit();
+  }
+}
 
 // 按查询串过滤菜单项（匹配中文名 / 拼音与英文别名 / id）
 const slashItems = computed(() => {
@@ -514,6 +881,9 @@ function updateSlashMenu() {
   slashTextRow.value = 0;
   slashTextCol.value = 0;
   slashTableField.value = 'item';
+  slashCalloutType.value = 0;
+  slashFontColorIndex.value = 0;
+  rgbError.value = false;
   slashPos.value = ctx.pos;
   slashOpen.value = true;
 }
@@ -529,6 +899,15 @@ async function applySlashItem(item, option) {
     const cell = option ?? { row: slashTextRow.value, col: slashTextCol.value };
     id = SLASH_TEXT_GROUPS[cell.row][cell.col].id;
   } else if (id === 'table') opts = { rows: slashTableRows.value, cols: slashTableCols.value };
+  else if (id === 'callout') {
+    // 警告框类型：徽章点选带类型，Enter 应用当前类型（←/→ 或悬停切换）
+    opts = { variant: option?.calloutVariant ?? CALLOUT_TYPES[slashCalloutType.value].id };
+  }
+  // 字体颜色：色板点选带颜色，Enter 应用当前色板（←/→ 或悬停切换）
+  if (item.id === 'fontColor') {
+    applyFontColor(option?.fontColor ?? FONT_COLORS[slashFontColorIndex.value].color);
+    return;
+  }
   // 表格：模板即时提交渲染，不进入原文编辑（随后聚焦首个数据单元格）
   if (id === 'table') {
     await applyTableTemplate(el, opts);
@@ -689,12 +1068,13 @@ const firstLineIndent = computed(() => {
   prefsVersion.value;
   return !!getPref('first_line_indent');
 });
-// 换块/提交时关闭斜杠命令菜单与语言补全菜单、表格弹出层
+// 换块/提交时关闭斜杠命令菜单与语言补全菜单、表格弹出层、右键菜单
 watch(editingId, () => {
   slashOpen.value = false;
   langOpen.value = false;
   tablePanel.value = null;
   tableCaretAlign.value = '';
+  ctxMenu.value = null;
 });
 // 提交/重解析进行中时忽略点击，避免用过期的块区间切片
 const syncing = ref(false);
@@ -1329,10 +1709,11 @@ function onEditableBlur(e) {
 // 程序性换块进行中：抑制卸载 blur 触发的误提交
 let suppressBlurCommit = false;
 
-// 输入时应用 Markdown 快捷转换（输入法组合期间跳过）
+// 输入时应用 Markdown 快捷转换与 HTML 标签自动闭合（输入法组合期间跳过）
 function onEditableInput(e) {
   if (e.isComposing || e.inputType === 'insertCompositionText') return;
   applyMarkdownShortcuts();
+  applyHtmlAutoclose();
   updateSlashMenu();
   updateLangMenu();
 }
@@ -1419,6 +1800,22 @@ function onEditableKeydown(e) {
         slashTableField.value = fields[next];
         return;
       }
+      // 警告框行：←/→ 循环切换类型（Enter 应用当前类型）
+      if (item?.id === 'callout') {
+        e.preventDefault();
+        const step = e.key === 'ArrowRight' ? 1 : -1;
+        slashCalloutType.value =
+          (slashCalloutType.value + step + CALLOUT_TYPES.length) % CALLOUT_TYPES.length;
+        return;
+      }
+      // 字体颜色行：←/→ 循环切换色板（Enter 应用当前颜色）
+      if (item?.id === 'fontColor') {
+        e.preventDefault();
+        const step = e.key === 'ArrowRight' ? 1 : -1;
+        slashFontColorIndex.value =
+          (slashFontColorIndex.value + step + FONT_COLORS.length) % FONT_COLORS.length;
+        return;
+      }
     }
     if (e.key === 'Enter') {
       e.preventDefault();
@@ -1454,6 +1851,18 @@ function onEditableKeydown(e) {
       langOpen.value = false;
       return;
     }
+  }
+  // 右键菜单打开时：Esc 优先关闭（不打断编辑）
+  if (e.key === 'Escape' && ctxMenu.value) {
+    e.preventDefault();
+    closeCtxMenu();
+    return;
+  }
+  // Ctrl+0..6：段落/标题级别切换（Typora 式）
+  if ((e.ctrlKey || e.metaKey) && /^Digit[0-6]$/.test(e.code) && currentEditable()) {
+    e.preventDefault();
+    convertBlockType(e.code === 'Digit0' ? 'paragraph' : `h${e.code[5]}`);
+    return;
   }
   // 表格弹出层打开时：Esc 优先关闭面板（不打断表格编辑）
   if (e.key === 'Escape' && tablePanel.value) {
@@ -1497,6 +1906,16 @@ function onEditableKeydown(e) {
         tableOp('insertRowBelow');
         return;
       }
+      // `<div>|</div>` 光标在开闭标签之间：Ctrl+Enter 换行展开，光标留在标签内部
+      if (!inPre) {
+        const editable = currentEditable();
+        if (editable) {
+          expandHtmlTagAtCaret(editable).then((expanded) => {
+            if (!expanded) commitEdit();
+          });
+          return;
+        }
+      }
       if (inPre) commitCodeAndNewBlock();
       else commitEdit();
       return;
@@ -1529,7 +1948,11 @@ function onEditableKeydown(e) {
         if (converted) return;
         // `<section>` 行按 Enter：补全闭合标签，进入图文排版块原文编辑
         convertSectionToHtmlBlock(editable).then((section) => {
-          if (!section) splitAndCommit();
+          if (section) return;
+          // `<div>|</div>` 光标在开闭标签之间按 Enter：光标跳到闭合标签后（不展开）
+          skipHtmlClosingTag(editable).then((skipped) => {
+            if (!skipped) splitAndCommit();
+          });
         });
       });
     } else {
@@ -1859,6 +2282,9 @@ function restoreScrollPosition() {
 
 provide('scrollToFootnote', (id) => scrollToFootnote(id));
 provide('scrollToFootnoteRef', (refIndex) => scrollToFootnoteRef(refIndex));
+// 内容目录（[TOC] 块）：文档块数据源与标题定位（BlockView 注入使用）
+provide('allBlocks', blocks);
+provide('scrollToBlock', (id) => scrollToBlock(id));
 
 // 滚动到指定块并短暂闪烁高亮（侧边栏目录/大纲点击定位）
 function scrollToBlock(id) {
@@ -1874,9 +2300,10 @@ function scrollToBlock(id) {
   }, 1200);
 }
 
-// 滚动时同步当前标题（取滚动位置上方最近的标题块），供大纲高亮
+// 滚动时同步当前标题（取滚动位置上方最近的标题块），供大纲高亮；滚动即关闭右键菜单
 let scrollTicking = false;
 function onEditorScroll(e) {
+  closeCtxMenu();
   if (scrollTicking) return;
   scrollTicking = true;
   requestAnimationFrame(() => {
@@ -1921,9 +2348,12 @@ function onDocumentSelectionChange() {
   if (editingBlock.value?.type === 'table') updateTableCaretAlign();
 }
 function onDocumentMouseDown(e) {
-  if (!tablePanel.value) return;
-  if (e.target.closest?.('.md-table-panel, .md-table-toolbar')) return;
-  tablePanel.value = null;
+  if (ctxMenu.value && !e.target.closest?.('.md-ctx-menu')) {
+    closeCtxMenu();
+  }
+  if (tablePanel.value && !e.target.closest?.('.md-table-panel, .md-table-toolbar')) {
+    tablePanel.value = null;
+  }
 }
 onMounted(() => {
   document.addEventListener('selectionchange', onDocumentSelectionChange);
@@ -1950,7 +2380,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
       @click="onInput"
     ></textarea>
 
-    <div v-else ref="scrollRoot" class="t-root flex-1 overflow-y-auto" :class="{ 'md-first-indent': firstLineIndent }" @scroll.passive="onEditorScroll">
+    <div v-else ref="scrollRoot" class="t-root flex-1 overflow-y-auto" :class="{ 'md-first-indent': firstLineIndent }" @scroll.passive="onEditorScroll" @contextmenu="onContextMenu">
       <div class="t-measure">
       <template v-for="block in renderedBlocks" :key="block.id">
         <!-- Typora 式就地编辑：渲染后的内容直接在 contenteditable 中编辑 -->
@@ -2094,12 +2524,20 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         :table-rows="slashTableRows"
         :table-cols="slashTableCols"
         :table-field="slashTableField"
+        :callout-type="slashCalloutType"
+        :font-color-index="slashFontColorIndex"
+        :rgb-error="rgbError"
         :left="langOpen ? langPos.left : slashPos.left"
         :top="langOpen ? langPos.top : slashPos.top"
         @pick="(item, option) => (langOpen ? applyLangItem(item.id) : applySlashItem(item, option))"
         @hover="(i) => (langOpen ? (langIndex = i) : (slashIndex = i))"
         @text-cell="(c) => ((slashTextRow = c.row), (slashTextCol = c.col))"
         @table-field="(f) => (slashTableField = f)"
+        @callout-type="(i) => (slashCalloutType = i)"
+        @font-color-index="(i) => (slashFontColorIndex = i)"
+        @rgb-apply="(text) => applyRgbInput(text)"
+        @rgb-focus="onRgbFocus"
+        @rgb-cancel="onRgbCancel"
       />
     </div>
   </Teleport>
@@ -2147,4 +2585,12 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
       </div>
     </div>
   </Teleport>
+  <!-- 编辑器右键菜单（剪贴板 / 复制粘贴为 / 格式 / 段落 / 插入） -->
+  <ContextMenu
+    v-if="ctxMenu"
+    :x="ctxMenu.x"
+    :y="ctxMenu.y"
+    :current-type="ctxCurrentType"
+    @action="onMenuAction"
+  />
 </template>

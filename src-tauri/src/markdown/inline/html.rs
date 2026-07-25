@@ -330,16 +330,46 @@ pub(crate) fn sanitize_html_for_export(raw_source: &str) -> String {
 }
 
 /// Parses the safe visual subset of a semantic node's `style` attribute.
+/// `<font>` 额外接受遗留属性：`color`（同 CSS color）与 `size`（HTML 1-7 档，
+/// 或 ±n 相对档，以第 3 档 16px 为基准）——Typora 兼容的 font 标签渲染。
 pub(crate) fn style_for_node(node: &HtmlNode) -> HtmlInlineStyle {
     if node.kind == HtmlNodeKind::RawTextBlock {
         return HtmlInlineStyle::default();
     }
 
-    let Some(style) = attr_value(node, "style") else {
-        return HtmlInlineStyle::default();
-    };
+    let mut parsed = attr_value(node, "style")
+        .map(parse_inline_style)
+        .unwrap_or_default();
+    if node.tag_name == "font" {
+        if parsed.color.is_none()
+            && let Some(color) = attr_value(node, "color").and_then(parse_css_color)
+        {
+            parsed.color = Some(color);
+        }
+        if parsed.font_size.is_none()
+            && let Some(size) = attr_value(node, "size").and_then(parse_html_font_size)
+        {
+            parsed.font_size = Some(size);
+        }
+    }
+    parsed
+}
 
-    parse_inline_style(style)
+/// HTML `<font size="1-7">` → 字号映射（HTML 规范档位：1=10px … 7=48px）；
+/// 相对写法 `+n`/`-n` 以第 3 档（16px）为基准偏移。
+fn parse_html_font_size(value: &str) -> Option<HtmlCssFontSize> {
+    const SIZES: [f32; 7] = [10.0, 13.0, 16.0, 18.0, 24.0, 32.0, 48.0];
+    let trimmed = value.trim();
+    let level = if let Some(rel) = trimmed.strip_prefix('+') {
+        3 + rel.trim().parse::<i32>().ok()?
+    } else if let Some(rel) = trimmed.strip_prefix('-') {
+        3 - rel.trim().parse::<i32>().ok()?
+    } else {
+        trimmed.parse::<i32>().ok()?
+    };
+    SIZES.get((level - 1) as usize)
+        .copied()
+        .map(HtmlCssFontSize::Px)
 }
 
 fn sanitize_node_for_export(node: &HtmlNode) -> String {
@@ -868,7 +898,7 @@ pub(crate) fn parse_inline_style(style: &str) -> HtmlInlineStyle {
     parsed
 }
 
-fn parse_css_color(value: &str) -> Option<HtmlCssColor> {
+pub(crate) fn parse_css_color(value: &str) -> Option<HtmlCssColor> {
     let value = value.trim();
     if value.eq_ignore_ascii_case("currentcolor") {
         return Some(HtmlCssColor::CurrentColor);
@@ -1116,6 +1146,7 @@ pub(crate) fn is_inline_tag(name: &str) -> bool {
             | "time"
             | "q"
             | "span"
+            | "font"
     )
 }
 
@@ -1145,6 +1176,105 @@ fn is_block_tag(name: &str) -> bool {
 
 fn is_void_tag(name: &str) -> bool {
     matches!(name, "br" | "hr" | "img")
+}
+
+/// 输入 `>` 完成开始标签时的自动闭合：返回应插入的闭合标签文本。
+/// 仅已知标签（行内/块级白名单 + section/h1-h6/ul/ol/li）触发——
+/// 未知标签（如散文中的 <y> 比较）、void/自闭合/闭合标签/注释声明不触发。
+pub(crate) fn inline_html_autoclose(text: &str) -> Option<String> {
+    // 光标前文本必须以 > 结尾（刚输入闭合符）
+    let trimmed = text.strip_suffix('>')?;
+    // 取最后一个 < 之后的内容（含 < 或 > 则不是单纯标签，保守放弃）
+    let open = trimmed.rfind('<')?;
+    let inner = &trimmed[open + 1..];
+    if inner.is_empty()
+        || inner.starts_with(['/', '!', '?'])
+        || inner.ends_with('/')
+        || inner.contains(['<', '>'])
+    {
+        return None;
+    }
+    // 标签名：ASCII 字母开头，后续字母数字（h1-h6）；之后只能是空白分隔的属性
+    let name_len = inner
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric())
+        .count();
+    let name = &inner[..name_len];
+    if name.is_empty() || !name.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+    let rest = &inner[name_len..];
+    if !rest.is_empty() && !rest.starts_with(char::is_whitespace) {
+        return None;
+    }
+    let name = name.to_ascii_lowercase();
+    let known = (is_inline_tag(&name)
+        || is_block_tag(&name)
+        || matches!(
+            name.as_str(),
+            "section" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "li"
+        ))
+        && !is_void_tag(&name);
+    known.then(|| format!("</{name}>"))
+}
+
+/// Enter 展开判定：光标位于闭标签之前（前方有未闭合的同名开标签）且标签为
+/// 块级容器时返回标签名；行内标签/不配对的返回 None。
+pub(crate) fn html_container_tag_between(before: &str, after: &str) -> Option<String> {
+    let closing = html_closing_tag_at(before, after)?;
+    let name = closing.strip_prefix("</")?.strip_suffix('>')?;
+    // 仅块级容器展开为多行（行内标签 span/font 等不拆）
+    let container = is_block_tag(name)
+        || matches!(
+            name,
+            "section" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "li"
+        );
+    container.then(|| name.to_string())
+}
+
+/// Enter 跳过判定：光标在 `</name>` 之前，且前方存在未闭合的同名开标签
+/// （最后的 <name> 在最后的 </name> 之后），返回闭标签文本
+/// （前端据此把光标移到闭标签之后；不限块级容器，行内标签同样适用）。
+pub(crate) fn html_closing_tag_at(before: &str, after: &str) -> Option<String> {
+    // after 以 </name> 开头（标签名后紧跟 >）
+    let close = after.strip_prefix("</")?;
+    let name_len = close
+        .chars()
+        .take_while(|ch| ch.is_ascii_alphanumeric())
+        .count();
+    if name_len == 0 || !close.starts_with(|ch: char| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+    if !close[name_len..].starts_with('>') {
+        return None;
+    }
+    let name = close[..name_len].to_ascii_lowercase();
+    // 已知标签（与自动闭合同一白名单）
+    let known = (is_inline_tag(&name)
+        || is_block_tag(&name)
+        || matches!(
+            name.as_str(),
+            "section" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "ul" | "ol" | "li"
+        ))
+        && !is_void_tag(&name);
+    if !known {
+        return None;
+    }
+    // before 中存在未闭合的同名开标签
+    let before_lower = before.to_lowercase();
+    let open_pat = format!("<{name}");
+    let last_open = before_lower.rfind(&open_pat)?;
+    if let Some(last_close) = before_lower.rfind(&format!("</{name}")) {
+        if last_close > last_open {
+            return None; // 开标签已闭合
+        }
+    }
+    // 开标签候选必须是合法标签起始（<name 后跟 > 或空白/属性）
+    let after_open = &before_lower[last_open + open_pat.len()..];
+    if !(after_open.starts_with('>') || after_open.starts_with(char::is_whitespace)) {
+        return None;
+    }
+    Some(format!("</{name}>"))
 }
 
 #[cfg(test)]

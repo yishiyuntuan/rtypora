@@ -58,6 +58,22 @@ pub(crate) fn html_to_md_enabled() -> bool {
     HTML_TO_MD.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// 警告框语法统一转换开关（偏好设置 callout_unify 驱动）：
+/// 开启后 Obsidian 别名标记（[!hint] 等 + 折叠后缀）与 :::type / !!! type
+/// 容器语法按 GitHub 五变体解析，保存时落源为标准 [!TYPE] 引用格式；
+/// 关闭则这些扩展语法不识别（按普通引用/文本保留原文）。
+#[tauri::command]
+pub fn set_callout_unify(enabled: bool) {
+    CALLOUT_UNIFY.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+static CALLOUT_UNIFY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// 是否启用警告框扩展语法统一转换（document.rs 的警告框解析读取）
+pub(crate) fn callout_unify_enabled() -> bool {
+    CALLOUT_UNIFY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// 批量「序列化对齐」最长公共前缀（UTF-16 码元数，与 JS `String.length` 一致）：
 /// 整块 DTO 序列化一次，再对每组光标前片段 DTO 求其序列化与整块的公共前缀长度。
 /// 用于源码/WYSIWYG 切换的光标精确映射——一次调用代替前端逐节点往返。
@@ -92,8 +108,15 @@ pub struct BlockTemplate {
 
 /// 斜杠命令的块模板：生成所选语法的起始 Markdown 与光标位置。
 /// 表格经 `TableData` 序列化（与表格解析/往返同一规则，无平行实现）。
+/// 警告框（callout）经 `variant` 指定类型（NOTE/TIP/IMPORTANT/WARNING/CAUTION），
+/// 类型清单复用 `CalloutVariant` 解析（单一来源），未知类型回落 NOTE。
 #[tauri::command]
-pub fn block_template(kind: &str, rows: Option<usize>, cols: Option<usize>) -> BlockTemplate {
+pub fn block_template(
+    kind: &str,
+    rows: Option<usize>,
+    cols: Option<usize>,
+    variant: Option<String>,
+) -> BlockTemplate {
     let (markdown, caret_offset) = match kind {
         "table" => {
             let mut table = table::TableData::new_empty(rows.unwrap_or(2), cols.unwrap_or(2));
@@ -105,11 +128,30 @@ pub fn block_template(kind: &str, rows: Option<usize>, cols: Option<usize>) -> B
         }
         "mathBlock" => ("$$\n\n$$".to_string(), 3),
         "mermaidBlock" => ("```mermaid\n\n```".to_string(), 11),
-        "callout" => ("> [!NOTE]\n> ".to_string(), "> [!NOTE]\n> ".len()),
+        "callout" => {
+            let callout = variant
+                .as_deref()
+                .and_then(|v| {
+                    block::state::CalloutVariant::parse_header_line(&format!("[!{v}]"))
+                })
+                .map(|(v, _)| v)
+                .unwrap_or(block::state::CalloutVariant::Note);
+            let markdown = format!("> [!{}]\n> ", callout.marker());
+            let caret = markdown.len();
+            (markdown, caret)
+        }
         "sectionBlock" => ("<section>\n\n</section>".to_string(), "<section>\n".len()),
         "image" => ("![]()".to_string(), 3),
         // 链接：光标落在 URL 括号内（文字占位「链接」），与图片模板同一交互
         "link" => ("[链接]()".to_string(), 4),
+        // 行内公式：两个 $ 之间输入（单行模板，Enter 整块提交渲染）
+        "inlineMath" => ("$$".to_string(), 1),
+        // 脚注定义与链接引用定义（右键菜单「插入」）
+        "footnoteDef" => ("[^1]: ".to_string(), "[^1]: ".len()),
+        "linkRef" => ("[1]: url \"title\"".to_string(), 5),
+        // 内容目录（[TOC] 段落，渲染为文档大纲）与 YAML Front Matter（文档头插入）
+        "toc" => ("[TOC]".to_string(), 5),
+        "yamlFrontMatter" => ("---\ntitle: \n---\n".to_string(), 11),
         _ => (String::new(), 0),
     };
     BlockTemplate {
@@ -305,6 +347,39 @@ pub fn inline_shortcut(text: &str) -> Option<InlineShortcutHit> {
         .or_else(|| scan_wrapped(text, "~~", "strikethrough"))
         .or_else(|| scan_wrapped(text, "`", "code"))
         .or_else(|| scan_italic(text))
+}
+
+/// 输入 `>` 完成 HTML 开始标签时的自动闭合：返回应插入的闭合标签文本
+/// （已知标签白名单；void/自闭合/未知标签不触发）。
+#[tauri::command]
+pub fn inline_html_autoclose(text: &str) -> Option<String> {
+    inline::html::inline_html_autoclose(text)
+}
+
+/// Enter 展开判定：光标位于 `<name ...>` 与 `</name>` 之间且标签为块级容器时
+/// 返回标签名（前端据此把闭标签拆到下一行，光标落中间行）。
+#[tauri::command]
+pub fn html_container_tag_between(before: &str, after: &str) -> Option<String> {
+    inline::html::html_container_tag_between(before, after)
+}
+
+/// Enter 跳过判定：光标位于 `<name ...>` 与 `</name>` 之间（开闭同名）时返回
+/// 闭标签文本（前端据此把光标移到闭标签之后）。
+#[tauri::command]
+pub fn html_closing_tag_at(before: &str, after: &str) -> Option<String> {
+    inline::html::html_closing_tag_at(before, after)
+}
+
+/// 字体颜色面板的色值解析：接受 CSS 颜色（名字/#hex/rgb()/rgba()/hsl()/hsla()/
+/// currentColor/transparent），另兼容裸 RGB 三元组（`207,34,46` → `rgb(207,34,46)`）。
+/// 返回 HtmlCssColor（serde JSON），前端直接作为 htmlStyle.color 使用。
+#[tauri::command]
+pub fn parse_html_color(text: &str) -> Option<inline::html::HtmlCssColor> {
+    let text = text.trim();
+    inline::html::parse_css_color(text).or_else(|| {
+        text.contains(',')
+            .then(|| inline::html::parse_css_color(&format!("rgb({text})")))?
+    })
 }
 
 /// inline_shortcut 的命中结构。

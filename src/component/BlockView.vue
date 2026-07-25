@@ -142,6 +142,28 @@ watch(
 
 // 子块的有序序号表（quote/callout/footnote/列表项嵌套共用）
 const childOrdinals = computed(() => numberedOrdinals(props.block.children));
+
+// 内容目录（[TOC] 段落）：渲染文档大纲（数据源与滚动定位由 Editor provide）
+const allBlocks = inject('allBlocks', { value: [] });
+const scrollToBlock = inject('scrollToBlock', null);
+const isTocBlock = computed(
+  () => props.block.type === 'paragraph' && plainText(props.block.title).trim() === '[TOC]',
+);
+const tocHeadings = computed(() => {
+  if (!isTocBlock.value) return [];
+  const list = [];
+  const walk = (nodes) => {
+    for (const n of nodes || []) {
+      if (n.type === 'heading') list.push(n);
+      if (n.children?.length) walk(n.children);
+    }
+  };
+  walk(allBlocks.value);
+  return list;
+});
+const tocMinLevel = computed(() =>
+  tocHeadings.value.reduce((min, h) => Math.min(min, h.level ?? 1), 7),
+);
 // 展示公式编号（Editor provide 的编号表；无编号为空串）
 const mathNumbers = inject('mathNumbers', { value: new Map() });
 const mathNumberLabel = computed(() => {
@@ -195,6 +217,19 @@ function alignStyle(alignments, index) {
     <div v-else class="md-placeholder rounded border p-3 text-center text-[12px]">
       {{ block.image.alt || '图片' }}（无法加载 {{ block.image.src }}）
     </div>
+  </div>
+
+  <!-- 内容目录（[TOC] 段落）：渲染文档大纲，点击标题定位（须在通用段落分支之前） -->
+  <div v-else-if="isTocBlock" class="md-toc my-2">
+    <div
+      v-for="h in tocHeadings"
+      :key="h.id"
+      class="md-toc-item"
+      :style="{ paddingLeft: `${(h.level - tocMinLevel) * 16}px` }"
+      :title="plainText(h.title)"
+      @click="scrollToBlock?.(h.id)"
+    >{{ plainText(h.title) }}</div>
+    <div v-if="!tocHeadings.length" class="t-dim text-[12px]">暂无标题</div>
   </div>
 
   <p v-else-if="block.type === 'paragraph'" class="blk-paragraph my-2 whitespace-pre-wrap">
@@ -377,7 +412,20 @@ function alignStyle(alignments, index) {
     >{{ rawText }}</pre>
   </div>
 
-  <!-- htmlBlock / rawMarkdown：源码展示，避免注入 -->
+  <!-- htmlBlock：独立 <img> HTML 行按图片渲染（含 zoom 缩放，src 经文档目录解析）；
+       其余 htmlBlock / rawMarkdown 源码展示，避免注入 -->
+  <div v-else-if="block.type === 'htmlBlock' && block.image" class="my-2">
+    <img
+      v-if="imageSrc"
+      :src="imageSrc"
+      :alt="block.image.alt"
+      :style="block.image.zoom ? { zoom: block.image.zoom } : undefined"
+      class="mx-auto block max-w-full rounded-lg"
+    />
+    <div v-else class="md-placeholder rounded border p-3 text-center text-[12px]">
+      {{ block.image.alt || '图片' }}（无法加载 {{ block.image.src }}）
+    </div>
+  </div>
   <pre
     v-else-if="block.type === 'htmlBlock' || block.type === 'rawMarkdown'"
     class="md-pre my-2 overflow-x-auto rounded p-3 font-mono text-[13px]"

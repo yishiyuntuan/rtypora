@@ -2103,6 +2103,85 @@ fn parse_inline_html_container(
 
     let (close_start, close_end) =
         locate_matching_inline_html_close(tokens, tag.end_index + 1, &tag.name)?;
+
+    // <a> 容器：内容 fragments 统一挂链接（href → destination、title 属性保留；
+    // 无 href 为空调接——Typora 式渲染为链接样式），序列化为 markdown 链接语法
+    if tag.name == "a" {
+        let href = tag
+            .attrs
+            .iter()
+            .find(|attr| attr.name == "href")
+            .and_then(|attr| attr.value.clone())
+            .unwrap_or_default();
+        let title = tag
+            .attrs
+            .iter()
+            .find(|attr| attr.name == "title")
+            .and_then(|attr| attr.value.clone())
+            .filter(|t| !t.is_empty());
+        let link = InlineLink::Inline {
+            destination: href,
+            title,
+        };
+
+        let inner_tokens = &tokens[tag.end_index + 1..close_start];
+        let inner_markdown = tokens_to_string(inner_tokens);
+        let mut inner_result = InlineTextTree::plain(inner_markdown)
+            .normalize_inline_syntax_with_link_references(reference_definitions);
+        apply_extra_style_to_fragments(
+            &mut inner_result.tree.fragments,
+            extra_style,
+            extra_html_style,
+        );
+
+        let normalized_start = builder.normalized_len;
+        let inner_len = inner_result.tree.visible_len();
+        // 开标签 tokens 映射到链接起始
+        for token in &tokens[index..=tag.end_index] {
+            for boundary in token.source_range.start..=token.source_range.end {
+                builder.visible_to_normalized[boundary] = normalized_start;
+            }
+        }
+        // 内容 tokens 按子树映射表换算
+        let mut local_boundary = 0usize;
+        for token in inner_tokens {
+            let token_len = token.source_range.len();
+            for delta in 0..=token_len {
+                builder.visible_to_normalized[token.source_range.start + delta] =
+                    normalized_start + inner_result.visible_to_normalized[local_boundary + delta];
+            }
+            local_boundary += token_len;
+        }
+        // 闭标签 tokens 映射到链接末尾
+        let normalized_end = normalized_start + inner_len;
+        for token in &tokens[close_start..=close_end] {
+            for boundary in token.source_range.start..=token.source_range.end {
+                builder.visible_to_normalized[boundary] = normalized_end;
+            }
+        }
+
+        for mut fragment in inner_result.tree.fragments {
+            fragment.link = Some(link.clone());
+            fragment.footnote = None;
+            fragment.math = None;
+            builder.normalized_len += fragment.text.len();
+            if let Some(last) = builder.fragments.last_mut() {
+                if last.style == fragment.style
+                    && last.html_style == fragment.html_style
+                    && last.link == fragment.link
+                    && last.footnote == fragment.footnote
+                    && last.math.is_none()
+                    && fragment.math.is_none()
+                {
+                    last.text.push_str(&fragment.text);
+                    continue;
+                }
+            }
+            builder.fragments.push(fragment);
+        }
+        return Some(close_end + 1);
+    }
+
     let tag_style = inline_html_semantic_style(&tag.name, extra_style);
     let html_style = merge_html_styles(extra_html_style, inline_html_style(&tag));
     if tag_style == extra_style && html_style == extra_html_style {
