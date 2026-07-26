@@ -1,6 +1,6 @@
 <script setup>
 import { ref } from 'vue';
-import { SLASH_ICON, FONT_COLORS } from '../utils/wysiwyg.js';
+import { SLASH_ICON, FONT_COLORS, FONT_SIZES } from '../utils/wysiwyg.js';
 
 // 编辑器右键菜单（Typora 式）：顶部剪贴板图标行 + 复制/粘贴为、行内格式与
 // 块类型图标行 + 段落/插入子菜单（hover 展开）。只负责展示与事件转发，
@@ -87,7 +87,11 @@ const FORMAT_ROW2 = [
   { id: 'highlight', label: '高亮', text: '==', color: '#c9a227' },
 ];
 const fontColors = FONT_COLORS;
+const fontSizes = FONT_SIZES;
 const fontColorIcon = SLASH_ICON.fontColor;
+// 字号图标（A 上下箭头）
+const fontSizeIcon =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12.5L6.5 4h1L11 12.5M4.3 10h5.4M13 5.5l1.5-2 1.5 2M13 10.5l1.5 2 1.5-2"/></svg>';
 const BLOCK_ACTIONS = [
   { id: 'quote', label: '引用', icon: SLASH_ICON.quote, color: '#f59102' },
   { id: 'numberedListItem', label: '有序列表', icon: SLASH_ICON.numberedListItem, color: '#03b736' },
@@ -167,6 +171,20 @@ const BLOCK_ACTIONS = [
                   :style="{ background: c.css }"
                   @click="emit('action', 'fontColor', c.color)"
                 ></button>
+              </div>
+            </div>
+          </div>
+          <!-- 字号：hover 展开字号档（与 / 菜单同一字号常量） -->
+          <div class="md-ctx-icon-fly" @mouseenter="openSub = 'size'">
+            <button type="button" title="字号" style="color: #3e69d7" v-html="fontSizeIcon"></button>
+            <div v-if="openSub === 'size'" class="md-ctx-sub md-ctx-color-sub" :class="{ flip: subFlip }">
+              <div
+                v-for="s in fontSizes"
+                :key="s.label"
+                class="md-ctx-sub-item"
+                @click="emit('action', 'fontSize', s.fontSize)"
+              >
+                <span>{{ s.label }}</span>
               </div>
             </div>
           </div>

@@ -107,6 +107,8 @@ export function htmlStyleCss(hs) {
   const colorCss = (c) => {
     if (!c) return undefined;
     if (c === 'currentColor') return 'currentColor';
+    // var(--x) 主题变量引用原样输出
+    if (c.var) return c.var;
     const r = c.rgba;
     return r ? `rgba(${r.red},${r.green},${r.blue},${r.alpha})` : undefined;
   };
@@ -821,7 +823,7 @@ export const SLASH_ITEMS = [
   { id: 'codeBlock', label: '代码块', icon: SLASH_ICON.codeBlock, iconColor: '#03b736', keywords: 'code daima dm' },
   { id: 'table', label: '表格', icon: SLASH_ICON.table, iconColor: '#2f6dbb', keywords: 'table biaoge bg' },
   { id: 'image', label: '图片', icon: SLASH_ICON.image, iconColor: '#d35d2e', keywords: 'img image tupian tp' },
-  { id: 'fontColor', label: '字体颜色', icon: SLASH_ICON.fontColor, iconColor: '#d35d2e', keywords: 'color font yanse ys ziti color rgb' },
+  { id: 'fontColor', label: '字体', icon: SLASH_ICON.fontColor, iconColor: '#d35d2e', keywords: 'color font yanse ys ziti rgb size zhao ziti' },
   { id: 'mathBlock', label: '数学公式', icon: SLASH_ICON.mathBlock, iconColor: '#8250df', keywords: 'math latex gongshi gs' },
   { id: 'callout', label: '警告框（Callout）', icon: SLASH_ICON.callout, iconColor: '#c9a227', keywords: 'callout note warning gaoliang gl jinggao jgk' },
   { id: 'sectionBlock', label: '图文排版（section）', icon: SLASH_ICON.sectionBlock, iconColor: '#2f9dbb', keywords: 'section tuwen tw paiban pb' },
@@ -871,19 +873,28 @@ export const CALLOUT_TYPES = [
   { id: 'CAUTION', label: '谨慎（Caution）', color: '#cf222e' },
 ];
 
-// 字体颜色面板的常见色板（color 为 htmlStyle.color 的 JSON 形状，直接落 data-html-style）
+// 字体颜色面板的常见色板（12 色轮：红/橙红/橙/橙黄/黄/黄绿/绿/蓝绿/蓝/蓝紫/紫/紫红；
+// color 为 htmlStyle.color 的 JSON 形状，直接落 data-html-style）
 export const FONT_COLORS = [
-  { label: '默认', css: '#24292f', color: { rgba: { red: 36, green: 41, blue: 47, alpha: 1 } } },
-  { label: '灰', css: '#6e7781', color: { rgba: { red: 110, green: 119, blue: 129, alpha: 1 } } },
-  { label: '红', css: '#cf222e', color: { rgba: { red: 207, green: 34, blue: 46, alpha: 1 } } },
-  { label: '橙', css: '#bc4c00', color: { rgba: { red: 188, green: 76, blue: 0, alpha: 1 } } },
-  { label: '黄', css: '#9a6700', color: { rgba: { red: 154, green: 103, blue: 0, alpha: 1 } } },
-  { label: '绿', css: '#1a7f37', color: { rgba: { red: 26, green: 127, blue: 55, alpha: 1 } } },
-  { label: '青', css: '#1b7c83', color: { rgba: { red: 27, green: 124, blue: 131, alpha: 1 } } },
-  { label: '蓝', css: '#0969da', color: { rgba: { red: 9, green: 105, blue: 218, alpha: 1 } } },
-  { label: '紫', css: '#8250df', color: { rgba: { red: 130, green: 80, blue: 223, alpha: 1 } } },
-  { label: '粉', css: '#bf3989', color: { rgba: { red: 191, green: 57, blue: 137, alpha: 1 } } },
+  { label: '红', css: '#ff0000', color: { rgba: { red: 255, green: 0, blue: 0, alpha: 1 } } },
+  { label: '橙红', css: '#ff4500', color: { rgba: { red: 255, green: 69, blue: 0, alpha: 1 } } },
+  { label: '橙', css: '#ff8c00', color: { rgba: { red: 255, green: 140, blue: 0, alpha: 1 } } },
+  { label: '橙黄', css: '#ffc000', color: { rgba: { red: 255, green: 192, blue: 0, alpha: 1 } } },
+  { label: '黄', css: '#ffd800', color: { rgba: { red: 255, green: 216, blue: 0, alpha: 1 } } },
+  { label: '黄绿', css: '#9acd32', color: { rgba: { red: 154, green: 205, blue: 50, alpha: 1 } } },
+  { label: '绿', css: '#00b050', color: { rgba: { red: 0, green: 176, blue: 80, alpha: 1 } } },
+  { label: '蓝绿', css: '#00b0a0', color: { rgba: { red: 0, green: 176, blue: 160, alpha: 1 } } },
+  { label: '蓝', css: '#0070c0', color: { rgba: { red: 0, green: 112, blue: 192, alpha: 1 } } },
+  { label: '蓝紫', css: '#5b5bd6', color: { rgba: { red: 91, green: 91, blue: 214, alpha: 1 } } },
+  { label: '紫', css: '#7030a0', color: { rgba: { red: 112, green: 48, blue: 160, alpha: 1 } } },
+  { label: '紫红', css: '#c00070', color: { rgba: { red: 192, green: 0, blue: 112, alpha: 1 } } },
 ];
+
+// 字号档（px；fontSize 为 htmlStyle.fontSize 的 JSON 形状）
+export const FONT_SIZES = [12, 13, 14, 15, 16, 18, 20, 24, 28, 32].map((px) => ({
+  label: String(px),
+  fontSize: { px },
+}));
 
 // 「文本」行的徽章分组（四行展示：标题级别 / 行内格式 / 列表·引用·链接 / 行内代码·代码块·公式；
 // ←/→ 移列、↑/↓ 移行、点选直用）。color 为徽章多彩配色（文字与图标着色，品牌色不走主题变量）。

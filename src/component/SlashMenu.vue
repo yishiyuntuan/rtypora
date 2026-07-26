@@ -1,6 +1,6 @@
 <script setup>
-import { ref, watch } from 'vue';
-import { SLASH_TEXT_GROUPS, CALLOUT_TYPES, FONT_COLORS } from '../utils/wysiwyg.js';
+import { ref, watch, nextTick } from 'vue';
+import { SLASH_TEXT_GROUPS, CALLOUT_TYPES, FONT_COLORS, FONT_SIZES } from '../utils/wysiwyg.js';
 
 // 斜杠命令菜单面板：只负责展示与事件转发。
 // 「文本」行（四行徽章：标题 H1-H6 / 行内格式 B/I/U/S/== / 列表·引用·链接 / 代码·公式，
@@ -20,8 +20,10 @@ const props = defineProps({
   tableField: { type: String, default: 'rows' },
   // 警告框当前类型（CALLOUT_TYPES 下标）
   calloutType: { type: Number, default: 0 },
-  // 字体颜色当前色板下标与 RGB 非法值标记
+  // 字体行当前行列（row 0=颜色、1=字号）与 RGB 非法值标记
+  fontRow: { type: Number, default: 0 },
   fontColorIndex: { type: Number, default: 0 },
+  fontSizeIndex: { type: Number, default: 0 },
   rgbError: { type: Boolean, default: false },
   left: { type: Number, default: 0 },
   top: { type: Number, default: 0 },
@@ -32,10 +34,11 @@ const emit = defineEmits([
   'text-cell',
   'table-field',
   'callout-type',
-  'font-color-index',
+  'font-cell',
   'rgb-apply',
   'rgb-focus',
   'rgb-cancel',
+  'rgb-nav',
 ]);
 
 const groups = SLASH_TEXT_GROUPS;
@@ -43,8 +46,24 @@ const calloutTypes = CALLOUT_TYPES;
 // 警告框类型分两行展示（与「文本」项同布局：前导行 + 徽章行）
 const calloutRows = [CALLOUT_TYPES.slice(0, 3), CALLOUT_TYPES.slice(3)];
 const fontColors = FONT_COLORS;
-// 字体颜色行的 RGB 输入（本地未受控文本，Enter/Esc 经事件上交）
+const fontSizes = FONT_SIZES;
+// 字体行的 RGB 输入（本地未受控文本，Enter/Esc 经事件上交）
 const rgbText = ref('');
+// 行导航进入 RGB 输入框行（row=2 且字体项激活）时聚焦输入框。
+// 注意：ref 位于 v-for 内，Vue 3 会收集为数组，需取首元素
+const rgbInputEl = ref(null);
+function focusRgbInput() {
+  const el = Array.isArray(rgbInputEl.value) ? rgbInputEl.value[0] : rgbInputEl.value;
+  el?.focus();
+}
+watch(
+  () => [props.fontRow, props.index],
+  () => {
+    if (props.fontRow !== 2) return;
+    if (props.items[props.index]?.id !== 'fontColor') return;
+    nextTick(focusRgbInput);
+  },
+);
 
 // 键盘导航时让选中项保持可见：只调整菜单自身滚动位置
 //（不用 scrollIntoView——它会连带滚动编辑器/页面等外层滚动容器；
@@ -150,7 +169,7 @@ watch(
             </span>
           </span>
         </div>
-        <!-- 字体颜色：前导行 + 内联色板行 + RGB 输入行（无二级面板；点选直用，←/→ 切换、Enter 应用当前色板） -->
+        <!-- 字体：前导行 + 色板（6×2）+ 字号（5×2）+ RGB 输入（点选直用；←/→ 移列，↑/↓ 网格内上下/换区，Enter 应用） -->
         <div
           v-else-if="item.id === 'fontColor'"
           class="md-slash-item md-slash-text"
@@ -169,23 +188,38 @@ watch(
                 :key="c.label"
                 type="button"
                 class="md-color-swatch"
-                :class="{ 'md-color-swatch-active': i === index && ci === fontColorIndex }"
+                :class="{ 'md-color-swatch-active': i === index && fontRow === 0 && ci === fontColorIndex }"
                 :title="c.label"
                 :style="{ background: c.css }"
                 @mousedown.prevent.stop="emit('pick', item, { fontColor: c.color })"
-                @mouseenter="emit('font-color-index', ci)"
+                @mouseenter="emit('font-cell', { row: 0, col: ci })"
               ></button>
+            </span>
+            <span class="md-slash-levels md-slash-sizes">
+              <span
+                v-for="(s, si) in fontSizes"
+                :key="s.label"
+                class="md-slash-level"
+                :class="{ 'md-slash-level-active': i === index && fontRow === 1 && si === fontSizeIndex }"
+                :title="`字号 ${s.label}px`"
+                @mousedown.prevent.stop="emit('pick', item, { fontSize: s.fontSize })"
+                @mouseenter="emit('font-cell', { row: 1, col: si })"
+              >{{ s.label }}</span>
             </span>
             <span class="md-color-rgb">
               <input
+                ref="rgbInputEl"
                 v-model="rgbText"
                 class="md-color-input"
-                :class="{ error: rgbError }"
+                :class="{ error: rgbError, 'md-color-input-active': i === index && fontRow === 2 }"
                 placeholder="207,34,46 / #cf222e / red"
                 @mousedown.stop
+                @click.stop="focusRgbInput"
                 @focus="emit('rgb-focus')"
                 @keydown.enter.prevent="emit('rgb-apply', rgbText)"
                 @keydown.esc.prevent="emit('rgb-cancel')"
+                @keydown.up.prevent="emit('rgb-nav', -1)"
+                @keydown.down.prevent="emit('rgb-nav', 1)"
               />
             </span>
           </span>

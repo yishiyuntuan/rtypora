@@ -324,9 +324,9 @@ const outlineItems = computed(() => {
                 <span class="truncate">{{ entry.name }}</span>
               </div>
             </template>
-            <div v-else class="t-dim rounded px-2 py-1 text-[12px]">文件列表为空</div>
+            <div v-else class="t-dim flex h-full items-center justify-center text-[12px]">文件列表为空</div>
           </template>
-          <div v-else class="t-dim rounded px-2 py-1 text-[12px]">文件列表为空</div>
+          <div v-else class="t-dim flex h-full items-center justify-center text-[12px]">文件列表为空</div>
         </div>
 
         <!-- 底部工具栏（与状态栏同高 h-7，图标文字垂直居中） -->

@@ -44,13 +44,15 @@ pub struct HtmlAttr {
 }
 
 /// Parsed CSS color value from a safe inline `style` attribute.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HtmlCssColor {
     /// The CSS `currentColor` keyword.
     CurrentColor,
     /// An sRGB color with alpha.
     Rgba(HtmlCssRgba),
+    /// `var(--custom-property)` 引用（主题变量，原样保留到渲染与序列化）
+    Var(String),
 }
 
 /// RGBA channels normalized enough for both GPUI rendering and export CSS.
@@ -90,7 +92,7 @@ pub enum HtmlCssFontSizeKeyword {
 }
 
 /// Whitelisted visual CSS parsed from a safe HTML `style` attribute.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HtmlInlineStyle {
     pub(crate) color: Option<HtmlCssColor>,
@@ -177,7 +179,7 @@ impl HtmlDocument {
 }
 
 impl HtmlCssColor {
-    pub(crate) fn to_css(self) -> String {
+    pub(crate) fn to_css(&self) -> String {
         match self {
             Self::CurrentColor => "currentColor".to_string(),
             Self::Rgba(color) => format!(
@@ -187,6 +189,18 @@ impl HtmlCssColor {
                 color.blue,
                 color.alpha.clamp(0.0, 1.0)
             ),
+            Self::Var(var) => var.clone(),
+        }
+    }
+
+    /// `<font color="...">` 属性值：不透明时用紧凑 hex（#rrggbb），
+    /// 半透明/关键字/var() 引用回落 CSS 写法（rgba()/currentColor/var(--x)）。
+    pub(crate) fn to_font_attr(&self) -> String {
+        match self {
+            Self::Rgba(color) if (color.alpha - 1.0).abs() < f32::EPSILON => {
+                format!("#{:02x}{:02x}{:02x}", color.red, color.green, color.blue)
+            }
+            _ => self.to_css(),
         }
     }
 }
@@ -882,7 +896,9 @@ pub(crate) fn parse_inline_style(style: &str) -> HtmlInlineStyle {
                     parsed.color = Some(color);
                 }
             }
-            "background-color" => {
+            // background 简写与 background-color 等价（值必须是颜色，url() 等
+            // 复合值会因 parse_css_color 失败被丢弃）
+            "background" | "background-color" => {
                 if let Some(color) = parse_css_color(value) {
                     parsed.background_color = Some(color);
                 }
@@ -910,6 +926,18 @@ pub(crate) fn parse_css_color(value: &str) -> Option<HtmlCssColor> {
             blue: 0,
             alpha: 0.0,
         }));
+    }
+    // var(--x) 引用：主题变量原样保留（不含分隔符即视为合法）
+    if let Some(inner) = value
+        .strip_prefix("var(")
+        .or_else(|| value.strip_prefix("VAR("))
+        .and_then(|rest| rest.strip_suffix(')'))
+    {
+        let name = inner.trim();
+        if !name.is_empty() && !name.contains([';', '{', '}', '(', ')']) {
+            return Some(HtmlCssColor::Var(format!("var({name})")));
+        }
+        return None;
     }
     if let Some(hex) = value.strip_prefix('#') {
         if let Ok((red, green, blue, alpha)) = parse_hash_color(hex.as_bytes()) {

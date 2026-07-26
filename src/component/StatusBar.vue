@@ -62,9 +62,9 @@ async function onThemeFile(e) {
   <div
     class="t-statusbar flex h-7 items-center justify-between text-[12px] select-none"
   >
-    <div class="flex h-full items-center">
+    <div class="flex h-full items-center gap-0.5 px-1">
       <div
-        class="t-btn inline-flex h-full cursor-pointer items-center gap-1 px-3"
+        class="t-btn inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
         :class="{ active: sidebarVisible }"
         @click="emit('toggle-sidebar')"
       >
@@ -75,7 +75,7 @@ async function onThemeFile(e) {
       </div>
 
       <div
-        class="t-btn inline-flex h-full cursor-pointer items-center gap-1 px-3"
+        class="t-btn inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
         :class="{ active: sourceMode }"
         @click="emit('toggle-source')"
       >
@@ -83,7 +83,7 @@ async function onThemeFile(e) {
       </div>
 
       <div
-        class="t-btn inline-flex h-full cursor-pointer items-center gap-1 px-3"
+        class="t-btn inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
         :class="{ active: lineNumbersOn }"
         title="代码行号显示"
         @click="setPref('render_code_line_numbers', !lineNumbersOn)"
@@ -97,7 +97,7 @@ async function onThemeFile(e) {
       </div>
 
       <div
-        class="t-btn inline-flex h-full cursor-pointer items-center gap-1 px-3"
+        class="t-btn inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
         :class="{ active: autoSaveOn }"
         title="自动保存（触发方式见 菜单 → 偏好设置 → 编辑器）"
         @click="setPref('auto_save_enabled', !autoSaveOn)"
@@ -109,21 +109,24 @@ async function onThemeFile(e) {
       </div>
     </div>
 
-    <div class="flex h-full items-center">
-      <div class="inline-flex h-full items-center px-2">
+    <div class="flex h-full items-center gap-1 px-1.5">
+      <div class="t-dim inline-flex h-full items-center px-1 tabular-nums">
         Ln {{ cursorLine }}, Col {{ cursorColumn }}
       </div>
-      <div class="inline-flex h-full items-center px-2">
+      <span class="h-3 w-px bg-(--t-table-border)"></span>
+      <div class="t-dim inline-flex h-full items-center px-1 tabular-nums">
         {{ lineCount }} 行
       </div>
-      <div class="inline-flex h-full items-center px-2">
+      <span class="h-3 w-px bg-(--t-table-border)"></span>
+      <div class="t-dim inline-flex h-full items-center px-1 tabular-nums">
         {{ wordCount }} 词
       </div>
-      <div class="inline-flex h-full items-center px-2">
+      <span class="h-3 w-px bg-(--t-table-border)"></span>
+      <div class="t-dim inline-flex h-full items-center px-1 tabular-nums">
         {{ charCount }} 字符
       </div>
       <select
-        class="t-btn mx-1 h-5 cursor-pointer rounded bg-transparent px-1 text-[11px] outline-none"
+        class="t-btn mx-0.5 h-[22px] cursor-pointer rounded-md bg-transparent px-1.5 text-[11px] outline-none"
         :value="themeId"
         @change="onThemeChange"
         title="编辑器主题"
@@ -131,7 +134,7 @@ async function onThemeFile(e) {
         <option v-for="theme in themes" :key="theme.id" :value="theme.id">{{ theme.name }}</option>
         <option value="__import__">导入主题…</option>
       </select>
-      <input ref="fileInput" type="file" accept=".json,.jsonc" class="hidden" @change="onThemeFile" />
+      <input ref="fileInput" type="file" accept=".json,.jsonc,.yaml,.yml" class="hidden" @change="onThemeFile" />
     </div>
   </div>
 </template>

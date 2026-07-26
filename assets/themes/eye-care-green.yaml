@@ -1,0 +1,26 @@
+# 护眼绿（YAML 主题示例）——导入方式与 JSON 相同：状态栏主题下拉 →「导入主题…」
+# 语法要点：嵌套映射用空格缩进（不支持 Tab）；`# ` 后为注释；颜色写 #ff0000 不需要引号
+name: 护眼绿（YAML）
+creator: me
+baseThemeId: velotype-light
+
+theme:
+  colors:
+    editor_background: '#f0f7e8'
+    text_default: '#2d3a24'
+    text_link: '#4a7c2f'
+    code_bg: '#e3edd6'
+    status_bar_background: '#dfe9cf'
+    status_bar_button_hover: '#c9dbaf'
+  typography:
+    text_size: 16
+    text_line_height: 1.7
+  dimensions:
+    content_max_width: 760
+  blocks:
+    heading:
+      h1:
+        borderBottom: 2px solid #c9dbaf
+        paddingBottom: 6
+    codeBlock:
+      borderRadius: 10

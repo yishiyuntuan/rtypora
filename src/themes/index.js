@@ -1,6 +1,7 @@
-// 主题系统：参照 velotype 的主题自定义接口（JSON 主题包 + 基主题继承）。
+// 主题系统：参照 velotype 的主题自定义接口（主题包 + 基主题继承）。
 //
-// 自定义主题接口（JSON / JSONC 文件，经状态栏「导入主题…」导入）：
+// 自定义主题接口（JSON/JSONC 或 YAML 文件，经状态栏「导入主题…」导入，
+// 格式按内容自动识别——以 { 开头为 JSON，否则按 YAML 解析）：
 //   {
 //     "name": "主题显示名（必填）",
 //     "creator": "作者",
@@ -328,12 +329,113 @@ function stripJsonComments(text) {
   return out;
 }
 
+// ---------- 受限 YAML 子集解析（主题包用） ----------
+// 支持：嵌套映射（空格缩进）、`#` 注释（仅 `# ` 开头或行尾，避免吃掉 #ff0000 颜色）、
+// 单/双引号与纯量、数字/布尔/null。不支持列表、flow 语法、多行字符串与锚点
+// （主题包结构仅为嵌套映射，足够覆盖）。
+function stripYamlComment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === quote && line[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    // 宽松规则：`# ` 或行尾 `#` 才是注释（颜色 #ff0000 不受影响）
+    if (ch === '#' && (i === 0 || line[i - 1] === ' ' || line[i - 1] === '\t')) {
+      if (i + 1 >= line.length || line[i + 1] === ' ') {
+        return line.slice(0, i);
+      }
+    }
+  }
+  return line;
+}
+
+function parseYamlScalar(raw) {
+  const text = raw.trim();
+  if (text === '' || text === 'null' || text === 'Null' || text === 'NULL' || text === '~') return null;
+  if (text === 'true' || text === 'True' || text === 'TRUE') return true;
+  if (text === 'false' || text === 'False' || text === 'FALSE') return false;
+  if (text.startsWith('"') && text.endsWith('"') && text.length >= 2) {
+    // 双引号：处理常见转义
+    return text.slice(1, -1).replace(/\\(["\\/nrt])/g, (_, ch) => {
+      return { '"': '"', '\\': '\\', '/': '/', n: '\n', r: '\r', t: '\t' }[ch] ?? ch;
+    });
+  }
+  if (text.startsWith("'") && text.endsWith("'") && text.length >= 2) {
+    return text.slice(1, -1).replace(/''/g, "'");
+  }
+  const num = Number(text);
+  if (text !== '' && !Number.isNaN(num) && /^-?[\d.]+(e[+-]?\d+)?$/i.test(text)) return num;
+  return text;
+}
+
+// YAML 键值切分：键结束于「后随空格或行尾」的冒号（跳过引号内与 nth-child/:hover 等键内冒号）
+function splitYamlKeyValue(content) {
+  let quote = null;
+  for (let i = 0; i < content.length; i++) {
+    const ch = content[i];
+    if (quote) {
+      if (ch === quote && content[i - 1] !== '\\') quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === ':' && (i + 1 >= content.length || content[i + 1] === ' ')) {
+      const key = content.slice(0, i).trim();
+      const value = i + 1 >= content.length ? undefined : content.slice(i + 1).trim();
+      return [key, value];
+    }
+  }
+  return null;
+}
+
+function parseYamlSubset(text) {
+  const root = {};
+  const stack = [{ indent: -1, value: root }];
+  for (const rawLine of text.split('\n')) {
+    const line = stripYamlComment(rawLine);
+    if (!line.trim()) continue;
+    if (/\t/.test(rawLine.slice(0, rawLine.length - rawLine.trimStart().length))) {
+      throw new Error('YAML 缩进请使用空格（不支持 Tab）');
+    }
+    const indent = line.length - line.trimStart().length;
+    const content = line.trim();
+    const pair = splitYamlKeyValue(content);
+    if (!pair) throw new Error(`无法解析的 YAML 行: ${content}`);
+    let [key, rawValue] = pair;
+    if (key.startsWith('"') && key.endsWith('"')) key = key.slice(1, -1);
+    else if (key.startsWith("'") && key.endsWith("'")) key = key.slice(1, -1);
+    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) stack.pop();
+    const parent = stack[stack.length - 1].value;
+    if (rawValue === undefined) {
+      // 无值键：嵌套映射（子行缩进更深时入栈生效）
+      const child = {};
+      parent[key] = child;
+      stack.push({ indent, value: child });
+    } else {
+      parent[key] = parseYamlScalar(rawValue);
+    }
+  }
+  return root;
+}
+
 /**
- * 导入自定义主题包（JSON/JSONC 文本），注册、持久化并应用。
+ * 导入自定义主题包（JSON/JSONC 或 YAML 文本），注册、持久化并应用。
+ * 格式按内容自动识别（以 { 开头为 JSON，否则按 YAML 解析）。
  * 返回新主题 id；格式非法时抛错。
  */
 export function importThemeJson(text) {
-  const pack = JSON.parse(stripJsonComments(text));
+  const trimmed = text.trimStart();
+  const pack = trimmed.startsWith('{')
+    ? JSON.parse(stripJsonComments(text))
+    : parseYamlSubset(text);
   if (!pack || typeof pack.name !== 'string' || !pack.name.trim()) {
     throw new Error('主题包缺少必填字段 name');
   }

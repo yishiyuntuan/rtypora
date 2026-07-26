@@ -18,6 +18,7 @@ import {
   SLASH_TEXT_GROUPS,
   CALLOUT_TYPES,
   FONT_COLORS,
+  FONT_SIZES,
   LANG_BADGES,
   htmlStyleCss,
   applySlashCommand,
@@ -476,19 +477,139 @@ const slashTableField = ref('item');
 const slashCalloutType = ref(0);
 const slashPos = ref({ left: 0, top: 0 });
 
-// ---------- 字体颜色（/ 菜单「字体颜色」行内色板 + RGB 输入） ----------
-// 色板当前下标（←/→ 循环、Enter 应用、悬停同步）
+// ---------- 字体（/ 菜单「字体」行内色板 + RGB 输入 + 字号行） ----------
+// 色板/字号当前行列（row 0=颜色、1=字号；←/→ 移列、↑/↓ 换行、悬停同步）
+const slashFontRow = ref(0);
 const slashFontColorIndex = ref(0);
+const slashFontSizeIndex = ref(0);
 // RGB 输入非法值标记（菜单内输入框红框提示）
 const rgbError = ref(false);
 
-// 应用所选颜色：删除 / 触发文本后，有选区包选区、块内已有文字整段上色、空块插入颜色 span 供输入
-function applyFontColor(color) {
+// 应用字体样式（{ color } 或 { fontSize }）。支持多选：首次删除 / 触发文本并插入样式 span，
+// 菜单保持打开，再次选择直接在当前样式 span 上按字段合并（颜色与字号可叠加）
+let fontMenuSession = false;
+watch(slashOpen, (open) => {
+  if (!open) fontMenuSession = false;
+});
+
+// 光标所在的字体样式 span（无则 null）
+function caretFontSpan(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !el.contains(sel.anchorNode)) return null;
+  const node =
+    sel.anchorNode.nodeType === Node.TEXT_NODE ? sel.anchorNode.parentElement : sel.anchorNode;
+  return node?.closest?.('span[data-html-style]') ?? null;
+}
+
+// 在既有样式 span 上按字段合并（color/fontSize 各自独立覆盖）
+function mergeStyleIntoSpan(span, style) {
+  let current = {};
+  try {
+    current = JSON.parse(span.getAttribute('data-html-style') || '{}');
+  } catch {
+    current = {};
+  }
+  const merged = { ...current, ...style };
+  span.setAttribute('data-html-style', JSON.stringify(merged));
+  span.setAttribute('style', htmlStyleCss(merged));
+}
+
+function applyFontStyle(style) {
   const el = currentEditable();
   if (!el) return;
   suppressBlurCommit = true;
   try {
-    // 删除触发文本（块首到光标的 /query）
+    if (fontMenuSession) {
+      // 多选会话：直接在当前样式 span 上合并（不重复删除触发符/重建结构）
+      const existing = caretFontSpan(el);
+      if (existing) {
+        mergeStyleIntoSpan(existing, style);
+        slashOpen.value = true; // 菜单保持打开，可继续选择
+        return;
+      }
+      // 光标不在样式 span 内（如整段套用后移出）：按新样式插入
+    } else {
+      // 首次：删除触发文本——光标在编辑器内时按光标定位删除；
+      // 焦点在菜单输入框（RGB）时按块首的 /query 删除
+      const sel = window.getSelection();
+      if (sel.rangeCount && el.contains(sel.anchorNode)) {
+        const caret = sel.getRangeAt(0);
+        const trigger = document.createRange();
+        trigger.selectNodeContents(el);
+        trigger.setEnd(caret.startContainer, caret.startOffset);
+        trigger.deleteContents();
+      } else {
+        const query = '/' + slashQuery.value;
+        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        const firstText = walker.nextNode();
+        if (firstText && query.length > 1 && firstText.textContent.startsWith(query)) {
+          firstText.textContent = firstText.textContent.slice(query.length);
+        } else if (firstText?.textContent.startsWith('/')) {
+          firstText.textContent = firstText.textContent.slice(1);
+        }
+      }
+    }
+    const span = buildFontSpan(style);
+    const sel2 = window.getSelection();
+    // 目标容器：块的首个块级子元素（p/h1-h6 等）——样式 span 只能包块「内容」，
+    // 把块级元素本身包进内联 span 是非法嵌套（浏览器会拆散，样式丢失、光标异常）
+    const target = el.firstElementChild || el;
+    if (sel2.rangeCount && !sel2.isCollapsed && el.contains(sel2.anchorNode)) {
+      // 有选区：选区内容上色
+      const range = sel2.getRangeAt(0);
+      span.append(range.extractContents());
+      range.insertNode(span);
+      placeCursorAtEnd(span);
+    } else if (target.textContent.trim()) {
+      // 块内已有文字：整段套用
+      while (target.firstChild) span.append(target.firstChild);
+      target.append(span);
+      placeCursorAtEnd(span);
+    } else {
+      // 空块：插入样式 span，光标入内，输入即带样式文字
+      target.innerHTML = '';
+      target.append(span);
+      placeCursorAtStart(span);
+    }
+    fontMenuSession = true;
+    slashOpen.value = true; // 菜单保持打开，颜色与字号可叠加选择
+  } finally {
+    suppressBlurCommit = false;
+  }
+  if (document.activeElement !== el) el.focus({ preventScroll: true });
+}
+
+function applyFontColor(color) {
+  applyFontStyle({ color });
+}
+function applyFontSize(fontSize) {
+  applyFontStyle({ fontSize });
+}
+
+// RGB 输入应用：Rust 解析色值，有效则应用并回编辑器输入（带样式）；
+// 颜色值错误：按默认普通文本处理——清掉 / 触发文本，焦点回编辑器继续普通输入
+async function applyRgbInput(text) {
+  const color = await invoke('parse_html_color', { text: (text || '').trim() }).catch(() => null);
+  rgbError.value = false;
+  if (!color) {
+    slashOpen.value = false;
+    if (fontMenuSession) {
+      // 已应用过样式（多选会话）：不删除任何内容，直接回编辑器
+      currentEditable()?.focus({ preventScroll: true });
+    } else {
+      clearSlashTriggerAndFocus();
+    }
+    return;
+  }
+  applyFontColor(color);
+}
+
+// 无效 RGB 输入的回落：清掉 / 触发文本并聚焦编辑器（普通文本输入）
+function clearSlashTriggerAndFocus() {
+  const el = currentEditable();
+  if (!el) return;
+  suppressBlurCommit = true;
+  try {
     const sel = window.getSelection();
     if (sel.rangeCount && el.contains(sel.anchorNode)) {
       const caret = sel.getRangeAt(0);
@@ -496,40 +617,21 @@ function applyFontColor(color) {
       trigger.selectNodeContents(el);
       trigger.setEnd(caret.startContainer, caret.startOffset);
       trigger.deleteContents();
-    }
-    const span = buildColorSpan(color);
-    const sel2 = window.getSelection();
-    if (sel2.rangeCount && !sel2.isCollapsed && el.contains(sel2.anchorNode)) {
-      // 有选区：选区内容上色
-      const range = sel2.getRangeAt(0);
-      span.append(range.extractContents());
-      range.insertNode(span);
-      placeCursorAtEnd(span);
-    } else if (el.textContent.trim()) {
-      // 块内已有文字（/ 触发符在文首）：整段上色
-      while (el.firstChild) span.append(el.firstChild);
-      el.append(span);
-      placeCursorAtEnd(span);
     } else {
-      // 空块：插入颜色 span，光标入内，输入即彩色文字
-      el.append(span);
-      placeCursorAtStart(span);
+      // 焦点在菜单输入框（RGB）：按块首 /query 删除
+      const query = '/' + slashQuery.value;
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+      const firstText = walker.nextNode();
+      if (firstText && query.length > 1 && firstText.textContent.startsWith(query)) {
+        firstText.textContent = firstText.textContent.slice(query.length);
+      } else if (firstText?.textContent.startsWith('/')) {
+        firstText.textContent = firstText.textContent.slice(1);
+      }
     }
   } finally {
     suppressBlurCommit = false;
   }
-  if (document.activeElement !== el) el.focus({ preventScroll: true });
-}
-
-// RGB 输入应用：Rust 解析色值（CSS 颜色 / 裸三元组），非法值提示不关闭菜单
-async function applyRgbInput(text) {
-  const color = await invoke('parse_html_color', { text: (text || '').trim() }).catch(() => null);
-  if (!color) {
-    rgbError.value = true;
-    return;
-  }
-  rgbError.value = false;
-  applyFontColor(color);
+  el.focus({ preventScroll: true });
 }
 
 // 菜单内 RGB 输入框获得焦点：编辑容器 blur 的提交需抑制（/ 触发文本保持未提交态）
@@ -539,6 +641,19 @@ function onRgbFocus() {
 // RGB 输入框 Esc：关闭菜单并恢复编辑焦点与提交通路
 function onRgbCancel() {
   slashOpen.value = false;
+  suppressBlurCommit = false;
+  currentEditable()?.focus({ preventScroll: true });
+}
+
+// RGB 输入框内 ↑/↓：↑ 回字号区下行（列保持），↓ 进到下一菜单项
+function onRgbNav(dir) {
+  if (dir < 0) {
+    slashFontRow.value = 1;
+    if (slashFontSizeIndex.value < 5) slashFontSizeIndex.value += 5;
+  } else {
+    slashFontRow.value = 0;
+    slashIndex.value = (slashIndex.value + 1) % slashItems.value.length;
+  }
   suppressBlurCommit = false;
   currentEditable()?.focus({ preventScroll: true });
 }
@@ -614,9 +729,11 @@ async function onMenuAction(id, payload) {
         if (document.activeElement !== el) el.focus({ preventScroll: true });
       }
       return;
-    // 文字颜色：色板子菜单选择（payload 为 htmlStyle.color JSON）
+    // 文字颜色/字号：色板与字号行选择（payload 为 htmlStyle 的 color/fontSize JSON）
     case 'fontColor':
-      return ctxApplyFontColor(payload);
+      return ctxApplyFontStyle({ color: payload });
+    case 'fontSize':
+      return ctxApplyFontStyle({ fontSize: payload });
     case 'quote':
     case 'bulletedListItem':
     case 'numberedListItem':
@@ -648,21 +765,21 @@ async function onMenuAction(id, payload) {
   }
 }
 
-// 颜色 span 构建（slash 颜色与右键颜色共用）
-function buildColorSpan(color) {
+// 字体样式 span 构建（slash 与右键菜单共用；htmlStyle JSON 落 data 属性无损往返）
+function buildFontSpan(style) {
   const span = document.createElement('span');
-  span.setAttribute('style', htmlStyleCss({ color }));
-  span.setAttribute('data-html-style', JSON.stringify({ color }));
+  span.setAttribute('style', htmlStyleCss(style));
+  span.setAttribute('data-html-style', JSON.stringify(style));
   return span;
 }
 
-// 右键菜单文字颜色：有选区包选区，无选区插空颜色 span 光标入内
-function ctxApplyFontColor(color) {
+// 右键菜单字体样式：有选区包选区，无选区插空 span 光标入内
+function ctxApplyFontStyle(style) {
   const el = currentEditable();
-  if (!el || !color) return;
+  if (!el || !style) return;
   suppressBlurCommit = true;
   try {
-    const span = buildColorSpan(color);
+    const span = buildFontSpan(style);
     const sel = window.getSelection();
     if (sel.rangeCount && !sel.isCollapsed && el.contains(sel.anchorNode)) {
       const range = sel.getRangeAt(0);
@@ -671,8 +788,12 @@ function ctxApplyFontColor(color) {
       placeCursorAtEnd(span);
     } else {
       const range = sel.rangeCount && el.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
-      if (range) range.insertNode(span);
-      else el.append(span);
+      if (range) {
+        range.insertNode(span);
+      } else {
+        // 无光标：放入块的首个块级子元素内（span 不能包块级元素）
+        (el.firstElementChild || el).append(span);
+      }
       placeCursorAtStart(span);
     }
   } finally {
@@ -741,15 +862,29 @@ async function copySelection(kind) {
   if (text) await navigator.clipboard.writeText(text).catch(() => {});
 }
 
-// 段落/块类型转换：保留当前文字（applySlashCommand 重建结构后插回文本）
+// 段落/块类型转换：保留行内结构（节点迁移而非纯文本——粗斜体/链接/颜色等格式不丢）
 async function convertBlockType(id) {
   const el = currentEditable();
   if (!el) return;
-  const text = el.textContent.replace(/\n+$/g, '');
+  // 先取出块内容：单块时取其内部行内容（避免块套块），多块时取全部子节点
+  const sourceChildren =
+    el.firstElementChild && el.childElementCount === 1
+      ? [...el.firstElementChild.childNodes]
+      : [...el.childNodes];
+  const fragment = document.createDocumentFragment();
+  for (const node of sourceChildren) fragment.append(node);
+  const hasContent = fragment.textContent.trim() !== '';
   suppressBlurCommit = true;
   try {
     await applySlashCommand(el, id);
-    if (text) document.execCommand('insertText', false, text);
+    if (hasContent) {
+      // applySlashCommand 已把光标放在内容槽位（h1-h6/li/quote p 内）：原内容节点插回
+      const sel = window.getSelection();
+      if (sel.rangeCount && el.contains(sel.anchorNode)) {
+        sel.getRangeAt(0).insertNode(fragment);
+        placeCursorAtEnd(el.lastElementChild || el);
+      }
+    }
   } finally {
     suppressBlurCommit = false;
   }
@@ -882,7 +1017,9 @@ function updateSlashMenu() {
   slashTextCol.value = 0;
   slashTableField.value = 'item';
   slashCalloutType.value = 0;
+  slashFontRow.value = 0;
   slashFontColorIndex.value = 0;
+  slashFontSizeIndex.value = 0;
   rgbError.value = false;
   slashPos.value = ctx.pos;
   slashOpen.value = true;
@@ -903,9 +1040,13 @@ async function applySlashItem(item, option) {
     // 警告框类型：徽章点选带类型，Enter 应用当前类型（←/→ 或悬停切换）
     opts = { variant: option?.calloutVariant ?? CALLOUT_TYPES[slashCalloutType.value].id };
   }
-  // 字体颜色：色板点选带颜色，Enter 应用当前色板（←/→ 或悬停切换）
+  // 字体：色板/字号点选带样式，Enter 应用当前行列（←/→ 区内循环、↑/↓ 网格移动）
   if (item.id === 'fontColor') {
-    applyFontColor(option?.fontColor ?? FONT_COLORS[slashFontColorIndex.value].color);
+    if (option?.fontColor) applyFontColor(option.fontColor);
+    else if (option?.fontSize) applyFontSize(option.fontSize);
+    else if (slashFontRow.value === 1) applyFontSize(FONT_SIZES[slashFontSizeIndex.value].fontSize);
+    else if (slashFontRow.value === 2) return; // RGB 输入框行：Enter 由输入框自身处理
+    else applyFontColor(FONT_COLORS[slashFontColorIndex.value].color);
     return;
   }
   // 表格：模板即时提交渲染，不进入原文编辑（随后聚焦首个数据单元格）
@@ -1314,7 +1455,16 @@ function startEdit(block) {
   if (editingId.value !== null) {
     // 编辑态残留（无活动容器）时自愈，避免点不出光标
     if (!editableEl) editingId.value = null;
-    else return;
+    else {
+      // 有未提交编辑（含延迟 blur 提交）：先冲掉延迟定时器并提交当前块，
+      // 再进入新块（无需二次点击）；提交为空操作（容器丢失）时直接换块
+      clearTimeout(blurCommitTimer);
+      blurCommitTimer = null;
+      commitEdit().finally(() => {
+        editingId.value = block.id;
+      });
+      return;
+    }
   }
   editingId.value = block.id;
 }
@@ -1323,7 +1473,14 @@ function startAppend() {
   if (syncing.value) return;
   if (editingId.value !== null) {
     if (!editableEl) editingId.value = null;
-    else return;
+    else {
+      clearTimeout(blurCommitTimer);
+      blurCommitTimer = null;
+      commitEdit().finally(() => {
+        editingId.value = '__append__';
+      });
+      return;
+    }
   }
   editingId.value = '__append__';
 }
@@ -1704,8 +1861,21 @@ async function commitCodeAndNewBlock() {
 function onEditableBlur(e) {
   if (suppressBlurCommit) return;
   if (e.target !== editableEl) return;
-  commitEdit();
+  // 焦点可能正转移到斜杠菜单内部（RGB 输入框）：Chromium 的 blur.relatedTarget
+  // 不可靠（常为 null），延迟一帧用 document.activeElement 判定，在菜单内则不提交
+  const el = editableEl;
+  clearTimeout(blurCommitTimer);
+  blurCommitTimer = setTimeout(() => {
+    blurCommitTimer = null;
+    if (suppressBlurCommit) return;
+    if (document.activeElement?.closest?.('.md-slash-menu')) return;
+    // 期间已程序性换块（容器已换）：不提交旧容器
+    if (editableEl !== el) return;
+    commitEdit();
+  }, 0);
 }
+// 失焦提交的延迟定时器（换块点击时先冲掉，避免重复提交）
+let blurCommitTimer = null;
 // 程序性换块进行中：抑制卸载 blur 触发的误提交
 let suppressBlurCommit = false;
 
@@ -1771,6 +1941,38 @@ function onEditableKeydown(e) {
         slashTextCol.value = Math.min(slashTextCol.value, SLASH_TEXT_GROUPS[slashTextRow.value].length - 1);
         return;
       }
+      // 字体行：↑/↓ 网格内上下移动（色板 6 列两行、字号 5 列两行），边界换区/回菜单导航
+      if (item?.id === 'fontColor') {
+        const down = e.key === 'ArrowDown';
+        if (slashFontRow.value === 0) {
+          // 色板区（12 格，6 列两行）：↓ 上行→下行，下行→字号区；↑ 下行→上行，上行→菜单上一项
+          const idx = slashFontColorIndex.value;
+          if (down) {
+            if (idx < 6) slashFontColorIndex.value = idx + 6;
+            else {
+              slashFontRow.value = 1;
+              slashFontSizeIndex.value = Math.min(idx - 6, 4);
+            }
+          } else if (idx >= 6) {
+            slashFontColorIndex.value = idx - 6;
+          } else {
+            slashIndex.value = (slashIndex.value - 1 + items.length) % items.length;
+          }
+        } else {
+          // 字号区（10 格，5 列两行）：↑ 下行→上行，上行→色板下行；↓ 上行→下行，下行→RGB 输入框
+          const idx = slashFontSizeIndex.value;
+          if (down) {
+            if (idx < 5) slashFontSizeIndex.value = idx + 5;
+            else slashFontRow.value = 2;
+          } else if (idx >= 5) {
+            slashFontSizeIndex.value = idx - 5;
+          } else {
+            slashFontRow.value = 0;
+            slashFontColorIndex.value = 6 + Math.min(idx, 5);
+          }
+        }
+        return;
+      }
       if (items.length) {
         // 循环导航（到底/到顶回绕），滚动跟随由菜单面板负责
         slashIndex.value =
@@ -1808,12 +2010,17 @@ function onEditableKeydown(e) {
           (slashCalloutType.value + step + CALLOUT_TYPES.length) % CALLOUT_TYPES.length;
         return;
       }
-      // 字体颜色行：←/→ 循环切换色板（Enter 应用当前颜色）
+      // 字体行：←/→ 在当前区内循环（色板区 12 格 / 字号区 10 格；RGB 输入框聚焦时按键在框内）
       if (item?.id === 'fontColor') {
         e.preventDefault();
         const step = e.key === 'ArrowRight' ? 1 : -1;
-        slashFontColorIndex.value =
-          (slashFontColorIndex.value + step + FONT_COLORS.length) % FONT_COLORS.length;
+        if (slashFontRow.value === 1) {
+          slashFontSizeIndex.value =
+            (slashFontSizeIndex.value + step + FONT_SIZES.length) % FONT_SIZES.length;
+        } else if (slashFontRow.value === 0) {
+          slashFontColorIndex.value =
+            (slashFontColorIndex.value + step + FONT_COLORS.length) % FONT_COLORS.length;
+        }
         return;
       }
     }
@@ -2300,6 +2507,25 @@ function scrollToBlock(id) {
   }, 1200);
 }
 
+// 标题位置缓存（块树发布后重建）：滚动高亮大纲时零 DOM 查询
+let headingPositions = [];
+watch(
+  renderedBlocks,
+  async () => {
+    await nextTick();
+    const root = scrollRoot.value;
+    if (!root) {
+      headingPositions = [];
+      return;
+    }
+    headingPositions = blocks.value
+      .filter((b) => b.type === 'heading')
+      .map((b) => ({ id: b.id, top: root.querySelector(`[data-block-id="${b.id}"]`)?.offsetTop ?? null }))
+      .filter((h) => h.top != null);
+  },
+  { flush: 'post' },
+);
+
 // 滚动时同步当前标题（取滚动位置上方最近的标题块），供大纲高亮；滚动即关闭右键菜单
 let scrollTicking = false;
 function onEditorScroll(e) {
@@ -2308,14 +2534,10 @@ function onEditorScroll(e) {
   scrollTicking = true;
   requestAnimationFrame(() => {
     scrollTicking = false;
-    const root = e.target;
-    const top = root.scrollTop + 8;
+    const top = e.target.scrollTop + 8;
     let current = null;
-    for (const b of blocks.value) {
-      if (b.type !== 'heading') continue;
-      const el = root.querySelector(`[data-block-id="${b.id}"]`);
-      if (!el) continue;
-      if (el.offsetTop <= top) current = b.id;
+    for (const h of headingPositions) {
+      if (h.top <= top) current = h.id;
       else break;
     }
     if (current !== activeHeadingId.value) {
@@ -2525,7 +2747,9 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         :table-cols="slashTableCols"
         :table-field="slashTableField"
         :callout-type="slashCalloutType"
+        :font-row="slashFontRow"
         :font-color-index="slashFontColorIndex"
+        :font-size-index="slashFontSizeIndex"
         :rgb-error="rgbError"
         :left="langOpen ? langPos.left : slashPos.left"
         :top="langOpen ? langPos.top : slashPos.top"
@@ -2534,10 +2758,11 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         @text-cell="(c) => ((slashTextRow = c.row), (slashTextCol = c.col))"
         @table-field="(f) => (slashTableField = f)"
         @callout-type="(i) => (slashCalloutType = i)"
-        @font-color-index="(i) => (slashFontColorIndex = i)"
+        @font-cell="(c) => ((slashFontRow = c.row), c.row === 1 ? (slashFontSizeIndex = c.col) : (slashFontColorIndex = c.col))"
         @rgb-apply="(text) => applyRgbInput(text)"
         @rgb-focus="onRgbFocus"
         @rgb-cancel="onRgbCancel"
+        @rgb-nav="(d) => onRgbNav(d)"
       />
     </div>
   </Teleport>

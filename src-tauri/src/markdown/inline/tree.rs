@@ -366,7 +366,7 @@ impl InlineRenderCache {
                 spans.push(InlineSpan {
                     range: fragment_start..fragment_start + fragment_len,
                     style: fragment.style,
-                    html_style: fragment.html_style,
+                    html_style: fragment.html_style.clone(),
                     link: fragment.link.as_ref().map(InlineLink::hit),
                     footnote: fragment
                         .footnote
@@ -424,7 +424,7 @@ impl InlineRenderCache {
         self.spans
             .iter()
             .find(|span| span.range.start <= offset && offset < span.range.end)
-            .and_then(|span| span.html_style)
+            .and_then(|span| span.html_style.clone())
     }
 
     #[allow(dead_code)]
@@ -807,10 +807,10 @@ fn serialize_fragment_run_markdown_with_offset_map(
                     &mut output,
                     &mut markdown_to_visible,
                     visible_cursor,
-                    "</span>",
+                    "</font>",
                 );
             }
-            if let Some(style) = fragment.html_style {
+            if let Some(style) = fragment.html_style.clone() {
                 if let Some(marker) = html_style_open_marker(style) {
                     push_markdown_marker(
                         &mut output,
@@ -820,7 +820,7 @@ fn serialize_fragment_run_markdown_with_offset_map(
                     );
                 }
             }
-            current_html_style = fragment.html_style;
+            current_html_style = fragment.html_style.clone();
         }
 
         let transition = stack_transition_string(&current_stack, next_stack);
@@ -865,7 +865,7 @@ fn serialize_fragment_run_markdown_with_offset_map(
             &mut output,
             &mut markdown_to_visible,
             visible_cursor,
-            "</span>",
+            "</font>",
         );
     }
 
@@ -901,10 +901,27 @@ fn identity_text_with_offset_map(text: &str) -> InlineMarkdownOffsetMap {
     }
 }
 
+// 行内 HTML 样式序列化为 <font> 标签（保持用户源码中的 font 形态，不改为 span）：
+// 文字颜色 → color 属性（不透明用 hex），背景色/字号 → style 属性
 fn html_style_open_marker(style: HtmlInlineStyle) -> Option<String> {
-    style
-        .to_css()
-        .map(|css| format!("<span style=\"{}\">", escape_html_attr(&css)))
+    if style.is_empty() {
+        return None;
+    }
+    let mut attrs = Vec::new();
+    if let Some(color) = style.color {
+        attrs.push(format!("color=\"{}\"", escape_html_attr(&color.to_font_attr())));
+    }
+    let mut css = Vec::new();
+    if let Some(background) = style.background_color {
+        css.push(format!("background-color: {}", background.to_css()));
+    }
+    if let Some(font_size) = style.font_size {
+        css.push(format!("font-size: {}", font_size.to_css()));
+    }
+    if !css.is_empty() {
+        attrs.push(format!("style=\"{};\"", escape_html_attr(&css.join("; "))));
+    }
+    Some(format!("<font {}>", attrs.join(" ")))
 }
 
 fn escape_html_attr(value: &str) -> String {
@@ -943,7 +960,7 @@ impl InlineTextTree {
                     left.push(InlineFragment {
                         text: fragment.text[..split_offset].to_string(),
                         style: fragment.style,
-                        html_style: fragment.html_style,
+                        html_style: fragment.html_style.clone(),
                         link: fragment.link.clone(),
                         footnote: fragment.footnote.clone(),
                         math: None,
@@ -953,7 +970,7 @@ impl InlineTextTree {
                     right.push(InlineFragment {
                         text: fragment.text[split_offset..].to_string(),
                         style: fragment.style,
-                        html_style: fragment.html_style,
+                        html_style: fragment.html_style.clone(),
                         link: fragment.link.clone(),
                         footnote: fragment.footnote.clone(),
                         math: None,
@@ -1002,7 +1019,7 @@ impl InlineTextTree {
             if fragment_start < clamped && clamped < fragment_end {
                 return InlineInsertionAttributes {
                     style: fragment.style,
-                    html_style: fragment.html_style,
+                    html_style: fragment.html_style.clone(),
                     link: fragment.link.clone(),
                     footnote: fragment.footnote.clone(),
                     math: None,
@@ -1018,7 +1035,7 @@ impl InlineTextTree {
                 } else {
                     InlineInsertionAttributes {
                         style: fragment.style,
-                        html_style: fragment.html_style,
+                        html_style: fragment.html_style.clone(),
                         link: fragment.link.clone(),
                         footnote: fragment.footnote.clone(),
                         math: None,
@@ -1032,7 +1049,7 @@ impl InlineTextTree {
                 } else {
                     InlineInsertionAttributes {
                         style: fragment.style,
-                        html_style: fragment.html_style,
+                        html_style: fragment.html_style.clone(),
                         link: fragment.link.clone(),
                         footnote: fragment.footnote.clone(),
                         math: None,
@@ -1460,7 +1477,7 @@ impl NormalizeBuilder {
         if extra_style.has_script() {
             style.script = extra_style.script;
         }
-        let html_style = merge_html_styles(html_style, token.html_style);
+        let html_style = merge_html_styles(html_style, token.html_style.clone());
 
         // 先推进偏移表与长度，再决定合并或新建——避免合并路径上每字符一次 String 分配
         let start = self.normalized_len;
@@ -1536,7 +1553,7 @@ fn flatten_tokens(fragments: &[InlineFragment]) -> Vec<CharToken> {
             tokens.push(CharToken {
                 ch,
                 style: fragment.style,
-                html_style: fragment.html_style,
+                html_style: fragment.html_style.clone(),
                 source_range: visible_offset..visible_offset + len,
             });
             visible_offset += len;
@@ -1600,7 +1617,7 @@ fn parse_until(
 
         if !inside_code {
             if let Some(next_index) =
-                parse_inline_math(tokens, index, extra_style, extra_html_style, builder)
+                parse_inline_math(tokens, index, extra_style, extra_html_style.clone(), builder)
             {
                 index = next_index;
                 continue;
@@ -1613,7 +1630,7 @@ fn parse_until(
                 let escaped_start = index + 1;
                 let escaped_end = escaped_start + escaped_len;
                 for token in &tokens[escaped_start..escaped_end] {
-                    builder.emit_token(token, extra_style, extra_html_style);
+                    builder.emit_token(token, extra_style, extra_html_style.clone());
                 }
                 index = escaped_end;
                 continue;
@@ -1624,7 +1641,7 @@ fn parse_until(
         if !inside_code {
             if tokens[index].ch == '[' {
                 if let Some(next_index) =
-                    parse_footnote_reference(tokens, index, extra_style, extra_html_style, builder)
+                    parse_footnote_reference(tokens, index, extra_style, extra_html_style.clone(), builder)
                 {
                     index = next_index;
                     continue;
@@ -1635,7 +1652,7 @@ fn parse_until(
                 tokens,
                 index,
                 extra_style,
-                extra_html_style,
+                extra_html_style.clone(),
                 builder,
                 reference_definitions,
             ) {
@@ -1648,7 +1665,7 @@ fn parse_until(
                     tokens,
                     index,
                     extra_style,
-                    extra_html_style,
+                    extra_html_style.clone(),
                     builder,
                     reference_definitions,
                 ) {
@@ -1662,7 +1679,7 @@ fn parse_until(
                     tokens,
                     index,
                     extra_style,
-                    extra_html_style,
+                    extra_html_style.clone(),
                     builder,
                     reference_definitions,
                 ) {
@@ -1683,7 +1700,7 @@ fn parse_until(
                         inner_start,
                         Some(delimiter),
                         extra_style.apply(delimiter),
-                        extra_html_style,
+                        extra_html_style.clone(),
                         builder,
                         is_code_delim,
                         reference_definitions,
@@ -1699,7 +1716,7 @@ fn parse_until(
                     // -> `*` + italic `bold`), which is committed on every
                     // keystroke and loses the intended bold.
                     for token in &tokens[index..index + delimiter.token_len()] {
-                        builder.emit_token(token, extra_style, extra_html_style);
+                        builder.emit_token(token, extra_style, extra_html_style.clone());
                     }
                     index += delimiter.token_len();
                     continue;
@@ -1707,7 +1724,7 @@ fn parse_until(
             }
         }
 
-        builder.emit_token(&tokens[index], extra_style, extra_html_style);
+        builder.emit_token(&tokens[index], extra_style, extra_html_style.clone());
         index += 1;
     }
 
@@ -2183,7 +2200,7 @@ fn parse_inline_html_container(
     }
 
     let tag_style = inline_html_semantic_style(&tag.name, extra_style);
-    let html_style = merge_html_styles(extra_html_style, inline_html_style(&tag));
+    let html_style = merge_html_styles(extra_html_style.clone(), inline_html_style(&tag));
     if tag_style == extra_style && html_style == extra_html_style {
         return None;
     }
@@ -2614,7 +2631,7 @@ fn apply_extra_style_to_fragments(
         if extra_style.has_script() {
             fragment.style.script = extra_style.script;
         }
-        fragment.html_style = merge_html_styles(extra_html_style, fragment.html_style);
+        fragment.html_style = merge_html_styles(extra_html_style.clone(), fragment.html_style.clone());
     }
 }
 

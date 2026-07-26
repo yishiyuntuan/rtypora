@@ -473,10 +473,10 @@
   background: var(--t-table-border);
 }
 
-/* 字体颜色面板：常见色板 + RGB 输入 */
+/* 字体颜色面板：常见色板（6 列色轮）+ RGB 输入 */
 .md-color-swatches {
   display: grid;
-  grid-template-columns: repeat(5, 22px);
+  grid-template-columns: repeat(6, 22px);
   gap: 6px;
 }
 .md-color-swatch {
@@ -510,9 +510,27 @@
   color: inherit;
   font-size: 12px;
   outline: none;
+  /* 菜单容器为 user-select:none，输入框需恢复可选中/可聚焦 */
+  user-select: text;
+  -webkit-user-select: text;
 }
 .md-color-input:focus {
   border-color: var(--t-tab-indicator);
+}
+/* 字号区：5 列两行网格（↑/↓ 网格内移动；须压过 .md-slash-levels 的 flex 布局） */
+.md-slash-levels.md-slash-sizes {
+  display: grid;
+  /* 固定列宽左对齐（不拉伸占满），与色板左缘对齐；整体再左移一点 */
+  grid-template-columns: repeat(5, 34px);
+  justify-content: start;
+  gap: 3px;
+  margin-left: -8px;
+}
+
+/* 行导航停驻 RGB 输入框（↑/↓ 进入） */
+.md-color-input-active {
+  border-color: var(--t-tab-indicator);
+  box-shadow: 0 0 0 1px var(--t-tab-indicator);
 }
 .md-color-input.error {
   border-color: #e02424;

@@ -228,12 +228,38 @@ pub fn text_stats(markdown: &str) -> TextStats {
     TextStats {
         words: count_words(markdown),
         chars: markdown.encode_utf16().count(),
-        lines: if markdown.is_empty() {
-            1
-        } else {
-            markdown.split('\n').count()
-        },
+        lines: count_visual_lines(markdown),
     }
+}
+
+/// 视觉行数统计：段落分隔空行不计（WYSIWYG 中段落间空行不占行），
+/// 代码块围栏内的空行照常计，文档结尾的空段落（Enter 新建的空块）计一行。
+/// 与编辑器中看到的内容行一致（一次回车 = +1 行）。
+fn count_visual_lines(markdown: &str) -> usize {
+    if markdown.is_empty() {
+        return 1;
+    }
+    let mut count = 0;
+    let mut in_fence = false;
+    for line in markdown.split('\n') {
+        let trimmed = line.trim_end();
+        // 围栏开闭行本身计一行（粗略判定，统计用途足够）
+        let t = trimmed.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+            count += 1;
+            continue;
+        }
+        if !trimmed.is_empty() || in_fence {
+            count += 1;
+        }
+    }
+    // 结尾的空段落（源码以空行结束，WYSIWYG 中光标所在的空块占一行）；
+    // 围栏内尾部的空行已在循环中计过，不重复加
+    if markdown.ends_with("\n\n") && !in_fence {
+        count += 1;
+    }
+    count
 }
 
 /// text_stats 的返回结构。

@@ -541,18 +541,18 @@ fn yaml_front_matter() {
 
 #[test]
 fn font标签行内解析() {
-    // <font color> 行内映射为 HtmlInlineStyle（与 span style 同一路径，
-    // 序列化统一为 <span style="color:…">）
+    // <font color> 行内映射为 HtmlInlineStyle；序列化保持 <font> 标签
+    //（color 属性用 hex，不改为 span）
     let blocks = parse("这是 <font color=\"red\">红色</font> 文字\n");
     assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
     assert_eq!(blocks[0].title.fragments[1].text, "红色");
     let md = markdown::serialize_markdown(blocks);
     assert!(
-        md.contains("<span style=\"color: rgba(255,0,0,1.000);\">红色</span>"),
-        "font color 应映射为行内样式: {md}"
+        md.contains("<font color=\"#ff0000\">红色</font>"),
+        "font color 应保持 font 标签: {md}"
     );
 
-    // <font size="5"> → 24px（HTML 档位映射）
+    // <font size="5"> → 24px（HTML 档位映射，序列化到 style 属性）
     let blocks = parse("<font size=\"5\">大字</font> 普通\n");
     assert!(
         matches!(blocks[0].kind, BlockKindDto::Paragraph),
@@ -560,11 +560,34 @@ fn font标签行内解析() {
         blocks[0].kind
     );
     let md = markdown::serialize_markdown(blocks);
-    assert!(md.contains("font-size: 24px"), "font size 应映射为字号: {md}");
+    assert!(
+        md.contains("<font style=\"font-size: 24px;\">大字</font>"),
+        "font size 应保持 font 标签: {md}"
+    );
 
     // font 独占一行也不再误判为 HTML 块
     let blocks = parse("<font color=\"red\">红色</font>\n");
     assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
+}
+
+#[test]
+fn span的background与var颜色() {
+    // background 简写（非 background-color）与 var(--x) 主题变量引用
+    let blocks = parse("<span style=\"background:var(--color-2-0-c)\">文字</span>\n");
+    assert!(matches!(blocks[0].kind, BlockKindDto::Paragraph));
+    let md = markdown::serialize_markdown(blocks);
+    assert!(
+        md.contains("background-color: var(--color-2-0-c);"),
+        "background 简写 + var() 应保留: {md}"
+    );
+    // 普通 background 颜色值（background 简写）
+    let blocks = parse("<span style=\"background:#ffee00\">高亮</span>\n");
+    let md = markdown::serialize_markdown(blocks);
+    assert!(md.contains("background-color:"), "background 简写应映射背景色: {md}");
+    // background: url(...) 复合值不映射（span 按原文保留）
+    let blocks = parse("<span style=\"background:url(x.png)\">文字</span>\n");
+    let md = markdown::serialize_markdown(blocks);
+    assert_eq!(md, "<span style=\"background:url(x.png)\">文字</span>");
 }
 
 #[test]
@@ -864,6 +887,19 @@ fn 文本统计cjk词数() {
     assert_eq!(stats.words, 2 + 2 + 3, "2 个拉丁词 + 2 个 CJK 字 + 3 个 CJK 字");
     assert_eq!(stats.lines, 2);
     assert_eq!(stats.chars, "hello world 你好\n第二行".encode_utf16().count());
+}
+
+#[test]
+fn 文本统计视觉行数() {
+    // 段落分隔空行不计：一次回车（新段落）只 +1 行
+    assert_eq!(markdown::text_stats("aaa").lines, 1);
+    assert_eq!(markdown::text_stats("aaa\n\n").lines, 2, "回车后的空段落占一行");
+    assert_eq!(markdown::text_stats("aaa\n\nbbb").lines, 2, "段落间空行不计");
+    assert_eq!(markdown::text_stats("aaa\n\nbbb\n\n").lines, 3);
+    assert_eq!(markdown::text_stats("").lines, 1);
+    // 代码块围栏内的空行照常计
+    assert_eq!(markdown::text_stats("```\na\n\nb\n```").lines, 5);
+    assert_eq!(markdown::text_stats("```\na\n\n").lines, 4, "未闭合围栏内空行各计一次、结尾不重复加");
 }
 
 #[test]
