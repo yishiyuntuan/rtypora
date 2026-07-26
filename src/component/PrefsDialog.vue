@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { reactive, ref, watch } from 'vue';
 import { getPrefs, setPref } from '../utils/prefs.js';
 

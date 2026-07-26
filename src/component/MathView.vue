@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { themeVersion } from '../themes/index.js';

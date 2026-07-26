@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 // 未保存更改确认框：保存 / 不保存 / 取消
 defineProps({
   visible: { type: Boolean, default: false },

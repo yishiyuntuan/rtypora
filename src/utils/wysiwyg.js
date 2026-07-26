@@ -187,8 +187,9 @@ export function blockToHtml(block, rawSource, depth = 0) {
       return `<table class="blk-table">${thead}${tbody}</table>`;
     }
     case 'codeBlock':
-      // 编辑态不内嵌高亮（避免 contenteditable 拆分 span），渲染态经 Rust tree-sitter 高亮
-      return `<pre class="${PRE_CLASS} blk-code-block" data-language="${escapeHtml(block.language || '')}"><code>${escapeHtml(plainText(block.title))}</code></pre>`;
+      // 编辑态不内嵌高亮（避免 contenteditable 拆分 span），渲染态经 Rust tree-sitter 高亮；
+      // 右上角语言输入框（输入同步到 data-language，提交时随块序列化）
+      return `<pre class="${PRE_CLASS} blk-code-block relative" data-language="${escapeHtml(block.language || '')}"><input class="md-code-lang-input" data-lang-input value="${escapeHtml(block.language || '')}" placeholder="text" spellcheck="false" /><code>${escapeHtml(plainText(block.title))}</code></pre>`;
     // 原子/保留类块：编辑原始 Markdown 切片，保证不丢内容
     case 'separator':
     case 'callout':
@@ -1011,12 +1012,12 @@ export async function applySlashCommand(el, id, opts) {
       return true;
     }
     case 'codeBlock': {
-      const pre = document.createElement('pre');
-      pre.className = PRE_CLASS;
-      pre.setAttribute('data-language', '');
-      pre.append(styled('code', ''));
-      el.append(pre);
-      placeCursorAtEnd(pre);
+      // 插入围栏起始行，光标在 ``` 之后：先编辑语言（语言补全菜单立即弹出，
+      // 选定后 Enter 经 convertFenceToCodeBlock 转为代码块，与手动输入同一流程）
+      const p = styled('p', '', P_CLASS);
+      p.textContent = '```';
+      el.append(p);
+      placeCaretAtTextOffset(p, 3);
       return true;
     }
     case 'separator': {

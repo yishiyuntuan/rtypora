@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { ref, watch } from 'vue';
 import { listThemes, currentThemeId, applyTheme, importThemeJson } from '../themes/index.js';
 

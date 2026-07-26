@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { Window } from '@tauri-apps/api/window';
 
 // 自定义标题栏：拖拽区、菜单按钮（打开滑出式菜单）、文件名显示、窗口控制按钮

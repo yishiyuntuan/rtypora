@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { computed, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { plainText } from '../utils/wysiwyg.js';

@@ -573,6 +573,83 @@
   text-decoration: underline;
 }
 
+/* 代码块右上角角标区：语言徽章 + 复制按钮。
+   默认隐藏，悬停代码块/聚焦时浮现；徽章与输入框均无边框，与代码底色融合 */
+.md-code-corner {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.group:hover .md-code-corner,
+.md-code-corner:focus-within {
+  opacity: 1;
+}
+.md-code-lang-badge {
+  padding: 1px 4px;
+  color: var(--t-text-placeholder);
+  font-family: var(--t-code-font-family);
+  font-size: 12px;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  user-select: none;
+}
+.md-code-copy {
+  display: inline-flex;
+  padding: 2px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--t-text-placeholder);
+  cursor: pointer;
+}
+.md-code-copy:hover {
+  background: color-mix(in srgb, var(--t-text-default) 10%, transparent);
+  color: var(--t-text-default);
+}
+.md-code-copy svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+}
+/* 编辑态语言输入框：无边框透明底，悬停代码块或聚焦时浮现 */
+.md-code-lang-input {
+  position: absolute;
+  top: 5px;
+  right: 8px;
+  width: 78px;
+  padding: 1px 8px;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--t-text-placeholder);
+  font-family: var(--t-code-font-family);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+  outline: none;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.1s, color 0.1s;
+}
+pre:hover .md-code-lang-input,
+.md-code-lang-input:focus {
+  opacity: 1;
+}
+.md-code-lang-input:hover,
+.md-code-lang-input:focus {
+  color: var(--t-text-default);
+  background: color-mix(in srgb, var(--t-text-default) 8%, transparent);
+}
+.md-code-lang-input::placeholder {
+  color: var(--t-text-placeholder);
+  opacity: 0.6;
+}
+
 /* 右键菜单（Typora 式：图标行 + 文本项 + hover 子菜单；主题变量，blocks 可定制） */
 .md-ctx-menu {
   position: fixed;

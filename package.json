@@ -15,7 +15,7 @@
     "@tauri-apps/plugin-autostart": "~2.5.1",
     "@tauri-apps/plugin-opener": "^2",
     "tailwindcss": "^4.3.3",
-    "vue": "^3.5.13"
+    "vue": "3.6.0-rc.2"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { ref, computed, watch, nextTick, inject, provide, onMounted, onBeforeUnmount } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import BlockView from './BlockView.vue';
@@ -55,14 +55,24 @@ const content = ref('');
 const savedContent = ref('');
 const isDirty = computed(() => content.value !== savedContent.value);
 const blocks = ref([]);
-// 根块的有序列表序号表（id -> 1 基序号）
-const renderedBlocks = computed(() => blocks.value.filter((b) => b.type !== 'footnoteDefinition'));
+// 全部正文块（不含脚注定义；脚注集中渲染在文末）
+const allBlocks = computed(() => blocks.value.filter((b) => b.type !== 'footnoteDefinition'));
+// 渐进挂载的可见上限（Infinity = 全部；长文档先挂前 RENDER_CHUNK 块，空闲逐批补齐）
+const renderCount = ref(Infinity);
+const renderedBlocks = computed(() => allBlocks.value.slice(0, renderCount.value));
 const footnotes = computed(() => blocks.value.filter((b) => b.type === 'footnoteDefinition'));
 // 根块的有序列表序号表（id -> 1 基序号；footnoteDefinition 已过滤到末尾，不中断正文列表编号）
-const rootOrdinals = computed(() => numberedOrdinals(renderedBlocks.value));
+// 无有序列表时跳过序号构建（长文档性能守卫）
+const rootOrdinals = computed(() =>
+  allBlocks.value.some((b) => b.type === 'numberedListItem')
+    ? numberedOrdinals(allBlocks.value)
+    : new Map(),
+);
 // 脚注引用全局序号表：按文档顺序（块顺序 + 递归子块）为每个 [^id] 分配 1 基 refIndex，
 // 用于定义区返回链接与引用区锚点一一对应。项中保留 blockId 与 occurrenceIndex 以精确匹配。
+// 无 [^ 的文档直接跳过整树扫描（长文档性能守卫）
 const footnoteRefList = computed(() => {
+  if (!content.value.includes('[^')) return [];
   const list = [];
   function scanTree(tree, blockId) {
     for (const f of tree?.fragments || []) {
@@ -80,7 +90,7 @@ const footnoteRefList = computed(() => {
     scanTree(block.title, block.id);
     for (const child of block.children || []) scanBlock(child);
   }
-  for (const b of renderedBlocks.value) scanBlock(b);
+  for (const b of allBlocks.value) scanBlock(b);
   return list;
 });
 provide('footnoteRefList', footnoteRefList);
@@ -913,6 +923,8 @@ async function insertBlockFromMenu(id) {
     suppressBlurCommit = false;
   }
   if (document.activeElement !== el) el.focus({ preventScroll: true });
+  // 代码块：围栏已插入（```），立即弹出语言补全，先编辑语言
+  if (id === 'codeBlock') updateLangMenu();
 }
 
 // 插入脚注：光标处插入 [^n] 引用（编号 = 现有最大编号 +1），提交后在文末追加定义块并进入编辑
@@ -1064,6 +1076,8 @@ async function applySlashItem(item, option) {
   }
   // 替换导致失焦时恢复焦点（光标已由构建函数放置）
   if (document.activeElement !== el) el.focus({ preventScroll: true });
+  // 代码块：围栏已插入（```），立即弹出语言补全，先编辑语言
+  if (id === 'codeBlock') updateLangMenu();
 }
 
 // 斜杠表格：取 Rust block_template 模板后立即提交渲染为表格块，并进入首个数据单元格编辑
@@ -1869,6 +1883,8 @@ function onEditableBlur(e) {
     blurCommitTimer = null;
     if (suppressBlurCommit) return;
     if (document.activeElement?.closest?.('.md-slash-menu')) return;
+    // 焦点在编辑容器内部（如代码块语言输入框）：不视为失焦
+    if (document.activeElement && el.contains(document.activeElement)) return;
     // 期间已程序性换块（容器已换）：不提交旧容器
     if (editableEl !== el) return;
     commitEdit();
@@ -1882,6 +1898,12 @@ let suppressBlurCommit = false;
 // 输入时应用 Markdown 快捷转换与 HTML 标签自动闭合（输入法组合期间跳过）
 function onEditableInput(e) {
   if (e.isComposing || e.inputType === 'insertCompositionText') return;
+  // 代码块语言输入框：同步到 pre 的 data-language（提交随块序列化；不触发快捷转换/菜单）
+  const langInput = e.target?.closest?.('[data-lang-input]');
+  if (langInput) {
+    langInput.closest('pre')?.setAttribute('data-language', langInput.value.trim());
+    return;
+  }
   applyMarkdownShortcuts();
   applyHtmlAutoclose();
   updateSlashMenu();
@@ -1909,6 +1931,17 @@ async function onEditablePaste(e) {
 
 function onEditableKeydown(e) {
   if (e.isComposing) return;
+  // 代码块语言输入框：Enter/Tab/Esc 回到代码区，其余按键原生（编辑语言）
+  if (e.target?.closest?.('[data-lang-input]')) {
+    if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape') {
+      e.preventDefault();
+      const pre = e.target.closest('pre');
+      const code = pre?.querySelector('code');
+      if (code) placeCursorAtStart(code);
+      pre?.closest('[contenteditable]')?.focus({ preventScroll: true });
+    }
+    return;
+  }
   // 斜杠菜单打开时优先路由：上下选择、Enter 应用、Esc 关闭
   if (slashOpen.value) {
     const items = slashItems.value;

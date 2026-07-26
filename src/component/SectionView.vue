@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { ref, watch, inject } from 'vue';
 import { resolveImageSrc } from '../utils/image.js';
 import { getPref, renderVersion } from '../utils/prefs.js';

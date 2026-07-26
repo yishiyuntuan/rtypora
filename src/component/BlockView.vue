@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { computed, inject, provide, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import InlineView from './InlineView.vue';
@@ -139,6 +139,18 @@ watch(
   },
   { immediate: true },
 );
+
+// 复制代码块内容（复制成功短暂切换为对勾图标）
+const codeCopied = ref(false);
+let codeCopiedTimer = null;
+async function copyCodeText() {
+  await navigator.clipboard.writeText(plainText(props.block.title)).catch(() => {});
+  codeCopied.value = true;
+  clearTimeout(codeCopiedTimer);
+  codeCopiedTimer = setTimeout(() => {
+    codeCopied.value = false;
+  }, 1200);
+}
 
 // 子块的有序序号表（quote/callout/footnote/列表项嵌套共用）
 const childOrdinals = computed(() => numberedOrdinals(props.block.children));
@@ -344,18 +356,34 @@ function alignStyle(alignments, index) {
   </div>
 
   <div v-else-if="block.type === 'codeBlock'" class="my-2">
-    <div
-      v-if="block.language"
-      class="md-code rounded-t px-3 py-1 font-mono text-[11px]"
-    >{{ block.language }}</div>
-    <pre
-      class="md-pre blk-code-block overflow-x-auto p-3 font-mono text-[13px]"
-      :class="[block.language ? 'rounded-b' : 'rounded', showLineNumbers ? 'flex' : '']"
-    ><code
-        v-if="showLineNumbers"
-        class="md-code-gutter mr-3 shrink-0 select-none border-r pr-2 text-right"
-        aria-hidden="true"
-      >{{ lineNumbersText }}</code><code class="min-w-0 flex-1" v-html="highlightedCode || escapedCode"></code></pre>
+    <div class="group relative">
+      <!-- 右上角角标区：悬停/聚焦时浮现（语言徽章 + 复制按钮），平时隐藏 -->
+      <div class="md-code-corner">
+        <span v-if="block.language" class="md-code-lang-badge">{{ block.language }}</span>
+        <button
+          type="button"
+          class="md-code-copy"
+          :title="codeCopied ? '已复制' : '复制代码'"
+          @click.stop="copyCodeText"
+        >
+          <svg v-if="!codeCopied" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="5" y="5" width="8.5" height="9" rx="1.2" />
+            <path d="M10.5 5V3.5A1.5 1.5 0 009 2H4.5A1.5 1.5 0 003 3.5V11a1.5 1.5 0 001.5 1.5H5" />
+          </svg>
+          <svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 8.5l3.5 3.5L13 4.5" />
+          </svg>
+        </button>
+      </div>
+      <pre
+        class="md-pre blk-code-block overflow-x-auto rounded p-3 font-mono text-[13px]"
+        :class="[showLineNumbers ? 'flex' : '']"
+      ><code
+          v-if="showLineNumbers"
+          class="md-code-gutter mr-3 shrink-0 select-none border-r pr-2 text-right"
+          aria-hidden="true"
+        >{{ lineNumbersText }}</code><code class="min-w-0 flex-1" v-html="highlightedCode || escapedCode"></code></pre>
+    </div>
   </div>
 
   <table v-else-if="block.type === 'table' && block.table" class="blk-table my-2 border-collapse text-[13px]">

@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 // 关于对话框
 defineProps({
   visible: { type: Boolean, default: false },

@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";

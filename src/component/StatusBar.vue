@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { computed, ref } from 'vue';
 import { listThemes, currentThemeId, applyTheme, importThemeJson } from '../themes/index.js';
 import { getPref, setPref, prefsVersion } from '../utils/prefs.js';

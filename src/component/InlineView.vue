@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { computed, inject } from 'vue';
 import MathView from './MathView.vue';
 import { htmlStyleCss } from '../utils/wysiwyg.js';

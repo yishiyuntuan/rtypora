@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { ref } from 'vue';
 import { SLASH_ICON, FONT_COLORS, FONT_SIZES } from '../utils/wysiwyg.js';
 

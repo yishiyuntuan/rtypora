@@ -1,4 +1,4 @@
-<script setup>
+<script setup vapor>
 import { ref, watch, nextTick } from 'vue';
 import { SLASH_TEXT_GROUPS, CALLOUT_TYPES, FONT_COLORS, FONT_SIZES } from '../utils/wysiwyg.js';
 
