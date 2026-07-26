@@ -1,5 +1,5 @@
 <script setup vapor>
-import { computed, inject, provide, ref, watch } from 'vue';
+import { computed, inject, provide, ref, watch, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import InlineView from './InlineView.vue';
 import MathView from './MathView.vue';
@@ -102,13 +102,23 @@ const highlightedCode = ref('');
 function escapeHtml(text) {
   return String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 }
+// 重活懒执行：高亮/Mermaid/公式经 Editor 提供的可见性回调延后到块进入视口
+//（mounted 前跳过，挂载后 watcher 因 mounted 变化重触发并注册观察）
+const rootEl = ref(null);
+const mounted = ref(false);
+const onBlockVisible = inject('onBlockVisible', (el, cb) => cb());
+onMounted(() => {
+  mounted.value = true;
+});
 watch(
-  () => [props.block.id, props.block.language, props.block.title, renderVersion.value],
+  () => [props.block.id, props.block.language, props.block.title, renderVersion.value, mounted.value],
   async () => {
     // 偏好设置可关闭语法高亮（回退纯文本）
     highlightedCode.value = '';
-    if (props.block.type !== 'codeBlock' || !getPref('render_code_highlight')) return;
-    highlightedCode.value = await highlightCodeHtml(plainText(props.block.title), props.block.language);
+    if (props.block.type !== 'codeBlock' || !getPref('render_code_highlight') || !mounted.value) return;
+    onBlockVisible(rootEl.value, async () => {
+      highlightedCode.value = await highlightCodeHtml(plainText(props.block.title), props.block.language);
+    });
   },
   { immediate: true },
 );
@@ -116,13 +126,15 @@ watch(
 // Mermaid 图：Rust render_mermaid 渲染 SVG（围栏剥离在 Rust 端完成；失败返回源码占位）
 const mermaidSvg = ref('');
 watch(
-  () => [props.block.id, rawText.value, renderVersion.value],
+  () => [props.block.id, rawText.value, renderVersion.value, mounted.value],
   async () => {
     mermaidSvg.value = '';
     // 偏好设置可关闭 Mermaid 渲染（回退源码占位）
-    if (props.block.type !== 'mermaidBlock' || !getPref('render_mermaid')) return;
-    const svg = await invoke('render_mermaid', { source: rawText.value }).catch(() => null);
-    if (svg) mermaidSvg.value = svg;
+    if (props.block.type !== 'mermaidBlock' || !getPref('render_mermaid') || !mounted.value) return;
+    onBlockVisible(rootEl.value, async () => {
+      const svg = await invoke('render_mermaid', { source: rawText.value }).catch(() => null);
+      if (svg) mermaidSvg.value = svg;
+    });
   },
   { immediate: true },
 );
@@ -355,7 +367,7 @@ function alignStyle(alignments, index) {
     </div>
   </div>
 
-  <div v-else-if="block.type === 'codeBlock'" class="my-2">
+  <div v-else-if="block.type === 'codeBlock'" ref="rootEl" class="my-2">
     <div class="group relative">
       <!-- 右上角角标区：悬停/聚焦时浮现（语言徽章 + 复制按钮），平时隐藏 -->
       <div class="md-code-corner">
@@ -417,7 +429,7 @@ function alignStyle(alignments, index) {
   </div>
 
   <!-- Mermaid 图：Rust 渲染 SVG（加载中/失败时回退源码占位） -->
-  <div v-else-if="block.type === 'mermaidBlock'" class="md-placeholder blk-mermaid-block my-2 rounded border p-3">
+  <div v-else-if="block.type === 'mermaidBlock'" ref="rootEl" class="md-placeholder blk-mermaid-block my-2 rounded border p-3">
     <div v-if="mermaidSvg" class="mermaid-diagram" v-html="mermaidSvg"></div>
     <template v-else>
       <div class="t-dim mb-1 text-[11px] font-medium">Mermaid 图表</div>

@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2f56c7"/>
+      <stop offset="0.55" stop-color="#3e69d7"/>
+      <stop offset="1" stop-color="#2f9dbb"/>
+    </linearGradient>
+    <linearGradient id="fg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3e69d7"/>
+      <stop offset="1" stop-color="#2f9dbb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="16" stdDeviation="24" flood-color="#0b1e4b" flood-opacity="0.28"/>
+    </filter>
+  </defs>
+  <!-- 圆角底板（蓝→青对角渐变） -->
+  <rect x="32" y="32" width="960" height="960" rx="220" fill="url(#bg)"/>
+  <!-- 顶部内高光 -->
+  <rect x="32" y="32" width="960" height="470" rx="220" fill="#ffffff" opacity="0.07"/>
+  <!-- 文档（带折角） -->
+  <g filter="url(#shadow)">
+    <path d="M312 232h300l160 160v400a40 40 0 0 1-40 40H312a40 40 0 0 1-40-40V272a40 40 0 0 1 40-40z" fill="#ffffff"/>
+    <path d="M612 232l160 160H652a40 40 0 0 1-40-40V232z" fill="#dbe4f5"/>
+  </g>
+  <!-- 正文行（淡蓝横线） -->
+  <rect x="336" y="462" width="272" height="32" rx="16" fill="#dbe4f5"/>
+  <rect x="336" y="530" width="352" height="32" rx="16" fill="#dbe4f5"/>
+  <!-- 大号 #（Markdown 符号，渐变描边） -->
+  <g stroke="url(#fg)" stroke-width="34" stroke-linecap="round">
+    <path d="M440 596 L402 758"/>
+    <path d="M542 596 L504 758"/>
+  </g>
+  <rect x="366" y="631" width="212" height="34" rx="17" fill="url(#fg)"/>
+  <rect x="346" y="693" width="212" height="34" rx="17" fill="url(#fg)"/>
+  <!-- 橙色光标（书写感点缀） -->
+  <rect x="610" y="632" width="26" height="116" rx="13" fill="#f59102"/>
+</svg>

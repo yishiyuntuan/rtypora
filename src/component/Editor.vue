@@ -2,6 +2,7 @@
 import { ref, computed, watch, nextTick, inject, provide, onMounted, onBeforeUnmount } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import BlockView from './BlockView.vue';
+import VRow from './VRow.vue';
 import SlashMenu from './SlashMenu.vue';
 import ContextMenu from './ContextMenu.vue';
 import {
@@ -38,6 +39,7 @@ import {
   plainText,
 } from '../utils/wysiwyg.js';
 import { getPref, prefsVersion, structureVersion } from '../utils/prefs.js';
+import { themeVersion } from '../themes/index.js';
 
 // 双模式编辑器：sourceMode 为 Markdown 原文编辑，否则为所见即所得（Typora 式就地编辑）。
 // 全文 Markdown 字符串是唯一数据源；块树由 Rust 命令 parse_markdown 解析得到。
@@ -57,9 +59,11 @@ const isDirty = computed(() => content.value !== savedContent.value);
 const blocks = ref([]);
 // 全部正文块（不含脚注定义；脚注集中渲染在文末）
 const allBlocks = computed(() => blocks.value.filter((b) => b.type !== 'footnoteDefinition'));
-// 渐进挂载的可见上限（Infinity = 全部；长文档先挂前 RENDER_CHUNK 块，空闲逐批补齐）
-const renderCount = ref(Infinity);
-const renderedBlocks = computed(() => allBlocks.value.slice(0, renderCount.value));
+// 虚拟滚动：全部行都渲染 VRow 占位（总高正确），内容按视口余量挂载（见 VRow.vue）；
+// 行高估计随块树一次性算好（避免父级重渲染时逐行重复切片统计）
+const renderedBlocks = computed(() =>
+  allBlocks.value.map((block) => ({ block, estimate: estimateBlockHeight(block) })),
+);
 const footnotes = computed(() => blocks.value.filter((b) => b.type === 'footnoteDefinition'));
 // 根块的有序列表序号表（id -> 1 基序号；footnoteDefinition 已过滤到末尾，不中断正文列表编号）
 // 无有序列表时跳过序号构建（长文档性能守卫）
@@ -99,6 +103,84 @@ provide('getFootnoteRefIndex', (id, occurrenceIndex, blockId) => {
     (r) => r.id === id && r.blockId === blockId && r.occurrenceIndex === occurrenceIndex,
   );
   return idx >= 0 ? idx + 1 : 0;
+});
+
+// ---------- 长文档优化：虚拟滚动 + 重活懒执行 ----------
+// 虚拟滚动行观察器：行进入视口余量时通知 VRow 挂载/卸载内容。
+// 余量按窗口高度的 150%（rootMargin 百分比随窗口缩放动态生效），
+// 加大提前量，避免滚动加载时内容闪烁
+const rowCallbacks = new WeakMap();
+let rowObserver = null;
+function getRowObserver() {
+  if (!rowObserver) {
+    rowObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          rowCallbacks.get(entry.target)?.(entry.isIntersecting);
+        }
+      },
+      { root: null, rootMargin: '450% 0px' },
+    );
+  }
+  return rowObserver;
+}
+provide('observeRow', (el, cb) => {
+  rowCallbacks.set(el, cb);
+  getRowObserver().observe(el);
+});
+provide('unobserveRow', (el) => {
+  rowCallbacks.delete(el);
+  rowObserver?.unobserve(el);
+});
+
+// 虚拟行高估计：按源码行数 × 主题实际行高（首次渲染后由实测高度取代）
+function estimateBlockHeight(block) {
+  if (block.start == null || block.end == null) return 40;
+  const lines = content.value.slice(block.start, block.end).split('\n').length;
+  return Math.max(1, lines) * lineHeightPx() + 16;
+}
+let cachedLineHeightPx = 0;
+function lineHeightPx() {
+  if (cachedLineHeightPx) return cachedLineHeightPx;
+  const style = getComputedStyle(document.documentElement);
+  const size = parseFloat(style.getPropertyValue('--t-text-size')) || 17;
+  const ratio = parseFloat(style.getPropertyValue('--t-text-line-height')) || 1.6;
+  cachedLineHeightPx = Math.round(size * ratio);
+  return cachedLineHeightPx;
+}
+// 主题/排版变化使缓存行高失效
+watch(themeVersion, () => {
+  cachedLineHeightPx = 0;
+});
+
+// 重活懒执行：共享 IntersectionObserver，块进入视口（含 60% 窗口高度余量）才回调
+//（语法高亮/公式/Mermaid 渲染经此延后，长文档挂载不再一次性打满 IPC；
+// 余量随窗口缩放动态生效）
+const visibilityCallbacks = new WeakMap();
+let blockObserver = null;
+function getBlockObserver() {
+  if (!blockObserver) {
+    blockObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (!entry.isIntersecting) continue;
+          const cb = visibilityCallbacks.get(entry.target);
+          if (cb) {
+            visibilityCallbacks.delete(entry.target);
+            blockObserver.unobserve(entry.target);
+            cb();
+          }
+        }
+      },
+      { root: null, rootMargin: '200% 0px' },
+    );
+  }
+  return blockObserver;
+}
+provide('onBlockVisible', (el, cb) => {
+  if (!el) return cb();
+  visibilityCallbacks.set(el, cb);
+  getBlockObserver().observe(el);
 });
 
 // 展示公式编号表（块 id -> 1 基序号）：AMS 编号环境判定在 Rust（mathNumbered 字段），
@@ -2540,29 +2622,25 @@ function scrollToBlock(id) {
   }, 1200);
 }
 
-// 标题位置缓存（块树发布后重建）：滚动高亮大纲时零 DOM 查询
+// 标题位置缓存（块树发布后重建，滚动停止后再校准；滚动判断零 DOM 查询）
 let headingPositions = [];
 watch(
   renderedBlocks,
   async () => {
     await nextTick();
-    const root = scrollRoot.value;
-    if (!root) {
-      headingPositions = [];
-      return;
-    }
-    headingPositions = blocks.value
-      .filter((b) => b.type === 'heading')
-      .map((b) => ({ id: b.id, top: root.querySelector(`[data-block-id="${b.id}"]`)?.offsetTop ?? null }))
-      .filter((h) => h.top != null);
+    rebuildHeadingPositions();
   },
   { flush: 'post' },
 );
 
-// 滚动时同步当前标题（取滚动位置上方最近的标题块），供大纲高亮；滚动即关闭右键菜单
+// 滚动时同步当前标题（取滚动位置上方最近的标题块），供大纲高亮；滚动即关闭右键菜单。
+// 虚拟滚动下占位行高度随内容挂载被修正，滚动停止后重建位置缓存保持高亮准确
 let scrollTicking = false;
+let headingRebuildTimer = null;
 function onEditorScroll(e) {
   closeCtxMenu();
+  clearTimeout(headingRebuildTimer);
+  headingRebuildTimer = setTimeout(rebuildHeadingPositions, 250);
   if (scrollTicking) return;
   scrollTicking = true;
   requestAnimationFrame(() => {
@@ -2578,6 +2656,18 @@ function onEditorScroll(e) {
       emit('update:active-heading', current);
     }
   });
+}
+
+function rebuildHeadingPositions() {
+  const root = scrollRoot.value;
+  if (!root) {
+    headingPositions = [];
+    return;
+  }
+  headingPositions = blocks.value
+    .filter((b) => b.type === 'heading')
+    .map((b) => ({ id: b.id, top: root.querySelector(`[data-block-id="${b.id}"]`)?.offsetTop ?? null }))
+    .filter((h) => h.top != null);
 }
 
 // 加载新文档（打开/新建文件）：替换全文并整树重解析，退出当前编辑态
@@ -2617,6 +2707,12 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('selectionchange', onDocumentSelectionChange);
   document.removeEventListener('mousedown', onDocumentMouseDown, true);
+  clearTimeout(headingRebuildTimer);
+  // 断开虚拟滚动与重活懒执行的观察器
+  rowObserver?.disconnect();
+  rowObserver = null;
+  blockObserver?.disconnect();
+  blockObserver = null;
 });
 
 defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () => isDirty.value, captureScrollPosition, restoreScrollPosition });
@@ -2637,7 +2733,15 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
 
     <div v-else ref="scrollRoot" class="t-root flex-1 overflow-y-auto" :class="{ 'md-first-indent': firstLineIndent }" @scroll.passive="onEditorScroll" @contextmenu="onContextMenu">
       <div class="t-measure">
-      <template v-for="block in renderedBlocks" :key="block.id">
+      <!-- 虚拟滚动：每块包一层 VRow（占位保总高），仅视口余量内挂载内容；
+           编辑块经 force 强制渲染（不可卸载，否则丢失光标与未提交内容） -->
+      <VRow
+        v-for="{ block, estimate } in renderedBlocks"
+        :key="block.id"
+        :block="block"
+        :estimate="estimate"
+        :force="editingId === block.id"
+      >
         <!-- Typora 式就地编辑：渲染后的内容直接在 contenteditable 中编辑 -->
         <template v-if="editingId === block.id">
           <!-- 表格编辑工具栏（Typora 式：左侧 尺寸/对齐，右侧 更多操作/删除；mousedown.prevent 保持单元格光标） -->
@@ -2728,12 +2832,11 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
           v-else
           class="md-block cursor-text px-1"
           :class="{ 'md-flash': flashId === block.id }"
-          :data-block-id="block.id"
           @click="startEdit(block)"
         >
           <BlockView :block="block" :ordinal="rootOrdinals.get(block.id) || 1" @toggle-task="toggleTask" />
         </div>
-      </template>
+      </VRow>
 
       <div
         v-if="editingId === '__append__'"
