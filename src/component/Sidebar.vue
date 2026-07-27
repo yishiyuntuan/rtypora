@@ -1,7 +1,9 @@
 <script setup vapor>
-import { computed, ref, watch } from 'vue';
+import { computed, ref, watch, nextTick, onMounted } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { plainText } from '../utils/wysiwyg.js';
+import { getPref, prefsVersion } from '../utils/prefs.js';
+import { useOverlayScrollbar } from '../utils/scrollbar.js';
 
 // 侧边栏：「目录」（文件面板）与「大纲」（标题嵌套树）两个标签页。
 // 目录页结构：中部文件列表/树 + 底部工具栏（文件夹名操作菜单、新建文件、列表/树切换）。
@@ -16,6 +18,27 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'select-block', 'open-file', 'open-folder', 'create-file', 'show-in-explorer']);
 
 const activeTab = ref('toc');
+
+// 滚动条自动隐藏开关（偏好设置）：滚动容器据此挂载 .sb-auto-hide 类
+const scrollbarAutoHide = computed(() => {
+  prefsVersion.value;
+  return !!getPref('scrollbar_auto_hide');
+});
+
+// 覆盖层滚动条（与编辑器同方案：原生 none 隐藏 + 彩色可拖动滑轨；滚动/右缘悬停显示）
+const sideRoot = ref(null);
+const {
+  dragging: sbDragging,
+  thumb: sbThumb,
+  show: sbShow,
+  update: updateSbThumb,
+  onScroll: sbOnScroll,
+  onMouseMove: sbOnMouseMove,
+  onMouseLeave: sbOnMouseLeave,
+  onThumbPointerDown: sbOnThumbPointerDown,
+  onTrackPointerDown: sbOnTrackPointerDown,
+} = useOverlayScrollbar(() => sideRoot.value?.querySelector('.sb-scroll'), scrollbarAutoHide);
+onMounted(() => nextTick(updateSbThumb));
 
 // ---------- 宽度（默认 280，右缘拖拽调整，localStorage 持久化） ----------
 const SIDEBAR_WIDTH_KEY = 'tauri-editor.sidebar-width';
@@ -51,6 +74,46 @@ const opsMenuOpen = ref(false);
 const searchOpen = ref(false);
 const searchKeyword = ref('');
 const sortMode = ref('asc');
+// 标签页/搜索框切换后重算覆盖层滑轨位置
+watch([activeTab, searchOpen], () => nextTick(updateSbThumb));
+
+// ---------- 新建文件：先在列表顶部输入文件名（Enter 创建并打开、Esc 取消） ----------
+const namingFile = ref(false);
+const newFileName = ref('');
+const nameError = ref(false);
+const nameInput = ref(null);
+
+async function startNaming() {
+  if (!props.workspaceDir || namingFile.value) return;
+  nameError.value = false;
+  newFileName.value = 'untitled.md';
+  namingFile.value = true;
+  await nextTick();
+  const el = nameInput.value;
+  el?.focus();
+  // 选中主名部分（不含 .md 后缀），直接输入即替换
+  el?.setSelectionRange(0, newFileName.value.length - 3);
+}
+
+function cancelNaming() {
+  namingFile.value = false;
+  nameError.value = false;
+}
+
+// Enter 确认：经 Rust 按名称创建（重名/无效名返回 null → 错误提示保留输入框）
+async function confirmNaming() {
+  const name = newFileName.value.trim();
+  if (!name) return cancelNaming();
+  const path = await invoke('create_markdown_file', { dir: props.workspaceDir, name }).catch(() => null);
+  if (!path) {
+    nameError.value = true;
+    nameInput.value?.focus();
+    return;
+  }
+  cancelNaming();
+  await refreshTree();
+  emit('open-file', path);
+}
 
 // 懒加载树：path -> { expanded, children }
 const dirTree = ref(new Map());
@@ -145,7 +208,7 @@ function dirName(path) {
 
 function onOps(action) {
   opsMenuOpen.value = false;
-  if (action === 'create') emit('create-file');
+  if (action === 'create') startNaming();
   else if (action === 'open-folder') emit('open-folder');
   else if (action === 'refresh') refreshTree();
   else if (action === 'explorer') emit('show-in-explorer', props.workspaceDir);
@@ -161,6 +224,24 @@ async function onSort(mode) {
   await Promise.all([...dirTree.value.keys()].map((path) => loadChildren(path)));
   rebuildFolderItems();
 }
+
+// 滚动中显示覆盖层滑轨并更新位置
+function onPanelScroll(e) {
+  sbOnScroll();
+}
+
+// 指针悬停右缘揭示（自动隐藏模式）
+function onPanelMouseMove(e) {
+  sbOnMouseMove(e);
+}
+function onPanelMouseLeave(e) {
+  sbOnMouseLeave(e);
+}
+// 列表内容变化后重算滑轨尺寸
+watch(
+  () => [folderItems.value.length, listItems.value.length, searchResults.value.length],
+  () => nextTick(updateSbThumb),
+);
 
 function openRecentDir(dir) {
   opsMenuOpen.value = false;
@@ -203,6 +284,7 @@ const outlineItems = computed(() => {
 <template>
   <Transition name="sidebar">
     <div
+      ref="sideRoot"
       v-show="visible"
       class="t-app relative flex h-full flex-col border-r border-(--t-table-border) text-[13px]"
       :style="{ width: `${width}px` }"
@@ -250,7 +332,26 @@ const outlineItems = computed(() => {
           <span class="t-btn shrink-0 cursor-pointer rounded px-1 text-[13px]" title="关闭搜索" @click="searchOpen = false; searchKeyword = ''">×</span>
         </div>
 
-        <div class="flex-1 overflow-y-auto p-2">
+        <div class="sb-scroll flex-1 overflow-y-auto p-2" :class="{ 'sb-auto-hide': scrollbarAutoHide }" @scroll.passive="onPanelScroll" @mousemove.passive="onPanelMouseMove" @mouseleave="onPanelMouseLeave">
+          <!-- 新建文件名输入行（点击 + 后：先输入名称，Enter 创建并打开、Esc 取消） -->
+          <div v-if="namingFile" class="md-name-row" :class="{ error: nameError }">
+            <svg viewBox="0 0 16 16" class="size-[13px] shrink-0" aria-hidden="true" style="color: #03b736">
+              <rect x="3" y="1.5" width="10" height="13" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.2" />
+              <line x1="5.5" y1="5" x2="10.5" y2="5" stroke="currentColor" stroke-width="1" />
+              <line x1="5.5" y1="8" x2="10.5" y2="8" stroke="currentColor" stroke-width="1" />
+              <line x1="5.5" y1="11" x2="9" y2="11" stroke="currentColor" stroke-width="1" />
+            </svg>
+            <input
+              ref="nameInput"
+              v-model="newFileName"
+              class="md-name-input"
+              placeholder="输入文件名…"
+              spellcheck="false"
+              @keydown.enter.prevent="confirmNaming"
+              @keydown.esc.prevent="cancelNaming"
+            />
+          </div>
+          <div v-if="nameError" class="px-2 pb-1 text-[11px] text-red-500">无法创建：名称无效或文件已存在</div>
           <!-- 搜索结果 -->
           <template v-if="searchKeyword.trim()">
             <template v-if="searchResults.length">
@@ -332,7 +433,7 @@ const outlineItems = computed(() => {
         <!-- 底部工具栏（与状态栏同高 h-7，图标文字垂直居中） -->
         <div class="relative flex h-7 items-center justify-between border-t border-(--t-table-border) px-2">
           <template v-if="workspaceDir">
-            <div class="t-btn flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1 text-[14px] leading-none" style="color: #03b736" title="在当前文件夹新建文件" @click="emit('create-file')">+</div>
+            <div class="t-btn flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1 text-[14px] leading-none" style="color: #03b736" title="在当前文件夹新建文件" @click="startNaming">+</div>
             <div
               class="t-btn flex min-w-0 flex-1 cursor-pointer items-center justify-center rounded px-1.5 py-1 text-[12px]"
               :title="workspaceDir"
@@ -432,7 +533,7 @@ const outlineItems = computed(() => {
       </template>
 
       <!-- 大纲：标题树（树形缩进标记 + 层级徽标） -->
-      <div v-else class="flex-1 overflow-y-auto p-2">
+      <div v-else class="sb-scroll flex-1 overflow-y-auto p-2" :class="{ 'sb-auto-hide': scrollbarAutoHide }" @scroll.passive="onPanelScroll" @mousemove.passive="onPanelMouseMove" @mouseleave="onPanelMouseLeave">
         <template v-if="headings.length">
           <div
             v-for="item in outlineItems"
@@ -450,6 +551,17 @@ const outlineItems = computed(() => {
           </div>
         </template>
         <div v-else class="t-dim rounded px-2 py-1 text-[12px]">暂无大纲</div>
+      </div>
+
+      <!-- 覆盖层滚动条：彩色可拖动滑轨（自动隐藏模式下替代原生条；滚动/右缘悬停时显示） -->
+      <div
+        class="md-scrollbar md-scrollbar-side"
+        :class="{ show: sbShow, dragging: sbDragging }"
+        :style="{ top: `${sbThumb.offsetTop}px` }"
+        aria-hidden="true"
+        @pointerdown="sbOnTrackPointerDown"
+      >
+        <div class="md-scrollbar-thumb" :style="{ top: `${sbThumb.top}px`, height: `${sbThumb.height}px` }" @pointerdown.stop="sbOnThumbPointerDown"></div>
       </div>
     </div>
   </Transition>
@@ -479,6 +591,36 @@ const outlineItems = computed(() => {
 .sidebar-resizer:hover,
 .sidebar-resizer:active {
   background: color-mix(in srgb, var(--t-tab-indicator) 35%, transparent);
+}
+
+/* 新建文件名输入行：编辑器式聚焦框（指示色边框 + 聚焦环；错误态红色） */
+.md-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--t-tab-indicator);
+  border-radius: 6px;
+  background: var(--t-editor-background);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--t-tab-indicator) 18%, transparent);
+  font-size: 12px;
+}
+.md-name-row.error {
+  border-color: #e02424;
+  box-shadow: 0 0 0 2px color-mix(in srgb, #e02424 18%, transparent);
+}
+.md-name-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  color: inherit;
+  font-size: 12px;
+}
+.md-name-row.error .md-name-input {
+  color: #e02424;
 }
 
 /* 大纲树形缩进引导线与层级徽标 */

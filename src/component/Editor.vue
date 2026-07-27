@@ -1,5 +1,5 @@
 <script setup vapor>
-import { ref, computed, watch, nextTick, inject, provide, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, watch, nextTick, inject, provide, onMounted, onBeforeUnmount, markRaw } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import BlockView from './BlockView.vue';
 import VRow from './VRow.vue';
@@ -130,13 +130,18 @@ provide('observeRow', (el, cb) => {
 });
 provide('unobserveRow', (el) => {
   rowCallbacks.delete(el);
-  rowObserver?.unobserve(el);
+  // el 可能为 null（键控重建时 ref 已卸载），unobserve 非 Element 会抛 TypeError
+  if (el) rowObserver?.unobserve(el);
 });
 
 // 虚拟行高估计：按源码行数 × 主题实际行高（首次渲染后由实测高度取代）
 function estimateBlockHeight(block) {
   if (block.start == null || block.end == null) return 40;
-  const lines = content.value.slice(block.start, block.end).split('\n').length;
+  // 只数换行符（不 slice/split 分配子串与数组，大文档数万块时差异可观）
+  let lines = 1;
+  for (let i = block.start; i < block.end; i++) {
+    if (content.value.charCodeAt(i) === 10) lines++;
+  }
   return Math.max(1, lines) * lineHeightPx() + 16;
 }
 let cachedLineHeightPx = 0;
@@ -152,6 +157,49 @@ function lineHeightPx() {
 watch(themeVersion, () => {
   cachedLineHeightPx = 0;
 });
+
+// ---------- 大文档渐进挂载：首屏只创建前 INITIAL_ROW_QUOTA 个行组件，
+// 其余行以「估计高度占位条」代替，空闲帧按步长扩配额直至全覆盖。
+// 首屏 DOM/组件规模恒定（与文档大小无关），是超大文件秒开的关键
+const INITIAL_ROW_QUOTA = 160;
+const ROW_QUOTA_STEP = 500;
+const rowQuota = ref(INITIAL_ROW_QUOTA);
+let quotaScheduled = false;
+function growRowQuota() {
+  if (quotaScheduled) return;
+  quotaScheduled = true;
+  const step = () => {
+    quotaScheduled = false;
+    const total = renderedBlocks.value.length;
+    if (rowQuota.value >= total) return;
+    rowQuota.value = Math.min(total, rowQuota.value + ROW_QUOTA_STEP);
+    if (rowQuota.value < total) growRowQuota();
+  };
+  if ('requestIdleCallback' in window) requestIdleCallback(step, { timeout: 200 });
+  else setTimeout(step, 0);
+}
+// 配额内可见行与配额外尾部占位高度（估计高度和，保证滚动条总高近似正确）
+const visibleRows = computed(() => renderedBlocks.value.slice(0, rowQuota.value));
+const tailPadHeight = computed(() => {
+  let h = 0;
+  const rows = renderedBlocks.value;
+  for (let i = rowQuota.value; i < rows.length; i++) h += rows[i].estimate;
+  return h;
+});
+watch(
+  () => renderedBlocks.value.length,
+  (len) => {
+    if (len > rowQuota.value) growRowQuota();
+  },
+);
+// 配额增长后新挂载的行需要补测标题位置（防抖，避免逐批 querySelector）
+watch(
+  () => visibleRows.value.length,
+  () => {
+    clearTimeout(headingRebuildTimer);
+    headingRebuildTimer = setTimeout(rebuildHeadingPositions, 300);
+  },
+);
 
 // 重活懒执行：共享 IntersectionObserver，块进入视口（含 60% 窗口高度余量）才回调
 //（语法高亮/公式/Mermaid 渲染经此延后，长文档挂载不再一次性打满 IPC；
@@ -335,12 +383,20 @@ function tableOp(op, arg) {
     if (target) placeCursorAtStart(target);
     return;
   }
-  // 对齐：整列设置 textAlign（提交时 tableToBlock 提取为对齐列）
+  // 对齐：整列设置 textAlign（提交时 tableToBlock 提取为对齐列）；
+  // 悬停工具栏触发（arg.all）或无光标单元格时作用于整个表格
   const align = { alignLeft: 'left', alignCenter: 'center', alignRight: 'right' }[op];
   if (align) {
+    const allCols = arg?.all || colIndex < 0;
     rows.forEach((r) => {
-      const c = r.children[index];
-      if (c) c.style.textAlign = align;
+      if (allCols) {
+        [...r.children].forEach((c) => {
+          c.style.textAlign = align;
+        });
+      } else {
+        const c = r.children[index];
+        if (c) c.style.textAlign = align;
+      }
     });
     updateTableCaretAlign();
     return;
@@ -405,6 +461,53 @@ function moveTableRowDown(cell) {
 // ---------- 表格工具栏弹出层（尺寸网格 / 更多操作菜单） ----------
 const tablePanel = ref(null); // 'grid' | 'more' | null
 const tablePanelPos = ref({ left: 0, top: 0 });
+// 表格块悬停跟踪：鼠标滑过表格（未编辑）时以浮层显示顶部工具栏
+const hoverTableId = ref(null);
+// 悬停工具栏动作：先进入编辑（pendingTableFocus 使光标落首个数据单元格），容器挂载后执行
+let pendingTableAction = null;
+
+function onTableBlockHover(block) {
+  hoverTableId.value = block.id;
+}
+function onTableBlockLeave(block) {
+  if (hoverTableId.value === block.id) hoverTableId.value = null;
+}
+
+// 工具栏点击统一入口：编辑中直接执行；未编辑则排队动作并进入该表编辑
+// （另一块在编辑时先提交再换块，避免未提交内容被丢弃）。
+// 光标默认落表格末尾单元格：插行/列、删行/列等相对操作即「在末尾增删」
+function tableToolbarClick(block, run) {
+  if (editingId.value === block.id) {
+    run();
+    return;
+  }
+  pendingTableAction = run;
+  suppressBlurCommit = true;
+  if (editingId.value !== null && editableEl) {
+    clearTimeout(blurCommitTimer);
+    blurCommitTimer = null;
+    commitEdit().finally(() => {
+      editingId.value = block.id;
+    });
+    return;
+  }
+  editingId.value = block.id;
+}
+// 对齐操作：悬停触发（未选单元格）时作用于整个表格
+function onToolbarOp(block, op) {
+  const fromHover = editingId.value !== block.id;
+  tableToolbarClick(block, () => tableOp(op, fromHover ? { all: true } : undefined));
+}
+function onToolbarDelete(block) {
+  tableToolbarClick(block, () => deleteCurrentTableBlock());
+}
+// 面板类动作：弹出位置依赖按钮矩形，点击时先行捕获（排队到挂载后执行时事件对象已失效）
+function onToolbarPanel(block, kind, e) {
+  const rect = e.currentTarget.getBoundingClientRect();
+  tableToolbarClick(block, () =>
+    openTablePanel(kind, { currentTarget: { getBoundingClientRect: () => rect } }),
+  );
+}
 // 尺寸网格行列上限与当前悬停的 N×M（1 基）
 const TABLE_GRID_COLS = 10;
 const TABLE_GRID_ROWS = 8;
@@ -1178,12 +1281,7 @@ async function applyTableTemplate(el, opts) {
       const base = content.value ? content.value.replace(/\s*$/, '') : '';
       const anchor = base ? base.length + 2 : 0;
       content.value = base ? base + '\n\n' + tpl.markdown : tpl.markdown;
-      const parsed = await invoke('parse_blocks', { markdown: tpl.markdown });
-      const anchored = parsed.map((b) => ({
-        ...b,
-        start: b.start != null ? anchor + b.start : null,
-        end: b.end != null ? anchor + b.end : null,
-      }));
+      const anchored = await parseAnchoredBlocks(tpl.markdown, anchor);
       blocks.value.push(...anchored);
       publishBlocks();
       tableBlock = anchored[0] ?? null;
@@ -1305,6 +1403,30 @@ const firstLineIndent = computed(() => {
   prefsVersion.value;
   return !!getPref('first_line_indent');
 });
+// 滚动条自动隐藏开关（偏好设置）：滚动容器据此挂载 .sb-auto-hide 类
+const scrollbarAutoHide = computed(() => {
+  prefsVersion.value;
+  return !!getPref('scrollbar_auto_hide');
+});
+
+// 覆盖层滚动条（本 WebView 不渲染 ::-webkit-scrollbar 与 scrollbar-color 样式，
+// 原生条用 scrollbar-width:none 隐藏，自绘彩色可拖动滑轨替代；无系统箭头）
+import { useOverlayScrollbar } from '../utils/scrollbar.js';
+
+const {
+  dragging: sbDragging,
+  thumb: sbThumb,
+  show: sbShow,
+  update: updateSbThumb,
+  onScroll: sbOnScroll,
+  onMouseMove: sbOnMouseMove,
+  onMouseLeave: sbOnMouseLeave,
+  onThumbPointerDown: sbOnThumbPointerDown,
+  onTrackPointerDown: sbOnTrackPointerDown,
+} = useOverlayScrollbar(() => scrollRoot.value, scrollbarAutoHide);
+// 内容高度变化（块树发布/初次挂载）后重算滑轨
+watch(renderedBlocks, () => nextTick(updateSbThumb), { flush: 'post' });
+onMounted(() => nextTick(updateSbThumb));
 // 换块/提交时关闭斜杠命令菜单与语言补全菜单、表格弹出层、右键菜单
 watch(editingId, () => {
   slashOpen.value = false;
@@ -1334,20 +1456,35 @@ function currentEditable() {
 }
 
 // 行/词/字符统计由 Rust text_stats 命令完成（CJK 感知词数、UTF-16 字符数），
-// 内容变化后防抖更新，避免每次按键都跨进程调用
+// 内容变化后防抖更新，避免每次按键都跨进程调用；
+// 大文档的全文统计 IPC 与输入/首屏渲染抢资源：延迟到浏览器空闲时执行
 let statsTimer = null;
+let statsIdleHandle = null;
+const cancelStatsIdle = () => {
+  if (statsIdleHandle != null && 'cancelIdleCallback' in window) cancelIdleCallback(statsIdleHandle);
+  statsIdleHandle = null;
+};
 watch(content, () => {
   clearTimeout(statsTimer);
-  statsTimer = setTimeout(async () => {
-    try {
-      const stats = await invoke('text_stats', { markdown: content.value });
-      wordCount.value = stats.words;
-      charCount.value = stats.chars;
-      lineCount.value = stats.lines;
-    } catch (e) {
-      console.error('text_stats 调用失败:', e);
+  cancelStatsIdle();
+  statsTimer = setTimeout(() => {
+    const run = async () => {
+      statsIdleHandle = null;
+      try {
+        const stats = await invoke('text_stats', { markdown: content.value });
+        wordCount.value = stats.words;
+        charCount.value = stats.chars;
+        lineCount.value = stats.lines;
+      } catch (e) {
+        console.error('text_stats 调用失败:', e);
+      }
+    };
+    if (content.value.length > 512 * 1024 && 'requestIdleCallback' in window) {
+      statsIdleHandle = requestIdleCallback(run, { timeout: 1500 });
+    } else {
+      run();
     }
-  }, 150);
+  }, 300);
 }, { immediate: true });
 
 watch([wordCount, charCount, lineCount, cursorLine, cursorColumn], () => {
@@ -1382,7 +1519,7 @@ async function reparse() {
   try {
     const result = await invoke('parse_markdown', { markdown: content.value });
     if (seq === parseSeq) {
-      blocks.value = result;
+      blocks.value = rawBlocks(result);
       publishBlocks();
     }
   } catch (e) {
@@ -1393,11 +1530,20 @@ async function reparse() {
 // 解析片段并把相对偏移换算为锚点后的绝对偏移
 async function parseAnchoredBlocks(md, anchor) {
   const parsed = await invoke('parse_blocks', { markdown: md });
-  return parsed.map((b) => ({
-    ...b,
-    start: b.start != null ? anchor + b.start : null,
-    end: b.end != null ? anchor + b.end : null,
-  }));
+  return rawBlocks(
+    parsed.map((b) => ({
+      ...b,
+      start: b.start != null ? anchor + b.start : null,
+      end: b.end != null ? anchor + b.end : null,
+    })),
+  );
+}
+
+// 块对象标记为不可响应（markRaw）：块树只按数组变更（splice/替换）驱动更新，
+// 深度响应代理在大文档（数万嵌套对象）上是打开慢的主要来源之一；
+// 块字段（start/end 等）只在计算时按需读取，不依赖字段级响应
+function rawBlocks(list) {
+  return list.map((b) => markRaw(b));
 }
 
 // 增量更新：编辑提交后只重解析受影响的片段（parse_blocks 返回相对偏移），
@@ -1497,6 +1643,17 @@ function setEditableEl(el) {
     } else {
       placeCursorAtEnd(el);
     }
+    // 悬停工具栏排队的动作（对齐/插行列/删除/打开面板）：编辑容器就绪、光标落位后执行
+    if (pendingTableAction) {
+      const action = pendingTableAction;
+      pendingTableAction = null;
+      action();
+      // 收起自动放置的光标：后续工具栏操作按「无单元格上下文」处理
+      // （对齐=整表、插/删行列=末尾）；用户点进单元格后恢复行/列上下文
+      window.getSelection()?.removeAllRanges();
+    }
+    // 换块/新建块后：光标若被压到窗口底部，滚回可见下沿（帧末测量，等布局稳定）
+    requestAnimationFrame(keepCaretAboveStatusBar);
     // 源码/WYSIWYG 切换后：光标已放置，把光标滚动到窗口中间。
     // 含图片时等待图片加载完成后再重算一次，避免布局变化导致光标错位。
     if (restoreCaretAdjustment) {
@@ -1548,6 +1705,9 @@ let pendingPreciseRawOffset = null;
 
 function startEdit(block) {
   if (syncing.value) return;
+  // 拖动形成的跨块选区非空时：不进入编辑（避免替换 DOM 销毁选区；再点一次即可编辑）
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) return;
   if (editingId.value !== null) {
     // 编辑态残留（无活动容器）时自愈，避免点不出光标
     if (!editableEl) editingId.value = null;
@@ -1567,6 +1727,8 @@ function startEdit(block) {
 
 function startAppend() {
   if (syncing.value) return;
+  const sel = window.getSelection();
+  if (sel && !sel.isCollapsed) return;
   if (editingId.value !== null) {
     if (!editableEl) editingId.value = null;
     else {
@@ -1595,14 +1757,8 @@ async function commitEdit() {
         const anchor = base ? base.length + 2 : 0;
         content.value = base ? base + '\n\n' + text : text;
         // 增量：只解析追加的片段并挂到块树末尾
-        const parsed = await invoke('parse_blocks', { markdown: text });
-        blocks.value.push(
-          ...parsed.map((b) => ({
-            ...b,
-            start: b.start != null ? anchor + b.start : null,
-            end: b.end != null ? anchor + b.end : null,
-          })),
-        );
+        const parsed = await parseAnchoredBlocks(text, anchor);
+        blocks.value.push(...parsed);
         publishBlocks();
       }
     } else {
@@ -1990,13 +2146,49 @@ function onEditableInput(e) {
   applyHtmlAutoclose();
   updateSlashMenu();
   updateLangMenu();
+  // 输入到底部时：光标若被压到窗口底部（状态栏上方不可见），滚到窗口首行
+  nextTick(keepCaretAboveStatusBar);
+}
+
+// 光标下缘贴近/越过可见下沿（容器底部内边距 + 半行缓冲）时：
+// 按最小量向下滚动，让光标恰好回到可见下沿——输入时滚动逐行跟随、
+// 屏幕位置保持相对静止（不闪变）；文档末尾的 .md-bottom-space 保证能上滚
+function keepCaretAboveStatusBar() {
+  const root = scrollRoot.value;
+  const sel = window.getSelection();
+  if (!root || !sel?.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  if (!root.contains(range.startContainer)) return;
+  const rect = range.getBoundingClientRect();
+  const rootRect = root.getBoundingClientRect();
+  const style = getComputedStyle(root);
+  const lineH = parseFloat(style.lineHeight) || 28;
+  const padBottom = parseFloat(style.paddingBottom) || 16;
+  // 可见内容下沿 = 容器底 - 底部内边距；再留一行半缓冲，只滚动超出部分
+  const limit = rootRect.bottom - padBottom - lineH * 1.5;
+  if (rect.bottom > limit) {
+    root.scrollTop += rect.bottom - limit;
+  }
 }
 
 // 粘贴图片：按偏好保存到文档目录/assets 子目录并插入相对路径引用（未保存文档跳过）
 async function onEditablePaste(e) {
   const items = Array.from(e.clipboardData?.items || []);
   const imageItem = items.find((item) => item.type.startsWith('image/'));
-  if (!imageItem) return;
+  if (!imageItem) {
+    // 文本粘贴：含 Markdown 语法时按 Markdown 解析插入（标题/列表/代码/表格等结构保留）；
+    // 纯文本走浏览器默认插入
+    const text = e.clipboardData?.getData('text/plain') || '';
+    // 代码/原文块（pre 编辑）与表格编辑中：内容即纯文本，绝不做 Markdown 解析——
+    // 否则贴入的 #、```、| 等会被拆成新块，破坏代码与表格内容
+    const el = currentEditable();
+    const rawMode = !!el?.querySelector('pre') || editingBlock.value?.type === 'table';
+    if (!rawMode && text && looksLikeMarkdown(text)) {
+      e.preventDefault();
+      await pasteMarkdownAtCaret(text);
+    }
+    return;
+  }
   e.preventDefault();
   const behavior = getPref('image_paste_behavior');
   if (behavior === 'off') return;
@@ -2009,6 +2201,123 @@ async function onEditablePaste(e) {
   const subDir = behavior === 'assets' ? 'assets' : null;
   const relPath = await invoke('save_pasted_image', { bytes, baseDir, subDir, extension: ext }).catch(() => null);
   if (relPath) insertTextAtCursor(`![](${relPath})`);
+}
+
+// Markdown 语法嗅探：标题/列表/任务/引用/围栏/行内标记/链接/图片/表格/数学/
+// 高亮/脚注/HTML 标签/Front Matter/警告容器/[TOC] 任一命中即按 Markdown 解析
+const MD_HINT_RE = new RegExp(
+  [
+    '^#{1,6}\\s', // # 标题
+    '^\\s*[-*+]\\s', // 无序列表
+    '^\\s*\\d+\\.\\s', // 有序列表
+    '^\\s*- \\[[ xX]\\]', // 任务列表
+    '^>\\s?', // 引用
+    '```|~~~', // 代码围栏
+    '\\*\\*[^*\\n]+\\*\\*', // **粗体**
+    '\\[[^\\]\\n]+\\]\\([^)\\n]+\\)', // [链接](url) / ![图片](url)
+    '\\|[^|\\n]+\\|', // 表格行
+    '\\$\\$[\\s\\S]+?\\$\\$', // $$ 块级/行内数学 $$
+    '\\$[^\\s$][^$\\n]*[^\\s$]\\$|\\$[^\\s$]\\$', // $行内数学$（$5 和 $10 不误判）
+    '==[^=\\n]+==', // ==高亮==
+    '\\[\\^[^\\]\\n]+\\]', // [^脚注]
+    '</?[a-zA-Z][^>\\n]*>', // HTML 标签（<section>/<kbd>/<font>/<img> 等）
+    '^\\s*---\\s*$', // ---（Front Matter 界符/分隔线）
+    '^\\s*:::+|^\\s*!!!+', // ::: / !!! 警告容器
+    '^\\s*\\[TOC\\]\\s*$', // [TOC] 目录
+  ].join('|'),
+  'm',
+);
+function looksLikeMarkdown(text) {
+  return MD_HINT_RE.test(text);
+}
+
+// Markdown 粘贴：光标处拆分当前块，粘贴文本作为 Markdown 经 Rust 解析插入，
+// 光标落在粘贴内容之后（after 块开头；无 after 则末块末尾）
+async function pasteMarkdownAtCaret(text) {
+  const el = currentEditable();
+  if (editingId.value === null || !el) return false;
+  syncing.value = true;
+  try {
+    const sel = window.getSelection();
+    let beforeDiv;
+    let afterDiv;
+    if (sel.rangeCount && el.contains(sel.getRangeAt(0).startContainer)) {
+      const range = sel.getRangeAt(0);
+      const beforeRange = range.cloneRange();
+      beforeRange.selectNodeContents(el);
+      beforeRange.setEnd(range.startContainer, range.startOffset);
+      const afterRange = range.cloneRange();
+      afterRange.selectNodeContents(el);
+      afterRange.setStart(range.endContainer, range.endOffset);
+      beforeDiv = document.createElement('div');
+      beforeDiv.append(beforeRange.cloneContents());
+      afterDiv = document.createElement('div');
+      afterDiv.append(afterRange.cloneContents());
+    } else {
+      beforeDiv = document.createElement('div');
+      beforeDiv.innerHTML = el.innerHTML;
+      afterDiv = document.createElement('div');
+    }
+    // 空段检测（与 splitAndCommit 同规则，避免孤立标记文本）
+    const isEmptyDiv = (div) =>
+      div.textContent.trim() === '' && !div.querySelector('img, input, hr, table, pre');
+    const beforeMd = isEmptyDiv(beforeDiv)
+      ? ''
+      : (await invoke('serialize_markdown', { blocks: domToBlockDtos(beforeDiv) })).trim();
+    const afterMd = isEmptyDiv(afterDiv)
+      ? ''
+      : (await invoke('serialize_markdown', { blocks: domToBlockDtos(afterDiv) })).trim();
+
+    const pasted = text.trim();
+    const combined = [beforeMd, pasted, afterMd].filter((s) => s !== '').join('\n\n');
+
+    const isAppend = editingId.value === '__append__';
+    let index;
+    let oldBlock;
+    let base = '';
+    if (isAppend) {
+      base = content.value ? content.value.replace(/\s*$/, '') : '';
+      index = blocks.value.length;
+      const anchor = base ? base.length + 2 : 0;
+      oldBlock = { start: anchor, end: anchor };
+    } else {
+      index = blocks.value.findIndex((b) => b.id === editingId.value);
+      oldBlock = blocks.value[index];
+    }
+    editableEl = null;
+    if (!oldBlock) {
+      editingId.value = null;
+      return true;
+    }
+    if (isAppend) {
+      content.value = base ? base + '\n\n' + combined : combined;
+    } else {
+      content.value = content.value.slice(0, oldBlock.start) + combined + content.value.slice(oldBlock.end);
+    }
+    // 增量重解析合并区间并平移后续偏移
+    const replacements = await parseAnchoredBlocks(combined, oldBlock.start);
+    const delta = combined.length - (oldBlock.end - oldBlock.start);
+    blocks.value.splice(index, isAppend ? 0 : 1, ...replacements);
+    for (let i = index + replacements.length; i < blocks.value.length; i++) {
+      const b = blocks.value[i];
+      if (b.start != null) {
+        b.start += delta;
+        b.end += delta;
+      }
+    }
+    publishBlocks();
+
+    // 光标定位：粘贴内容之后（after 块开头；无 after 则末块末尾）
+    const afterCount = afterMd ? (await parseAnchoredBlocks(afterMd, 0)).length : 0;
+    const next = afterCount > 0 ? replacements[replacements.length - afterCount] : replacements[replacements.length - 1];
+    suppressBlurCommit = true;
+    editingId.value = next ? next.id : null;
+    cursorAtStart = afterCount > 0;
+    if (!next) suppressBlurCommit = false;
+    return true;
+  } finally {
+    syncing.value = false;
+  }
 }
 
 function onEditableKeydown(e) {
@@ -2173,6 +2482,27 @@ function onEditableKeydown(e) {
       langOpen.value = false;
       return;
     }
+  }
+  // Ctrl+A 两段式：首次交给浏览器原生（选中当前块内容）；
+  // 当前块已全选时再次按下，选择整个文档内容
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a') {
+    const el = currentEditable();
+    const sel = window.getSelection();
+    if (el && sel.rangeCount) {
+      const range = sel.getRangeAt(0);
+      if (
+        el.contains(range.commonAncestorContainer) &&
+        el.textContent.length > 0 &&
+        range.toString().length === el.textContent.length
+      ) {
+        e.preventDefault();
+        const all = document.createRange();
+        all.selectNodeContents(scrollRoot.value);
+        sel.removeAllRanges();
+        sel.addRange(all);
+      }
+    }
+    return;
   }
   // 右键菜单打开时：Esc 优先关闭（不打断编辑）
   if (e.key === 'Escape' && ctxMenu.value) {
@@ -2613,13 +2943,23 @@ function scrollToBlock(id) {
 
   const root = scrollRoot.value;
   if (!root) return;
-  const el = root.querySelector(`[data-block-id="${id}"]`);
-  if (!el) return;
-  el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  flashId.value = id;
-  setTimeout(() => {
-    if (flashId.value === id) flashId.value = null;
-  }, 1200);
+  // 渐进挂载：目标行可能尚在配额外（只有占位条），先扩配额把行创建出来
+  const idx = allBlocks.value.findIndex((b) => b.id === id);
+  if (idx >= 0 && idx >= rowQuota.value) rowQuota.value = idx + 1;
+  // 行创建/内容挂载是异步的：找不到元素时重试几次
+  const tryScroll = (attempts) => {
+    const el = root.querySelector(`[data-block-id="${id}"]`);
+    if (!el) {
+      if (attempts > 0) nextTick(() => tryScroll(attempts - 1));
+      return;
+    }
+    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    flashId.value = id;
+    setTimeout(() => {
+      if (flashId.value === id) flashId.value = null;
+    }, 1200);
+  };
+  tryScroll(3);
 }
 
 // 标题位置缓存（块树发布后重建，滚动停止后再校准；滚动判断零 DOM 查询）
@@ -2637,8 +2977,11 @@ watch(
 // 虚拟滚动下占位行高度随内容挂载被修正，滚动停止后重建位置缓存保持高亮准确
 let scrollTicking = false;
 let headingRebuildTimer = null;
+let scrollEndTimer = null;
 function onEditorScroll(e) {
   closeCtxMenu();
+  // 滚动中显示覆盖层滑轨并更新位置
+  sbOnScroll();
   clearTimeout(headingRebuildTimer);
   headingRebuildTimer = setTimeout(rebuildHeadingPositions, 250);
   if (scrollTicking) return;
@@ -2670,13 +3013,50 @@ function rebuildHeadingPositions() {
     .filter((h) => h.top != null);
 }
 
+// 滚动条悬停揭示（自动隐藏模式）：指针进入容器右缘 16px 内显示，离开隐藏
+function onEditorMouseMove(e) {
+  sbOnMouseMove(e);
+}
+function onEditorMouseLeave(e) {
+  sbOnMouseLeave(e);
+}
+
 // 加载新文档（打开/新建文件）：替换全文并整树重解析，退出当前编辑态
-async function loadDocument(text) {
+// 加载新文档（打开/新建文件）：替换全文并整树重解析，退出当前编辑态。
+// pre 为打开命令预解析的首屏块（大文件渐进加载）：直接上屏，尾部由后台
+// parse_blocks 补齐（首屏末块可能被截断，尾部带完整上下文重解析后原位替换自愈）；
+// 尾部返回前若已发生编辑（content 引用变化），丢弃结果走全量重解析
+async function loadDocument(text, pre = null) {
+  ++parseSeq; // 作废旧文档可能在途的解析结果（渐进分支不经 reparse，需手动作废）
   editingId.value = null;
   editableEl = null;
+  rowQuota.value = INITIAL_ROW_QUOTA;
   content.value = text;
   savedContent.value = text;
-  await reparse();
+  if (!pre?.blocks) {
+    await reparse();
+    return;
+  }
+  blocks.value = rawBlocks(pre.blocks);
+  publishBlocks();
+  if (pre.tailFrom == null) return;
+  const anchor = pre.tailFrom;
+  const captured = text;
+  try {
+    const tail = await parseAnchoredBlocks(text.slice(anchor), anchor);
+    if (content.value !== captured) {
+      // 尾部解析期间发生了编辑：偏移体系已变，整树重解析
+      await reparse();
+      return;
+    }
+    // 接缝自愈：尾部首块替换首屏末块
+    if (blocks.value.length === 0) blocks.value.push(...tail);
+    else blocks.value.splice(blocks.value.length - 1, 1, ...tail);
+    publishBlocks();
+  } catch (e) {
+    console.error('尾部解析失败，回退全量重解析:', e);
+    if (content.value === captured) await reparse();
+  }
 }
 
 // 保存/另存：返回当前全文；保存成功后同步快照（清除脏标记）
@@ -2685,6 +3065,261 @@ function getContent() {
 }
 function markSaved() {
   savedContent.value = content.value;
+}
+
+// 复制/剪切事件：选区内容写入剪贴板为 Markdown——
+// 原则：非编辑块一律按块区间截取源 Markdown（渲染态 DOM 对代码行号/高亮、
+// mermaid、数学、图片块等是有损的，DOM 提取无法还原；源文本零丢失）；
+// 仅编辑中的块用 DOM 提取（其源码滞后于未提交的实时内容）。
+// 例外：单个文本类块（段落/标题）内的部分选区走 DOM 行内提取，保留「只复制选中文字」的精度。
+
+// 文本类块（允许 DOM 行内提取部分选区；其余块类型部分选区按整块源文本复制）
+const COPY_TEXTY_TYPES = new Set(['paragraph', 'heading']);
+
+// 选区端点（容器+偏移，兼容 selectNodeContents 形式）→ 所属根块 { id, el }
+// （VRow 占位行常驻 data-block-id，未挂载行也能定位；li 等子块向上爬到根块；
+// 端点落在底部留白/追加区/脚注区等无块区域时，沿兄弟链向选区内侧找最近的根块）
+function rootBlockAtPoint(node, offset, isStart, rootIds) {
+  const toRootBlock = (el) => {
+    let cur = el?.closest?.('[data-block-id]') || null;
+    while (cur && !rootIds.has(cur.getAttribute('data-block-id'))) {
+      cur = cur.parentElement?.closest?.('[data-block-id]') || null;
+    }
+    return cur;
+  };
+  // 从 el 的兄弟链向选区方向找最近的根块（含后代），逐级向上爬
+  const inwardSearch = (startEl) => {
+    let el = startEl;
+    while (el) {
+      let sib = isStart ? el.nextElementSibling : el.previousElementSibling;
+      while (sib) {
+        if (sib.hasAttribute?.('data-block-id') && rootIds.has(sib.getAttribute('data-block-id'))) {
+          return sib;
+        }
+        const deep = [...(sib.querySelectorAll?.('[data-block-id]') || [])].find((x) =>
+          rootIds.has(x.getAttribute('data-block-id')),
+        );
+        if (deep) return deep;
+        sib = isStart ? sib.nextElementSibling : sib.previousElementSibling;
+      }
+      el = el.parentElement;
+    }
+    return null;
+  };
+  let n = node;
+  if (n.nodeType === Node.ELEMENT_NODE) {
+    n = (isStart ? n.childNodes[offset] : n.childNodes[offset - 1]) || n;
+    while (n.nodeType === Node.ELEMENT_NODE && !n.hasAttribute?.('data-block-id')) {
+      const next = isStart ? n.firstElementChild : n.lastElementChild;
+      if (!next) break;
+      n = next;
+    }
+  }
+  const el = n.nodeType === Node.TEXT_NODE ? n.parentElement : n;
+  const blockEl = toRootBlock(el) || inwardSearch(el);
+  return blockEl ? { id: blockEl.getAttribute('data-block-id'), el: blockEl } : null;
+}
+
+// 选区是否完整覆盖块元素（用于「整块覆盖 → 源截取」与「部分选区 → DOM 提取」的分流）
+function rangeCoversBlock(range, blockEl) {
+  const full = document.createRange();
+  full.selectNodeContents(blockEl);
+  return (
+    range.compareBoundaryPoints(Range.START_TO_START, full) <= 0 &&
+    range.compareBoundaryPoints(Range.END_TO_END, full) >= 0
+  );
+}
+
+// 把选区钳制到编辑容器内（跨块选区与编辑块的交集部分做 DOM 提取）
+function clampRangeToElement(range, el) {
+  const sub = document.createRange();
+  sub.selectNodeContents(el);
+  if (el.contains(range.startContainer)) sub.setStart(range.startContainer, range.startOffset);
+  if (el.contains(range.endContainer)) sub.setEnd(range.endContainer, range.endOffset);
+  return sub;
+}
+
+// DOM 提取通道：选区片段 → DTO → Rust 序列化（仅用于编辑块与文本块行内选区）
+async function domRangeToMarkdown(range) {
+  const div = document.createElement('div');
+  div.append(range.cloneContents());
+  const md = await invoke('serialize_markdown', { blocks: domToBlockDtos(div) }).catch(() => null);
+  return md != null && md.trim() !== '' ? md : null;
+}
+
+// 选区 → Markdown 主入口：按覆盖的根块区间逐块拼装
+// （编辑块 DOM 提取 + 其余块源文本截取，块间空行分隔）
+async function selectionToMarkdown(range) {
+  const rootIds = new Set(blocks.value.map((b) => b.id));
+  let start = rootBlockAtPoint(range.startContainer, range.startOffset, true, rootIds);
+  let end = rootBlockAtPoint(range.endContainer, range.endOffset, false, rootIds);
+  // 两端都不在块区域（如追加区内的局部选择）：DOM 提取
+  if (!start && !end) return domRangeToMarkdown(range);
+  // 一端落到非块区域（选到文档外沿）：钳制到首/末根块
+  if (!start) start = { id: blocks.value[0]?.id, el: null };
+  if (!end) end = { id: blocks.value[blocks.value.length - 1]?.id, el: null };
+  let i1 = blocks.value.findIndex((b) => b.id === start.id);
+  let i2 = blocks.value.findIndex((b) => b.id === end.id);
+  if (i1 === -1 || i2 === -1) return domRangeToMarkdown(range);
+  if (i1 > i2) [i1, i2] = [i2, i1];
+  const editId = editingId.value;
+
+  // 单个文本块（非编辑态）的部分选区：DOM 行内提取，只复制选中的文字
+  if (i1 === i2) {
+    const block = blocks.value[i1];
+    if (
+      start.el &&
+      block.id !== editId &&
+      COPY_TEXTY_TYPES.has(block.type) &&
+      !rangeCoversBlock(range, start.el)
+    ) {
+      return domRangeToMarkdown(range);
+    }
+  }
+
+  // 无编辑块混入：整段连续截取源文——块间原始分隔（列表项单换行/段落空行）原样保留
+  const first = blocks.value[i1];
+  const last = blocks.value[i2];
+  const editIdx = blocks.value.findIndex((b, i) => i >= i1 && i <= i2 && b.id === editId);
+  if (editIdx === -1 && first.start != null && last.end != null) {
+    const md = content.value.slice(first.start, last.end);
+    return md.trim() !== '' ? md : null;
+  }
+
+  // 编辑块在选区内：逐块拼装，块间分隔取源文中的原始间隔（不自行造空行——
+  // 列表项间是单换行，若统一加空行粘贴后会变成松散列表/断成多列）
+  const parts = [];
+  const editable = currentEditable();
+  for (let i = i1; i <= i2; i++) {
+    const b = blocks.value[i];
+    if (b.id === editId && editable) {
+      const part = await domRangeToMarkdown(clampRangeToElement(range, editable));
+      parts.push(part ?? '');
+    } else if (b.start != null && b.end != null) {
+      parts.push(content.value.slice(b.start, b.end));
+    } else {
+      parts.push('');
+    }
+    if (i < i2) {
+      const next = blocks.value[i + 1];
+      parts.push(
+        b.end != null && next.start != null && next.start >= b.end
+          ? content.value.slice(b.end, next.start)
+          : '\n\n',
+      );
+    }
+  }
+  const md = parts.join('').trim();
+  return md !== '' ? md : null;
+}
+
+async function writeSelectionToClipboard(e, sel) {
+  e.preventDefault();
+  const md = await selectionToMarkdown(sel.getRangeAt(0)).catch(() => null);
+  if (md != null && md !== '') {
+    await navigator.clipboard.writeText(md).catch(() => {});
+  } else {
+    // 序列化失败时回退纯文本
+    await navigator.clipboard.writeText(sel.toString()).catch(() => {});
+  }
+}
+
+async function onDocumentCopy(e) {
+  if (props.sourceMode) return;
+  const sel = window.getSelection();
+  if (!sel.rangeCount || sel.isCollapsed) return;
+  const root = scrollRoot.value;
+  if (!root || !root.contains(sel.anchorNode)) return;
+  await writeSelectionToClipboard(e, sel);
+}
+
+// 剪切：与复制同通道写 Markdown；选区完整落在编辑容器内时才删除选中内容
+// （渲染态区域不是 contenteditable，无删除语义）
+async function onDocumentCut(e) {
+  if (props.sourceMode) return;
+  const sel = window.getSelection();
+  if (!sel.rangeCount || sel.isCollapsed) return;
+  const root = scrollRoot.value;
+  if (!root || !root.contains(sel.anchorNode)) return;
+  await writeSelectionToClipboard(e, sel);
+  const el = currentEditable();
+  const range = sel.getRangeAt(0);
+  if (el && el.contains(range.startContainer) && el.contains(range.endContainer)) {
+    range.deleteContents();
+  }
+}
+
+// 未处于编辑态时的 Ctrl+A：只选择编辑器文档内容（不含侧栏/状态栏界面文字）；
+// Delete/Backspace：删除跨块/整块选区（选区完整落在编辑容器内时交给原生编辑行为）
+function onDocumentKeydown(e) {
+  if (props.sourceMode) return;
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a') {
+    // 输入框/文本域/编辑容器内：交给各自的原生或两段式逻辑
+    if (e.target.closest?.('input, textarea, [contenteditable="true"]')) return;
+    e.preventDefault();
+    const root = scrollRoot.value;
+    if (!root) return;
+    const sel = window.getSelection();
+    const all = document.createRange();
+    all.selectNodeContents(root);
+    sel.removeAllRanges();
+    sel.addRange(all);
+    return;
+  }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey && !e.metaKey && !e.altKey) {
+    if (e.target.closest?.('input, textarea')) return;
+    const sel = window.getSelection();
+    if (!sel?.rangeCount || sel.isCollapsed) return;
+    const root = scrollRoot.value;
+    if (!root || !root.contains(sel.anchorNode)) return;
+    const range = sel.getRangeAt(0);
+    const editEl = currentEditable();
+    // 选区完整落在编辑容器内：块内文本删除，交给 contenteditable 原生行为
+    if (editEl && editEl.contains(range.startContainer) && editEl.contains(range.endContainer)) return;
+    e.preventDefault();
+    deleteBlockSelection(range);
+  }
+}
+
+// 跨块/整块选区删除：移除选区覆盖的根块区间（源文接缝规范化为一个空行），
+// 光标落在接缝处的块首（删到文档末尾则落末块块尾；删光则进入追加区）；
+// 选区内含正在编辑的块时退出编辑态（未提交编辑随之放弃）
+async function deleteBlockSelection(range) {
+  const rootIds = new Set(blocks.value.map((b) => b.id));
+  const start = rootBlockAtPoint(range.startContainer, range.startOffset, true, rootIds);
+  const end = rootBlockAtPoint(range.endContainer, range.endOffset, false, rootIds);
+  if (!start || !end) return;
+  let i1 = blocks.value.findIndex((b) => b.id === start.id);
+  let i2 = blocks.value.findIndex((b) => b.id === end.id);
+  if (i1 === -1 || i2 === -1) return;
+  if (i1 > i2) [i1, i2] = [i2, i1];
+  const first = blocks.value[i1];
+  const last = blocks.value[i2];
+  if (first.start == null || last.end == null) return;
+  const editCovered = blocks.value.slice(i1, i2 + 1).some((b) => b.id === editingId.value);
+  syncing.value = true;
+  try {
+    if (editCovered) {
+      editableEl = null;
+      editingId.value = null;
+    }
+    const before = content.value.slice(0, first.start).replace(/\s+$/, '');
+    const after = content.value.slice(last.end).replace(/^\s+/, '');
+    content.value = [before, after].filter((s) => s !== '').join('\n\n');
+    await reparse();
+    window.getSelection()?.removeAllRanges();
+    const next = blocks.value[Math.min(i1, blocks.value.length - 1)];
+    suppressBlurCommit = true;
+    if (next) {
+      cursorAtStart = i1 < blocks.value.length;
+      editingId.value = next.id;
+    } else {
+      suppressBlurCommit = false;
+      editingId.value = '__append__';
+    }
+  } finally {
+    syncing.value = false;
+  }
 }
 
 // 表格编辑辅助监听：selectionchange 跟踪光标所在列对齐（工具栏高亮）；
@@ -2703,11 +3338,18 @@ function onDocumentMouseDown(e) {
 onMounted(() => {
   document.addEventListener('selectionchange', onDocumentSelectionChange);
   document.addEventListener('mousedown', onDocumentMouseDown, true);
+  document.addEventListener('keydown', onDocumentKeydown);
+  document.addEventListener('copy', onDocumentCopy);
+  document.addEventListener('cut', onDocumentCut);
 });
 onBeforeUnmount(() => {
   document.removeEventListener('selectionchange', onDocumentSelectionChange);
   document.removeEventListener('mousedown', onDocumentMouseDown, true);
+  document.removeEventListener('keydown', onDocumentKeydown);
+  document.removeEventListener('copy', onDocumentCopy);
+  document.removeEventListener('cut', onDocumentCut);
   clearTimeout(headingRebuildTimer);
+  clearTimeout(scrollEndTimer);
   // 断开虚拟滚动与重活懒执行的观察器
   rowObserver?.disconnect();
   rowObserver = null;
@@ -2719,7 +3361,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
 </script>
 
 <template>
-  <div class="flex h-full flex-col">
+  <div class="relative flex h-full flex-col">
     <textarea
       v-if="sourceMode"
       ref="sourceRoot"
@@ -2731,28 +3373,40 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
       @click="onInput"
     ></textarea>
 
-    <div v-else ref="scrollRoot" class="t-root flex-1 overflow-y-auto" :class="{ 'md-first-indent': firstLineIndent }" @scroll.passive="onEditorScroll" @contextmenu="onContextMenu">
+    <div v-else ref="scrollRoot" class="t-root flex-1 overflow-y-auto" :class="{ 'md-first-indent': firstLineIndent, 'sb-auto-hide': scrollbarAutoHide, 'sb-no-autohide': !scrollbarAutoHide }" @scroll.passive="onEditorScroll" @contextmenu="onContextMenu" @mousemove.passive="onEditorMouseMove" @mouseleave="onEditorMouseLeave">
       <div class="t-measure">
-      <!-- 虚拟滚动：每块包一层 VRow（占位保总高），仅视口余量内挂载内容；
+      <!-- 虚拟滚动 + 渐进挂载：配额内每块包一层 VRow（占位保总高），仅视口余量内挂载内容；
+           配额外行由下方估计高度占位条代替（大文档首屏组件规模恒定）；
            编辑块经 force 强制渲染（不可卸载，否则丢失光标与未提交内容） -->
       <VRow
-        v-for="{ block, estimate } in renderedBlocks"
+        v-for="{ block, estimate } in visibleRows"
         :key="block.id"
         :block="block"
         :estimate="estimate"
         :force="editingId === block.id"
       >
         <!-- Typora 式就地编辑：渲染后的内容直接在 contenteditable 中编辑 -->
-        <template v-if="editingId === block.id">
-          <!-- 表格编辑工具栏（Typora 式：左侧 尺寸/对齐，右侧 更多操作/删除；mousedown.prevent 保持单元格光标） -->
-          <div v-if="block.type === 'table'" class="md-table-toolbar" @mousedown.prevent>
+        <div
+          class="md-block-host"
+          @mouseover="block.type === 'table' && onTableBlockHover(block)"
+          @mouseleave="block.type === 'table' && onTableBlockLeave(block)"
+        >
+          <!-- 表格工具栏（Typora 式：左侧 尺寸/对齐，右侧 更多操作/删除；mousedown.prevent 保持单元格光标）。
+               编辑中与鼠标滑过（未编辑）均以同一内联形式显示在表格上方；
+               悬停态点击按钮先进入编辑、再执行动作 -->
+          <div
+            v-if="block.type === 'table' && (editingId === block.id || hoverTableId === block.id)"
+            class="md-table-toolbar"
+            @mousedown.prevent
+            @click.stop
+          >
             <div class="md-table-toolbar-group">
               <button
                 type="button"
                 class="md-table-btn tbl-resize"
                 :class="{ active: tablePanel === 'grid' }"
                 title="调整表格尺寸"
-                @click="openTablePanel('grid', $event)"
+                @click="onToolbarPanel(block, 'grid', $event)"
               >
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3">
                   <rect x="1.5" y="1.5" width="5.6" height="5.6" rx="1" />
@@ -2766,7 +3420,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
                 class="md-table-btn tbl-align"
                 :class="{ active: tableCaretAlign === 'left' }"
                 title="整列左对齐"
-                @click="tableOp('alignLeft')"
+                @click="onToolbarOp(block, 'alignLeft')"
               >
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
                   <path d="M2 4h12M2 8h7M2 12h9.5" />
@@ -2777,7 +3431,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
                 class="md-table-btn tbl-align"
                 :class="{ active: tableCaretAlign === 'center' }"
                 title="整列居中"
-                @click="tableOp('alignCenter')"
+                @click="onToolbarOp(block, 'alignCenter')"
               >
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
                   <path d="M2 4h12M4.5 8h7M3.5 12h9" />
@@ -2788,7 +3442,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
                 class="md-table-btn tbl-align"
                 :class="{ active: tableCaretAlign === 'right' }"
                 title="整列右对齐"
-                @click="tableOp('alignRight')"
+                @click="onToolbarOp(block, 'alignRight')"
               >
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
                   <path d="M2 4h12M7 8h7M4.5 12h9.5" />
@@ -2801,7 +3455,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
                 class="md-table-btn tbl-more"
                 :class="{ active: tablePanel === 'more' }"
                 title="更多操作"
-                @click="openTablePanel('more', $event)"
+                @click="onToolbarPanel(block, 'more', $event)"
               >
                 <span>更多操作</span>
                 <svg viewBox="0 0 16 16" fill="currentColor">
@@ -2810,13 +3464,14 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
                   <circle cx="8" cy="12.8" r="1.4" />
                 </svg>
               </button>
-              <button type="button" class="md-table-btn tbl-delete" title="删除表格" @click="deleteCurrentTableBlock()">
+              <button type="button" class="md-table-btn tbl-delete" title="删除表格" @click="onToolbarDelete(block)">
                 <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
                   <path d="M2.5 4h11M6.3 4V2.9c0-.5.4-.9.9-.9h1.6c.5 0 .9.4.9.9V4M4.2 4l.6 9.1c0 .6.5 1 1 1h4.4c.5 0 1-.4 1-1L11.8 4M6.8 7v4M9.2 7v4" />
                 </svg>
               </button>
             </div>
           </div>
+        <template v-if="editingId === block.id">
           <div
             :ref="setEditableEl"
             class="md-editing px-1 outline-none"
@@ -2836,7 +3491,10 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         >
           <BlockView :block="block" :ordinal="rootOrdinals.get(block.id) || 1" @toggle-task="toggleTask" />
         </div>
+        </div>
       </VRow>
+      <!-- 配额外行的占位条：估计高度和（渐进挂载期间保持文档总高近似正确） -->
+      <div v-if="tailPadHeight > 0" :style="{ height: `${tailPadHeight}px` }" aria-hidden="true"></div>
 
       <div
         v-if="editingId === '__append__'"
@@ -2852,7 +3510,6 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
       <div v-else class="min-h-24 cursor-text p-4" @click="startAppend">
         <span v-if="renderedBlocks.length === 0" class="t-dim px-1">开始写作...</span>
       </div>
-
       <!-- 脚注定义集中显示在文档末尾，支持点击引用跳转与返回 -->
       <div v-if="footnotes.length" class="md-footnotes">
         <div class="md-footnotes-title">脚注</div>
@@ -2867,7 +3524,13 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
           <BlockView :block="block" :ordinal="1" @toggle-task="toggleTask" />
         </div>
       </div>
+      <!-- 文档末尾可滚空间：让最后一行能上移到标题栏下方（触底输入时平滑跟随不闪变） -->
+      <div class="md-bottom-space" aria-hidden="true"></div>
       </div>
+    </div>
+    <!-- 覆盖层滚动条：彩色可拖动滑轨（自动隐藏模式下替代原生条；滚动/右缘悬停时显示） -->
+    <div v-if="!sourceMode" class="md-scrollbar" :class="{ show: sbShow, dragging: sbDragging }" aria-hidden="true" @pointerdown="sbOnTrackPointerDown">
+      <div class="md-scrollbar-thumb" :style="{ top: `${sbThumb.top}px`, height: `${sbThumb.height}px` }" @pointerdown.stop="sbOnThumbPointerDown"></div>
     </div>
   </div>
   <!-- 斜杠命令菜单 / 围栏语言补全菜单（同一面板，互斥触发）：Teleport 移出根布局（多根片段），其挂载/卸载不再引起

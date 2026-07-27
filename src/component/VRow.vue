@@ -37,8 +37,18 @@ watch(
   },
 );
 
-onMounted(() => observeRow(el.value, onVisible));
-onBeforeUnmount(() => unobserveRow(el.value));
+// 记录被观察元素（卸载回调时 ref 可能已为 null，须用挂载时捕获的元素注销）
+let observedEl = null;
+onMounted(() => {
+  observedEl = el.value;
+  observeRow(observedEl, onVisible);
+});
+onBeforeUnmount(() => {
+  if (observedEl) {
+    unobserveRow(observedEl);
+    observedEl = null;
+  }
+});
 </script>
 
 <template>

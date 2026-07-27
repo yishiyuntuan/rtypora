@@ -38,6 +38,7 @@ export default {
       task_checkbox_checked_bg: '#3e69d7',
       task_checkbox_check: '#ffffff',
       scrollbar_thumb: '#e4e4e8',
+      scrollbar_track: 'transparent',
       code_syntax_comment: '#485d6cbf',
       code_syntax_keyword: '#bb59fd',
       code_syntax_string: '#02be74',

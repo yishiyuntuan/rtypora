@@ -117,20 +117,20 @@ function doNew() {
 }
 
 async function doOpen() {
-  const opened = await invoke("open_markdown_file");
+  const opened = await invoke("open_markdown_parsed");
   if (!opened) return;
   currentFilePath.value = opened.path;
   recordRecent(opened.path);
-  editorRef.value?.loadDocument(opened.content);
+  editorRef.value?.loadDocument(opened.content, { blocks: opened.blocks, tailFrom: opened.tailFrom });
 }
 
 // 侧边栏文件树点击：按路径打开
 async function onSidebarOpenFile(path) {
-  const opened = await invoke("read_markdown_file", { path });
+  const opened = await invoke("read_markdown_parsed", { path });
   if (!opened) return;
   currentFilePath.value = opened.path;
   recordRecent(opened.path);
-  editorRef.value?.loadDocument(opened.content);
+  editorRef.value?.loadDocument(opened.content, { blocks: opened.blocks, tailFrom: opened.tailFrom });
 }
 
 // 侧边栏：打开文件夹（弹框或直接传入路径）

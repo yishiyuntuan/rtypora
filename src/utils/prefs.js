@@ -20,6 +20,8 @@ const DEFAULTS = {
   content_max_width: null,   // 内容列最大宽度覆盖（px）
   editor_padding: null,      // 编辑区内边距覆盖（px）
   first_line_indent: false,  // 段落首行缩进（2em）
+  // 滚动条自动隐藏：平时隐藏，悬停或滚动时显示
+  scrollbar_auto_hide: true,
   // 图像
   image_paste_behavior: 'document', // 'off' | 'document'（文档目录）| 'assets'（assets 子目录）
   // Markdown 渲染开关
@@ -97,4 +99,6 @@ export function applyEditorOverrides(prefs = load()) {
   apply('--t-text-line-height-pref', prefs.text_line_height);
   apply('--t-content-max-width-pref', prefs.content_max_width);
   apply('--t-editor-padding-pref', prefs.editor_padding);
+  // 滚动条自动隐藏开关（html.sb-auto-hide 驱动 CSS 显隐规则）
+  document.documentElement.classList.toggle('sb-auto-hide', !!prefs.scrollbar_auto_hide);
 }

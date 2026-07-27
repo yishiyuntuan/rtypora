@@ -4,12 +4,81 @@
 use serde::Serialize;
 use tauri_plugin_dialog::DialogExt;
 
+use crate::markdown;
+
+/// 大文件渐进加载：首屏前缀的目标字节数（前缀安全截断后解析返回，
+/// 尾部由前端后台再解析补齐，避免整棵块树的大 IPC 阻塞首屏）。
+const OPEN_PREFIX_TARGET_BYTES: usize = 128 * 1024;
+
 /// 已打开的 Markdown 文件（路径 + 全文）。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenedFile {
     pub path: String,
     pub content: String,
+}
+
+/// 已打开的 Markdown 文件 + 首屏解析块（渐进加载入口）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenedFileParsed {
+    pub path: String,
+    pub content: String,
+    /// 首屏块（前缀解析结果；tail_from 为 None 时即全文块树）
+    pub blocks: Vec<markdown::model::BlockDto>,
+    /// 尾部重解析起点（UTF-16 偏移 = 首屏末块起点；末块可能被截断，
+    /// 尾部带完整上下文重解析后原位替换，接缝自愈）；None 表示无需尾部
+    pub tail_from: Option<usize>,
+}
+
+/// 前缀安全截断点：target 之后首个「非代码围栏内空行」的行首。
+/// 截在空行之前（前缀不以空行结尾）：否则前缀解析会在末尾多产出一个空段落块，
+/// 与尾部重解析拼接后比全量解析多一块。空行本身是跨块安全边界
+/// （松列表/表格/段落均在空行处分块），围栏内不切（避免代码块被截成两截）。
+fn safe_prefix_end(markdown: &str, target_bytes: usize) -> usize {
+    let mut in_fence = false;
+    let mut pos = 0usize;
+    for line in markdown.split_inclusive('\n') {
+        let line_start = pos;
+        pos += line.len();
+        let t = line.trim_start();
+        if t.starts_with("```") || t.starts_with("~~~") {
+            in_fence = !in_fence;
+        }
+        if line_start >= target_bytes && !in_fence && line.trim().is_empty() {
+            return line_start;
+        }
+    }
+    markdown.len()
+}
+
+/// 读取结果 + 首屏解析：小文档全量解析（tail_from = None），
+/// 大文档只解析安全前缀，尾部偏移交给前端后台增量补齐。
+fn parsed_open(path: String, content: String) -> OpenedFileParsed {
+    if content.len() <= OPEN_PREFIX_TARGET_BYTES {
+        let blocks = markdown::parse_blocks(&content);
+        return OpenedFileParsed {
+            path,
+            content,
+            blocks,
+            tail_from: None,
+        };
+    }
+    let cut = safe_prefix_end(&content, OPEN_PREFIX_TARGET_BYTES);
+    let blocks = markdown::parse_blocks(&content[..cut]);
+    // 末块起点作为尾部重解析起点（末块可能被截断，需带上下文重解析自愈）；
+    // 前缀无块（极端：整块超长的围栏/HTML 块）时从 0 全量重来
+    let tail_from = if cut < content.len() {
+        Some(blocks.last().and_then(|b| b.start).unwrap_or(0))
+    } else {
+        None
+    };
+    OpenedFileParsed {
+        path,
+        content,
+        blocks,
+        tail_from,
+    }
 }
 
 /// 目录条目（侧边栏文件树节点）。
@@ -54,6 +123,29 @@ pub fn read_markdown_file(path: &str) -> Option<OpenedFile> {
         path: path.to_string(),
         content,
     })
+}
+
+/// 打开 Markdown 文件并返回首屏解析块（大文件渐进加载）。
+#[tauri::command]
+pub fn open_markdown_parsed(app: tauri::AppHandle) -> Option<OpenedFileParsed> {
+    let picked = app
+        .dialog()
+        .file()
+        .add_filter("Markdown", &["md", "markdown"])
+        .blocking_pick_file()?;
+    let path = picked.into_path().ok()?;
+    let content = std::fs::read_to_string(&path).ok()?;
+    Some(parsed_open(path.to_string_lossy().to_string(), content))
+}
+
+/// 按路径读取 Markdown 文件并返回首屏解析块（大文件渐进加载）。
+#[tauri::command]
+pub fn read_markdown_parsed(path: &str) -> Option<OpenedFileParsed> {
+    if !is_markdown_name(path) {
+        return None;
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    Some(parsed_open(path.to_string(), content))
 }
 
 /// 列出目录内容：文件夹在前，文件在后，各自按名称排序（sort: "asc" 默认升序 / "desc" 降序；不递归）。
@@ -235,12 +327,37 @@ pub fn pick_folder(app: tauri::AppHandle) -> Option<String> {
     Some(picked.into_path().ok()?.to_string_lossy().to_string())
 }
 
-/// 在当前文件夹创建新的 Markdown 文件（untitled.md，重名自动编号），返回路径。
+/// 在当前文件夹创建新的 Markdown 文件，返回路径。
+/// 指定 `name` 时按该名称创建（剥离路径分隔符限制在当前目录、自动补 `.md` 后缀、
+/// 已存在则拒绝不覆盖，返回 None）；未指定时 untitled.md（重名自动编号）。
 #[tauri::command]
-pub fn create_markdown_file(dir: &str) -> Option<String> {
+pub fn create_markdown_file(dir: &str, name: Option<String>) -> Option<String> {
     let dir = std::path::Path::new(dir);
     if !dir.is_dir() {
         return None;
+    }
+    if let Some(name) = name {
+        // 名称净化：去首尾空白与前导分隔符/点、剔除路径分隔符（保证落盘在当前目录）
+        let cleaned = name
+            .trim()
+            .trim_start_matches(['/', '\\', '.'])
+            .replace(['/', '\\'], "");
+        let cleaned = cleaned.trim();
+        if cleaned.is_empty() {
+            return None;
+        }
+        let file_name = if cleaned.to_ascii_lowercase().ends_with(".md") {
+            cleaned.to_string()
+        } else {
+            format!("{cleaned}.md")
+        };
+        let path = dir.join(&file_name);
+        // 已存在则拒绝（不覆盖已有文件）
+        if path.exists() {
+            return None;
+        }
+        std::fs::write(&path, "").ok()?;
+        return Some(path.to_string_lossy().to_string());
     }
     for i in 0..100 {
         let name = if i == 0 {

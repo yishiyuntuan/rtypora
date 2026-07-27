@@ -384,6 +384,13 @@ function elementToBlocks(el) {
     return [makeBlock({ type: 'heading', level: Number(tag[1]) }, { title: makeTree(fragments) })];
   }
   if (tag === 'P' || tag === 'DIV') {
+    // 包装 div（渲染态 .md-block 等）仅含单个块级子元素且无其他文本时解包递归——
+    // 粘贴本应用渲染 HTML 时保留标题/引用/表格等块类型
+    if (tag === 'DIV' && el.childElementCount === 1 && isBlockElement(el.firstElementChild)) {
+      const child = el.firstElementChild;
+      const textOutside = [...el.childNodes].some((n) => n !== child && n.textContent.trim() !== '');
+      if (!textOutside) return elementToBlocks(child);
+    }
     return [makeBlock({ type: 'paragraph' }, { title: makeTree(trimEdgeNewlines(domToInlines(el))) })];
   }
   if (tag === 'PRE') {

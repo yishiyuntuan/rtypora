@@ -37,6 +37,7 @@ export default {
       task_checkbox_checked_bg: '#3e69d7',
       task_checkbox_check: '#ffffff',
       scrollbar_thumb: '#464b50',
+      scrollbar_track: 'transparent',
       code_syntax_comment: '#667c89',
       code_syntax_keyword: '#bb59fd',
       code_syntax_string: '#02be74',
@@ -115,6 +116,7 @@ export default {
       quote_border_width: 4,
       callout_radius: 8,
       code_bg_radius: 8,
+      scrollbar_width: 8,
     },
     // Mdmdt 版式特征：标题 2px 字距、h1 底部分隔线、正文 0.6px 字距、引用蓝底圆角、
     // 表格斑马纹、链接去下划线（悬停橙色+下划线）、行内代码蓝底、mark/kbd 圆角填充

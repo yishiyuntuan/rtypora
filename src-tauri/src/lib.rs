@@ -33,6 +33,8 @@ pub fn run() {
             markdown::parse_html_color,
             files::open_markdown_file,
             files::read_markdown_file,
+            files::open_markdown_parsed,
+            files::read_markdown_parsed,
             files::list_dir,
             files::read_image_data_url,
             files::save_file,

@@ -113,6 +113,14 @@ function update(key, value) {
                 />
                 <span>段落首行缩进（2 字符宽）</span>
               </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.scrollbar_auto_hide"
+                  @change="update('scrollbar_auto_hide', $event.target.checked)"
+                />
+                <span>滚动条自动隐藏（悬停或滚动时显示）</span>
+              </label>
               <p class="t-dim text-[12px]">仅对普通段落生效；引用、列表、表格等容器内的段落不缩进。</p>
 
               <div>
