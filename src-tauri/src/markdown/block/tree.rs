@@ -175,11 +175,17 @@ fn collect_single_block_markdown_lines(node: &BlockNode, list_depth: usize, line
             // 解析树序列化统一传 None（规范化为 1. 起始）。
             lines.push(node.record.markdown_line(list_depth, None));
             let child_list_depth = list_depth + 1;
+            let mut previous_child_was_table = false;
             for child in &node.children {
+                // 相邻两个表格子块之间必须有空行（否则重解析合并为一张表）
+                if previous_child_was_table && child.record.kind == BlockKind::Table {
+                    lines.push(String::new());
+                }
                 if list_child_requires_leading_blank_line(child) {
                     lines.push(String::new());
                 }
                 collect_single_block_markdown_lines(child, child_list_depth, lines);
+                previous_child_was_table = child.record.kind == BlockKind::Table;
             }
         }
         _ => {
@@ -207,11 +213,14 @@ fn collect_markdown_lines(
 ) {
     let mut first = true;
     let mut previous_was_list_item = false;
+    let mut previous_was_table = false;
     for node in blocks {
         let current_is_list_item = node.record.kind.is_list_item();
+        let current_is_table = node.record.kind == BlockKind::Table;
+        // 相邻两个表格之间必须有空行（否则连续管道行重解析时合并为一张表），与空行规则无关
         if !first
-            && blank_line_between_siblings
-            && !(previous_was_list_item && current_is_list_item)
+            && ((blank_line_between_siblings && !(previous_was_list_item && current_is_list_item))
+                || (previous_was_table && current_is_table))
         {
             lines.push(String::new());
         }
@@ -219,6 +228,7 @@ fn collect_markdown_lines(
 
         collect_single_block_markdown_lines(node, depth, lines);
         previous_was_list_item = current_is_list_item;
+        previous_was_table = current_is_table;
     }
 }
 

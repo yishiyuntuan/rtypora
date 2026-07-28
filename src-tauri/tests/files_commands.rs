@@ -118,8 +118,39 @@ fn 小文件渐进打开_无尾部() {
 
     let opened = tauri_app_lib::files::read_markdown_parsed(path.to_str().unwrap()).expect("应读取成功");
     assert!(opened.tail_from.is_none(), "小文件无尾部");
+    assert_eq!(opened.line_ending, "lf");
     assert_eq!(opened.blocks.len(), tauri_app_lib::markdown::parse_blocks(doc).len());
     // 非 Markdown 文件拒绝
     assert!(tauri_app_lib::files::read_markdown_parsed(path.with_extension("txt").to_str().unwrap()).is_none());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn 换行符规范化_crlf文档() {
+    // CRLF 为主的 Windows 风格文档：内容规范化为 LF、风格记录为 crlf、解析不受影响
+    let doc = "# 标题\r\n\r\n第一行\r\n第二行\r\n\r\n- 列表项\r\n\r\n```rust\r\nfn a() {}\r\n```\r\n";
+    let dir = std::env::temp_dir().join(format!("tauri-app-crlf-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("win.md");
+    std::fs::write(&path, doc).unwrap();
+
+    let opened = tauri_app_lib::files::read_markdown_parsed(path.to_str().unwrap()).expect("应读取成功");
+    assert_eq!(opened.line_ending, "crlf", "CRLF 居多应记录为 crlf");
+    assert!(!opened.content.contains('\r'), "内容必须规范化为 LF");
+    // 与 LF 原文解析结果一致（块数与区间）
+    let lf_doc = doc.replace("\r\n", "\n");
+    let full = tauri_app_lib::markdown::parse_blocks(&lf_doc);
+    assert_eq!(opened.blocks.len(), full.len(), "CRLF 规范化后块数应与 LF 解析一致");
+    for (a, b) in opened.blocks.iter().zip(full.iter()) {
+        assert_eq!(a.start, b.start);
+        assert_eq!(a.end, b.end);
+    }
+
+    // LF 为主的文档记录为 lf
+    let path2 = dir.join("unix.md");
+    std::fs::write(&path2, "a\nb\r\nc\n").unwrap();
+    let opened2 = tauri_app_lib::files::read_markdown_parsed(path2.to_str().unwrap()).expect("应读取成功");
+    assert_eq!(opened2.line_ending, "lf", "LF 居多应记录为 lf");
+    assert!(!opened2.content.contains('\r'));
     std::fs::remove_dir_all(&dir).ok();
 }

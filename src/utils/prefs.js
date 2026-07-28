@@ -28,6 +28,11 @@ const DEFAULTS = {
   render_code_highlight: true,
   render_code_line_numbers: true,
   render_mermaid: true,
+  render_plantuml: true,
+  // PlantUML 渲染方式：'local' 内置引擎（离线）| 'server' 渲染服务器
+  plantuml_renderer: 'local',
+  // PlantUML 渲染服务器（/svg/<encoded> 端点；server 模式用，可换自部署实例）
+  plantuml_server: 'https://www.plantuml.com/plantuml',
   render_math: true,
   render_html_block: true,
   // 公式编号：'off' 不启用 | 'ams' 按 AMS 规则 | 'all' 所有展示公式

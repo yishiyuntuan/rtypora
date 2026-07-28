@@ -1199,6 +1199,7 @@ impl InlineTextTree {
             &mut builder,
             false,
             reference_definitions,
+            0,
         );
         InlineEditResult {
             tree: InlineTextTree::from_fragments(builder.fragments),
@@ -1567,6 +1568,10 @@ fn flatten_tokens(fragments: &[InlineFragment]) -> Vec<CharToken> {
 /// the normalized inline tree.  Matching delimiters are consumed (dropped);
 /// unmatched ones are emitted as literal text.  Nested styles are handled by
 /// recursive calls that accumulate `extra_style`.
+// 行内嵌套深度上限（防栈溢出）：超深分隔符/行内 HTML 嵌套按未闭合处理
+//（开符按字面量保留，不丢文本内容）
+const MAX_INLINE_NESTING_DEPTH: usize = 128;
+
 fn parse_until(
     tokens: &[CharToken],
     mut index: usize,
@@ -1576,7 +1581,14 @@ fn parse_until(
     builder: &mut NormalizeBuilder,
     inside_code: bool,
     reference_definitions: &LinkReferenceDefinitions,
+    depth: usize,
 ) -> ParseResult {
+    if depth >= MAX_INLINE_NESTING_DEPTH {
+        return ParseResult {
+            next_index: index,
+            closed: false,
+        };
+    }
     let body_start = index;
     while index < tokens.len() {
         // Check for closing delimiter.
@@ -1668,6 +1680,7 @@ fn parse_until(
                     extra_html_style.clone(),
                     builder,
                     reference_definitions,
+                    depth,
                 ) {
                     index = next_index;
                     continue;
@@ -1704,6 +1717,7 @@ fn parse_until(
                         builder,
                         is_code_delim,
                         reference_definitions,
+                        depth + 1,
                     );
                     if parsed.closed {
                         index = parsed.next_index;
@@ -2112,6 +2126,7 @@ fn parse_inline_html_container(
     extra_html_style: Option<HtmlInlineStyle>,
     builder: &mut NormalizeBuilder,
     reference_definitions: &LinkReferenceDefinitions,
+    depth: usize,
 ) -> Option<usize> {
     let tag = locate_inline_html_open_tag(tokens, index)?;
     if tag.self_closing || !is_inline_tag(&tag.name) || has_dangerous_attrs(&tag.attrs) {
@@ -2217,6 +2232,7 @@ fn parse_inline_html_container(
         builder,
         false,
         reference_definitions,
+        depth + 1,
     );
     for token in &tokens[close_start..=close_end] {
         builder.drop_token(token);

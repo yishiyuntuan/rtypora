@@ -16,13 +16,20 @@ const html = ref('');
 watch(
   () => [props.raw, documentDir.value, renderVersion.value],
   async () => {
-    html.value = '';
     // 偏好设置可关闭渲染（回退源码展示，由 BlockView 分支处理）
-    if (!getPref('render_html_block')) return;
+    if (!getPref('render_html_block')) {
+      html.value = '';
+      return;
+    }
     const doc = new DOMParser().parseFromString(props.raw, 'text/html');
     const section = doc.querySelector('section');
-    if (!section) return;
+    if (!section) {
+      // 解析失败清空（raw 失效时残留旧渲染的 bug）
+      html.value = '';
+      return;
+    }
     const images = [...section.querySelectorAll('img')];
+    // 图片解析完成前保留旧 HTML（缓存命中仅微任务）：避免重挂载出现空白帧
     await Promise.all(
       images.map(async (img) => {
         const resolved = await resolveImageSrc(img.getAttribute('src') || '', documentDir.value);

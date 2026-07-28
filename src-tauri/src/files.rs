@@ -29,6 +29,21 @@ pub struct OpenedFileParsed {
     /// 尾部重解析起点（UTF-16 偏移 = 首屏末块起点；末块可能被截断，
     /// 尾部带完整上下文重解析后原位替换，接缝自愈）；None 表示无需尾部
     pub tail_from: Option<usize>,
+    /// 原文档主导换行风格（"crlf" | "lf"）：内容已规范化为 LF，
+    /// 保存时由前端按此还原，保持文件原有的换行约定
+    pub line_ending: String,
+}
+
+/// 换行符规范化：CRLF/CR → LF（解析器与 UTF-16 偏移体系只认 \n）；
+/// 返回规范化文本与原文档主导风格（CRLF 居多记 "crlf"，否则 "lf"）。
+fn normalize_line_endings(text: &str) -> (String, &'static str) {
+    let crlf = text.matches("\r\n").count();
+    let lone_lf = text.matches('\n').count() - crlf;
+    let style = if crlf > lone_lf { "crlf" } else { "lf" };
+    if !text.contains('\r') {
+        return (text.to_string(), style);
+    }
+    (text.replace("\r\n", "\n").replace('\r', "\n"), style)
 }
 
 /// 前缀安全截断点：target 之后首个「非代码围栏内空行」的行首。
@@ -54,7 +69,9 @@ fn safe_prefix_end(markdown: &str, target_bytes: usize) -> usize {
 
 /// 读取结果 + 首屏解析：小文档全量解析（tail_from = None），
 /// 大文档只解析安全前缀，尾部偏移交给前端后台增量补齐。
+/// 内容统一规范化为 LF（line_ending 记录原文档风格供保存还原）。
 fn parsed_open(path: String, content: String) -> OpenedFileParsed {
+    let (content, line_ending) = normalize_line_endings(&content);
     if content.len() <= OPEN_PREFIX_TARGET_BYTES {
         let blocks = markdown::parse_blocks(&content);
         return OpenedFileParsed {
@@ -62,6 +79,7 @@ fn parsed_open(path: String, content: String) -> OpenedFileParsed {
             content,
             blocks,
             tail_from: None,
+            line_ending: line_ending.to_string(),
         };
     }
     let cut = safe_prefix_end(&content, OPEN_PREFIX_TARGET_BYTES);
@@ -78,6 +96,7 @@ fn parsed_open(path: String, content: String) -> OpenedFileParsed {
         content,
         blocks,
         tail_from,
+        line_ending: line_ending.to_string(),
     }
 }
 
@@ -223,6 +242,26 @@ pub fn read_image_data_url(source: &str, base_dir: Option<&str>) -> Option<Strin
     };
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
     Some(format!("data:{mime};base64,{encoded}"))
+}
+
+/// 解析本地图片为存在的绝对路径（编辑器内 <img> 走 asset 协议：
+/// 浏览器原生缓存 + 流式读取，滚动重挂载不再重复 base64 解码）。
+/// 远程 URL 返回 None（前端直用原地址）；文件不存在返回 None（前端显示占位）。
+#[tauri::command]
+pub fn resolve_image_path(source: &str, base_dir: Option<&str>) -> Option<String> {
+    if source.starts_with("http://") || source.starts_with("https://") {
+        return None;
+    }
+    let path = std::path::Path::new(source);
+    let resolved: PathBuf = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        PathBuf::from(base_dir?).join(path)
+    };
+    if !resolved.is_file() {
+        return None;
+    }
+    Some(resolved.to_string_lossy().to_string())
 }
 
 /// 保存到当前路径；写失败返回错误信息。

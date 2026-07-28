@@ -541,7 +541,7 @@ fn is_reference_scan_closing_fence(line: &str, opener: FenceInfo) -> bool {
         .chars()
         .take_while(|current| *current == opener.ch)
         .count();
-    run_len == opener.len && trimmed[opener.ch.len_utf8() * run_len..].trim().is_empty()
+    run_len >= opener.len && trimmed[opener.ch.len_utf8() * run_len..].trim().is_empty()
 }
 
 fn parse_reference_scan_html_block_start(line: &str) -> Option<HtmlBlockStart> {

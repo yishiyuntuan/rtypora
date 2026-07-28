@@ -18,8 +18,14 @@ fn line_utf16_starts(markdown: &str) -> Vec<usize> {
 }
 
 /// 解析入口共用：根块行区间 → 带 UTF-16 偏移的 DTO（偏移相对传入文本起点）。
+/// 先全文扫描链接/图片引用定义（[label]: url），再在定义作用域内解析块树——
+/// 引用式链接/图片由此接入生产解析（片段解析只见片段内定义，见 inline/mod.rs）。
 fn parse_to_dtos(markdown: &str) -> Vec<model::BlockDto> {
-    let roots = block::document::parse_root_blocks(markdown);
+    let link_defs = inline::link::parse_link_reference_definitions(markdown);
+    let image_defs = inline::image::parse_image_reference_definitions(markdown);
+    let roots = inline::with_parse_reference_definitions(&link_defs, &image_defs, || {
+        block::document::parse_root_blocks(markdown)
+    });
     let starts = line_utf16_starts(markdown);
     let total = markdown.encode_utf16().count();
     roots
@@ -116,6 +122,7 @@ pub fn block_template(
     rows: Option<usize>,
     cols: Option<usize>,
     variant: Option<String>,
+    footnote_id: Option<String>,
 ) -> BlockTemplate {
     let (markdown, caret_offset) = match kind {
         "table" => {
@@ -146,8 +153,17 @@ pub fn block_template(
         "link" => ("[链接]()".to_string(), 4),
         // 行内公式：两个 $ 之间输入（单行模板，Enter 整块提交渲染）
         "inlineMath" => ("$$".to_string(), 1),
-        // 脚注定义与链接引用定义（右键菜单「插入」）
-        "footnoteDef" => ("[^1]: ".to_string(), "[^1]: ".len()),
+        // 脚注定义与链接引用定义（右键菜单「插入」）；脚注 id 经 footnote_id 指定
+        "footnoteDef" => {
+            let id = footnote_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| inline::footnote::is_valid_footnote_id(s))
+                .unwrap_or("1");
+            let md = format!("[^{id}]: ");
+            let caret = md.encode_utf16().count();
+            (md, caret)
+        }
         "linkRef" => ("[1]: url \"title\"".to_string(), 5),
         // 内容目录（[TOC] 段落，渲染为文档大纲）与 YAML Front Matter（文档头插入）
         "toc" => ("[TOC]".to_string(), 5),
@@ -167,12 +183,52 @@ pub fn merge_block_markdown(prev_source: &str, appended_markdown: &str) -> Strin
     format!("{}{}", prev_source, appended_markdown.trim())
 }
 
+/// Markdown 嗅探（粘贴通道判定，与解析器同源，避免前端正则与解析器漂移）：
+/// 含任何非段落根块，或段落内含行内格式（样式/链接/脚注/公式/HTML 样式）即视为 Markdown。
+#[tauri::command]
+pub fn looks_like_markdown(markdown: &str) -> bool {
+    block::document::parse_root_blocks(markdown)
+        .iter()
+        .any(|root| {
+            let node = &root.node;
+            if node.record.kind != block::state::BlockKind::Paragraph {
+                return true;
+            }
+            node.record.title.fragments.iter().any(|f| {
+                f.style != inline::tree::InlineStyle::default()
+                    || f.html_style.is_some()
+                    || f.link.is_some()
+                    || f.footnote.is_some()
+                    || f.math.is_some()
+            })
+        })
+}
+
 /// 解析 Markdown 片段（单个或少数块的源码），返回块树（JSON）。
 /// 偏移相对片段起点；前端在编辑提交后只重解析受影响的区域做增量更新，
 /// 避免整棵树重解析（未变化的块 id 保持稳定，前端局部重渲染）。
 #[tauri::command]
 pub fn parse_blocks(markdown: &str) -> Vec<model::BlockDto> {
     parse_to_dtos(markdown)
+}
+
+/// parse_blocks 的异步版本（编辑链路用）：在异步运行时执行、离开主线程——
+/// 大文档的 text_stats 等重调用在途时，编辑提交不再排队等待。
+#[tauri::command]
+pub async fn parse_blocks_async(markdown: String) -> Vec<model::BlockDto> {
+    parse_blocks(&markdown)
+}
+
+/// parse_markdown 的异步版本（同上）。
+#[tauri::command]
+pub async fn parse_markdown_async(markdown: String) -> Vec<model::BlockDto> {
+    parse_markdown(&markdown)
+}
+
+/// text_stats 的异步版本（同上；超大文档全文统计耗时，绝不能阻塞主线程 IPC）。
+#[tauri::command]
+pub async fn text_stats_async(markdown: String) -> TextStats {
+    text_stats(&markdown)
 }
 
 /// 把块树序列化为规范 Markdown（用于往返测试与后续保存规范化）。
@@ -194,29 +250,54 @@ pub fn format_table_source(markdown: &str) -> Option<String> {
     Some(table::serialize_table_markdown_lines_padded(&table).join("\n"))
 }
 
+/// 行内任务标记位置：仅在「列表标记前缀（无序 -/*/+ 或有序 1./1)，任意缩进）+
+/// 空白」之后紧跟 [ ]/[x]/[X] 时命中——围栏/缩进代码/行内代码与正文中的
+/// 同形文本不计入（杜绝篡改代码内容或勾选静默失效）。
+fn task_marker_pos_in_line(line: &str) -> Option<usize> {
+    let t = line.trim_start();
+    let after_bullet = if t.len() >= 2 && matches!(t.as_bytes()[0], b'-' | b'+' | b'*') && t.as_bytes()[1] == b' ' {
+        &t[2..]
+    } else {
+        // 有序列表标记：digits + (.|)) + space
+        let bytes = t.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() && bytes[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i > 0 && i + 1 < bytes.len() && (bytes[i] == b'.' || bytes[i] == b')') && bytes[i + 1] == b' ' {
+            &t[i + 2..]
+        } else {
+            return None;
+        }
+    };
+    for pat in ["[ ]", "[x]", "[X]"] {
+        if after_bullet.starts_with(pat) {
+            return Some(line.len() - after_bullet.len());
+        }
+    }
+    None
+}
+
 /// 任务列表勾选：把源码中第 occurrence 个（0 基，默认首个）任务标记替换为勾选状态。
 /// occurrence 为任务项在块树 DFS 前序中的序号（嵌套任务项经根块源码定位）；
-/// 同一轮取三种写法中位置最早者，兼容 `[ ]`/`[x]`/`[X]` 混排。
+/// 按行扫描且要求列表标记前缀，代码中的同形文本不会伪命中。
 /// Markdown 文本的增删改一律在 Rust 端完成，前端只做切片拼接。
 #[tauri::command]
 pub fn toggle_task_markdown(source: &str, checked: bool, occurrence: Option<usize>) -> String {
     let marker = if checked { "[x]" } else { "[ ]" };
     let target = occurrence.unwrap_or(0);
-    let mut rest = source;
-    let mut offset = 0usize;
-    for seen in 0..=target {
-        // 本轮最早出现的任务标记位置（三种写法取最小）
-        let pos = ["[ ]", "[x]", "[X]"]
-            .iter()
-            .filter_map(|pat| rest.find(pat))
-            .min();
-        let Some(pos) = pos else { break };
-        if seen == target {
-            let abs = offset + pos;
-            return format!("{}{}{}", &source[..abs], marker, &source[abs + 3..]);
+    let mut seen = 0usize;
+    let mut line_start = 0usize;
+    for line in source.split_inclusive('\n') {
+        let body = line.strip_suffix('\n').unwrap_or(line);
+        if let Some(pos) = task_marker_pos_in_line(body) {
+            if seen == target {
+                let abs = line_start + pos;
+                return format!("{}{}{}", &source[..abs], marker, &source[abs + 3..]);
+            }
+            seen += 1;
         }
-        offset += pos + 3;
-        rest = &rest[pos + 3..];
+        line_start += line.len();
     }
     source.to_string()
 }

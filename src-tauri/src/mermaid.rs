@@ -20,7 +20,12 @@ pub fn render_mermaid(source: &str) -> Option<String> {
         return cached.clone();
     }
     let rendered = render_mermaid_raw(&body);
-    MERMAID_CACHE.lock().ok()?.insert(key, rendered.clone());
+    // 进程内缓存上限（防无界增长）：满 500 条清空重建
+    let mut cache = MERMAID_CACHE.lock().ok()?;
+    if cache.len() >= 500 {
+        cache.clear();
+    }
+    cache.insert(key, rendered.clone());
     rendered
 }
 

@@ -10,7 +10,7 @@ use uuid::Uuid;
 use super::block::document::BlockNode;
 use super::block::state::{BlockKind, BlockRecord, CalloutVariant};
 use super::inline::html;
-use super::inline::image::{ImageTarget, parse_standalone_image};
+use super::inline::image::parse_standalone_image;
 use super::inline::tree::InlineTextTree;
 use super::table::TableData;
 
@@ -169,17 +169,17 @@ impl BlockDto {
     /// 从解析节点构建 DTO；`range` 为根块的 UTF-16 区间，子块传 None。
     pub fn from_node(node: &BlockNode, range: Option<(usize, usize)>) -> Self {
         // 独立图片段落：段落正文整体是 ![alt](src) 语法时携带图片信息
+        //（引用式 ![alt][label] 经当前解析作用域的图片引用定义解析目标）
         let image = if node.record.kind == BlockKind::Paragraph && node.children.is_empty() {
             parse_standalone_image(&node.record.title.visible_text()).and_then(|syntax| {
-                match syntax.target {
-                    ImageTarget::Direct { src, title } => Some(ImageDto {
+                crate::markdown::inline::with_current_image_refs(|refs| {
+                    syntax.resolve_target(refs).map(|target| ImageDto {
                         alt: syntax.alt,
-                        src,
-                        title,
+                        src: target.src,
+                        title: target.title,
                         zoom: None,
-                    }),
-                    ImageTarget::Reference { .. } => None,
-                }
+                    })
+                })
             })
         } else if matches!(node.record.kind, BlockKind::HtmlBlock | BlockKind::RawMarkdown) {
             // 独立 <img> HTML 行：携带图片信息（含 zoom），前端按图片渲染；

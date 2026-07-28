@@ -60,9 +60,18 @@ const blocks = ref([]);
 // 全部正文块（不含脚注定义；脚注集中渲染在文末）
 const allBlocks = computed(() => blocks.value.filter((b) => b.type !== 'footnoteDefinition'));
 // 虚拟滚动：全部行都渲染 VRow 占位（总高正确），内容按视口余量挂载（见 VRow.vue）；
-// 行高估计随块树一次性算好（避免父级重渲染时逐行重复切片统计）
+// 包装对象按块身份记忆化（WeakMap）：提交编辑时未变化的块不再每次全量分配
+// {block, estimate} 包装数组（主题切换时随估计缓存一并失效）
+let rowWrapperCache = new WeakMap();
 const renderedBlocks = computed(() =>
-  allBlocks.value.map((block) => ({ block, estimate: estimateBlockHeight(block) })),
+  allBlocks.value.map((block) => {
+    let w = rowWrapperCache.get(block);
+    if (!w) {
+      w = { block, estimate: estimateBlockHeight(block) };
+      rowWrapperCache.set(block, w);
+    }
+    return w;
+  }),
 );
 const footnotes = computed(() => blocks.value.filter((b) => b.type === 'footnoteDefinition'));
 // 根块的有序列表序号表（id -> 1 基序号；footnoteDefinition 已过滤到末尾，不中断正文列表编号）
@@ -134,15 +143,27 @@ provide('unobserveRow', (el) => {
   if (el) rowObserver?.unobserve(el);
 });
 
-// 虚拟行高估计：按源码行数 × 主题实际行高（首次渲染后由实测高度取代）
+// 虚拟行高估计：按源码行数 × 主题实际行高（首次渲染后由实测高度取代）。
+// 按块 id 记忆化：提交编辑时未变化的块 id 稳定，估算不必随 renderedBlocks
+// 全量重算（超长文档每次提交的 O(全文字符) 扫描是卡顿主因之一）
+const estimateCache = new Map();
 function estimateBlockHeight(block) {
-  if (block.start == null || block.end == null) return 40;
-  // 只数换行符（不 slice/split 分配子串与数组，大文档数万块时差异可观）
-  let lines = 1;
-  for (let i = block.start; i < block.end; i++) {
-    if (content.value.charCodeAt(i) === 10) lines++;
+  const hit = estimateCache.get(block.id);
+  if (hit != null) return hit;
+  let est;
+  if (block.start == null || block.end == null) {
+    est = 40;
+  } else {
+    // 只数换行符（不 slice/split 分配子串与数组）
+    let lines = 1;
+    for (let i = block.start; i < block.end; i++) {
+      if (content.value.charCodeAt(i) === 10) lines++;
+    }
+    est = Math.max(1, lines) * lineHeightPx() + 16;
   }
-  return Math.max(1, lines) * lineHeightPx() + 16;
+  if (estimateCache.size > 50000) estimateCache.clear(); // 防跨文档/长期编辑膨胀
+  estimateCache.set(block.id, est);
+  return est;
 }
 let cachedLineHeightPx = 0;
 function lineHeightPx() {
@@ -153,9 +174,11 @@ function lineHeightPx() {
   cachedLineHeightPx = Math.round(size * ratio);
   return cachedLineHeightPx;
 }
-// 主题/排版变化使缓存行高失效
+// 主题/排版变化使缓存行高失效（估计缓存与行包装缓存一并清空）
 watch(themeVersion, () => {
   cachedLineHeightPx = 0;
+  estimateCache.clear();
+  rowWrapperCache = new WeakMap();
 });
 
 // ---------- 大文档渐进挂载：首屏只创建前 INITIAL_ROW_QUOTA 个行组件，
@@ -289,7 +312,8 @@ function tableOp(op, arg) {
   const el = currentEditable();
   const table = el?.querySelector('table');
   if (!table) return;
-  const cell = caretTableCell();
+  // 单元格上下文：显式指定（边框 + 按钮）优先，否则取光标所在单元格
+  const cell = arg?.cell ?? caretTableCell();
   const row = cell?.closest('tr');
   const inBody = row?.parentElement?.tagName === 'TBODY';
   const colIndex = cell ? [...row.children].indexOf(cell) : -1;
@@ -471,6 +495,7 @@ function onTableBlockHover(block) {
 }
 function onTableBlockLeave(block) {
   if (hoverTableId.value === block.id) hoverTableId.value = null;
+  if (tableEdgeBtn.value?.blockId === block.id) tableEdgeBtn.value = null;
 }
 
 // 工具栏点击统一入口：编辑中直接执行；未编辑则排队动作并进入该表编辑
@@ -507,6 +532,84 @@ function onToolbarPanel(block, kind, e) {
   tableToolbarClick(block, () =>
     openTablePanel(kind, { currentTarget: { getBoundingClientRect: () => rect } }),
   );
+}
+
+// ---------- 表格单元格四边 + 按钮（行/列快速添加） ----------
+// 鼠标靠近任意单元格的某条边（12px 内，取最近边）即浮现 +：
+// 上边→上方插入行、下边→下方插入行、左边→左侧插入列、右边→右侧插入列
+const tableEdgeBtn = ref(null); // { blockId, kind: 'rowAbove'|'rowBelow'|'colLeft'|'colRight', rowIndex, colIndex, top, left }
+
+function onTableEdgeMove(block, e) {
+  // 悬停在 + 按钮自身上：保持显示（移开按钮即隐藏会抖动）
+  if (e.target.closest?.('.md-table-edge-btn')) return;
+  const cell = e.target.closest?.('td, th');
+  if (!cell) {
+    if (tableEdgeBtn.value?.blockId === block.id) tableEdgeBtn.value = null;
+    return;
+  }
+  const table = cell.closest('table');
+  const hostRect = e.currentTarget.getBoundingClientRect();
+  const r = cell.getBoundingClientRect();
+  // 最近边判定（阈值 12px）
+  const EDGE = 12;
+  const dists = [
+    ['top', e.clientY - r.top],
+    ['bottom', r.bottom - e.clientY],
+    ['left', e.clientX - r.left],
+    ['right', r.right - e.clientX],
+  ];
+  const [edge, dist] = dists.reduce((a, b) => (b[1] < a[1] ? b : a));
+  if (dist > EDGE) {
+    if (tableEdgeBtn.value?.blockId === block.id) tableEdgeBtn.value = null;
+    return;
+  }
+  const rows = [...table.querySelectorAll('tr')];
+  const row = cell.closest('tr');
+  const BTN = 18;
+  let top;
+  let left;
+  let kind;
+  if (edge === 'top' || edge === 'bottom') {
+    kind = edge === 'top' ? 'rowAbove' : 'rowBelow';
+    top = (edge === 'top' ? r.top : r.bottom) - hostRect.top - BTN / 2;
+    left = r.left - hostRect.left + r.width / 2 - BTN / 2;
+  } else {
+    kind = edge === 'left' ? 'colLeft' : 'colRight';
+    top = r.top - hostRect.top + r.height / 2 - BTN / 2;
+    left = (edge === 'left' ? r.left : r.right) - hostRect.left - BTN / 2;
+  }
+  // 防被滚动容器横向/顶部裁切（最左列左边、首行上边的按钮会贴到容器边缘）
+  tableEdgeBtn.value = {
+    blockId: block.id,
+    kind,
+    rowIndex: rows.indexOf(row),
+    colIndex: [...row.children].indexOf(cell),
+    top: Math.max(2, top),
+    left: Math.max(2, left),
+  };
+}
+
+// 点击 +：未编辑时先进入编辑（复用工具栏点击链路），再对目标单元格执行对应插入
+function onTableEdgeAdd() {
+  const btn = tableEdgeBtn.value;
+  if (!btn) return;
+  const block = blocks.value.find((b) => b.id === btn.blockId);
+  tableEdgeBtn.value = null;
+  if (!block) return;
+  tableToolbarClick(block, () => {
+    const table = currentEditable()?.querySelector('table');
+    if (!table) return;
+    const rows = [...table.querySelectorAll('tr')];
+    const row = rows[Math.min(Math.max(0, btn.rowIndex), rows.length - 1)];
+    const cell = row?.children[Math.max(0, btn.colIndex)] ?? row?.firstElementChild ?? null;
+    const op = {
+      rowAbove: 'insertRowAbove',
+      rowBelow: 'insertRowBelow',
+      colLeft: 'insertColLeft',
+      colRight: 'insertColRight',
+    }[btn.kind];
+    if (op) tableOp(op, { cell });
+  });
 }
 // 尺寸网格行列上限与当前悬停的 N×M（1 基）
 const TABLE_GRID_COLS = 10;
@@ -602,13 +705,7 @@ async function formatTableSource() {
     editableEl = null;
     suppressBlurCommit = true;
     blocks.value.splice(index, 1, ...replacements);
-    for (let i = index + replacements.length; i < blocks.value.length; i++) {
-      const b = blocks.value[i];
-      if (b.start != null) {
-        b.start += delta;
-        b.end += delta;
-      }
-    }
+    shiftBlockOffsets(index + replacements.length, delta);
     publishBlocks();
     // 重解析后块 id 随内容变化：重建编辑容器，光标落到首个数据单元格
     pendingTableFocus = true;
@@ -638,13 +735,7 @@ async function deleteCurrentTableBlock() {
     const removedLen = removeEnd - removeStart;
     content.value = content.value.slice(0, removeStart) + content.value.slice(removeEnd);
     blocks.value.splice(index, 1);
-    for (let i = index; i < blocks.value.length; i++) {
-      const b = blocks.value[i];
-      if (b.start != null) {
-        b.start -= removedLen;
-        b.end -= removedLen;
-      }
-    }
+    shiftBlockOffsets(index, -removedLen);
     publishBlocks();
     const prev = blocks.value[index - 1];
     suppressBlurCommit = true;
@@ -1020,13 +1111,13 @@ async function insertYamlFrontMatter() {
   }
 }
 
-// 粘贴为纯文本（剪贴板 → 光标处；浏览器 insertText 自动处理多行分段）
+// 粘贴为纯文本（剪贴板 → 光标处；浏览器 insertText 自动处理多行分段，换行符先统一为 LF）
 async function pastePlainText() {
   const text = await navigator.clipboard.readText().catch(() => null);
   const el = currentEditable();
   if (text == null || !el) return;
   el.focus({ preventScroll: true });
-  document.execCommand('insertText', false, text);
+  document.execCommand('insertText', false, text.replace(/\r\n?/g, '\n'));
 }
 
 // 复制选区（无选区取当前整块）：markdown=Rust 序列化 / html=DOM HTML /
@@ -1124,9 +1215,10 @@ async function insertFootnote() {
   const id = max + 1;
   insertTextAtCursor(`[^${id}]`);
   await commitEdit();
-  const tpl = await invoke('block_template', { kind: 'footnoteDef' }).catch(() => null);
+  // 模板（含脚注 id）由 Rust 生成，前端不做 Markdown 文本拼接
+  const tpl = await invoke('block_template', { kind: 'footnoteDef', footnoteId: String(id) }).catch(() => null);
   if (!tpl) return;
-  const def = tpl.markdown.replace('[^1]', `[^${id}]`);
+  const def = tpl.markdown;
   syncing.value = true;
   try {
     const base = content.value ? content.value.replace(/\s*$/, '') : '';
@@ -1362,15 +1454,53 @@ async function updateLangMenu() {
   if (!langList.value.length) {
     langList.value = await invoke('code_languages').catch(() => []);
   }
+  langMenuInput = null;
   langQuery.value = ctx.query;
   if (langIndex.value >= langItems.value.length) langIndex.value = 0;
   langPos.value = ctx.pos;
   langOpen.value = true;
 }
 
+// 语言输入框（代码块右上角）补全：与围栏补全共用菜单；
+// langMenuInput 非空表示菜单来自输入框（应用时写回输入框而非围栏文本）
+let langMenuInput = null;
+async function updateLangInputMenu(input) {
+  if (!langList.value.length) {
+    langList.value = await invoke('code_languages').catch(() => []);
+  }
+  langMenuInput = input;
+  langQuery.value = input.value.trim();
+  if (langIndex.value >= langItems.value.length) langIndex.value = 0;
+  const rect = input.getBoundingClientRect();
+  const estimatedHeight = 270;
+  langPos.value = {
+    // 右缘钳制（语言框在代码块右上角，菜单默认向左伸出会溢出视口）
+    left: Math.max(8, Math.min(rect.left, window.innerWidth - 340)),
+    top:
+      rect.bottom + estimatedHeight > window.innerHeight
+        ? Math.max(8, rect.top - estimatedHeight)
+        : rect.bottom + 6,
+  };
+  langOpen.value = true;
+}
+
 // 应用语言补全：围栏后的查询文本替换为所选语言，光标落在语言之后
-//（此时仍是普通文本行，继续输入或 Enter 经既有流程转为代码块）
+//（此时仍是普通文本行，继续输入或 Enter 经既有流程转为代码块）；
+// 来自语言输入框时：写回输入框并同步到 pre，焦点回代码区开头
 function applyLangItem(lang) {
+  if (langMenuInput) {
+    const input = langMenuInput;
+    langMenuInput = null;
+    langOpen.value = false;
+    if (!lang || !input.isConnected) return;
+    input.value = lang;
+    const pre = input.closest('pre');
+    pre?.setAttribute('data-language', lang);
+    const code = pre?.querySelector('code');
+    if (code) placeCursorAtStart(code);
+    pre?.closest('[contenteditable]')?.focus({ preventScroll: true });
+    return;
+  }
   const el = currentEditable();
   const ctx = fenceContext();
   if (!el || !ctx || !lang) return;
@@ -1457,7 +1587,8 @@ function currentEditable() {
 
 // 行/词/字符统计由 Rust text_stats 命令完成（CJK 感知词数、UTF-16 字符数），
 // 内容变化后防抖更新，避免每次按键都跨进程调用；
-// 大文档的全文统计 IPC 与输入/首屏渲染抢资源：延迟到浏览器空闲时执行
+// 大文档的全文统计 IPC 与输入/首屏渲染抢资源：更长防抖 + 浏览器空闲时执行
+//（异步命令离开主线程，编辑 IPC 不再排队等待统计）
 let statsTimer = null;
 let statsIdleHandle = null;
 const cancelStatsIdle = () => {
@@ -1467,24 +1598,28 @@ const cancelStatsIdle = () => {
 watch(content, () => {
   clearTimeout(statsTimer);
   cancelStatsIdle();
-  statsTimer = setTimeout(() => {
-    const run = async () => {
-      statsIdleHandle = null;
-      try {
-        const stats = await invoke('text_stats', { markdown: content.value });
-        wordCount.value = stats.words;
-        charCount.value = stats.chars;
-        lineCount.value = stats.lines;
-      } catch (e) {
-        console.error('text_stats 调用失败:', e);
+  const isHuge = content.value.length > 512 * 1024;
+  statsTimer = setTimeout(
+    () => {
+      const run = async () => {
+        statsIdleHandle = null;
+        try {
+          const stats = await invoke('text_stats_async', { markdown: content.value });
+          wordCount.value = stats.words;
+          charCount.value = stats.chars;
+          lineCount.value = stats.lines;
+        } catch (e) {
+          console.error('text_stats 调用失败:', e);
+        }
+      };
+      if (isHuge && 'requestIdleCallback' in window) {
+        statsIdleHandle = requestIdleCallback(run, { timeout: 4000 });
+      } else {
+        run();
       }
-    };
-    if (content.value.length > 512 * 1024 && 'requestIdleCallback' in window) {
-      statsIdleHandle = requestIdleCallback(run, { timeout: 1500 });
-    } else {
-      run();
-    }
-  }, 300);
+    },
+    isHuge ? 2000 : 300,
+  );
 }, { immediate: true });
 
 watch([wordCount, charCount, lineCount, cursorLine, cursorColumn], () => {
@@ -1505,7 +1640,11 @@ function publishBlocks() {
 
 // 源码模式不解析；切回所见即所得时立即解析一次并在解析完成后恢复滚动位置
 watch(() => props.sourceMode, async (source) => {
-  if (!source) await reparse();
+  if (!source) {
+    // 源码编辑可能混入外部粘贴的 CRLF/CR：回 WYSIWYG 前统一为 LF（模型只认 \n）
+    if (content.value.includes('\r')) content.value = content.value.replace(/\r\n?/g, '\n');
+    await reparse();
+  }
   restoreScrollPosition();
 });
 
@@ -1517,7 +1656,7 @@ watch(structureVersion, () => {
 async function reparse() {
   const seq = ++parseSeq;
   try {
-    const result = await invoke('parse_markdown', { markdown: content.value });
+    const result = await invoke('parse_markdown_async', { markdown: content.value });
     if (seq === parseSeq) {
       blocks.value = rawBlocks(result);
       publishBlocks();
@@ -1527,9 +1666,20 @@ async function reparse() {
   }
 }
 
+// 平移 fromIndex 起所有根块的源码偏移（编辑增删后的增量维护；负 delta 为收缩）
+function shiftBlockOffsets(fromIndex, delta) {
+  for (let i = fromIndex; i < blocks.value.length; i++) {
+    const b = blocks.value[i];
+    if (b.start != null) {
+      b.start += delta;
+      b.end += delta;
+    }
+  }
+}
+
 // 解析片段并把相对偏移换算为锚点后的绝对偏移
 async function parseAnchoredBlocks(md, anchor) {
-  const parsed = await invoke('parse_blocks', { markdown: md });
+  const parsed = await invoke('parse_blocks_async', { markdown: md });
   return rawBlocks(
     parsed.map((b) => ({
       ...b,
@@ -1555,13 +1705,7 @@ async function reparseRegion(index, oldBlock, md) {
     // JS 字符串 length 即 UTF-16 码元数，与 Rust 端偏移约定一致
     const delta = md.length - (oldBlock.end - oldBlock.start);
     blocks.value.splice(index, 1, ...replacements);
-    for (let i = index + replacements.length; i < blocks.value.length; i++) {
-      const b = blocks.value[i];
-      if (b.start != null) {
-        b.start += delta;
-        b.end += delta;
-      }
-    }
+    shiftBlockOffsets(index + replacements.length, delta);
     publishBlocks();
   } catch (e) {
     console.error('parse_blocks 调用失败，回退全文重解析:', e);
@@ -1810,12 +1954,17 @@ async function splitAndCommit() {
     // 若参与序列化会生成孤立的标记文本（## 等），此处按空段处理
     const isEmptyDiv = (div) =>
       div.textContent.trim() === '' && !div.querySelector('img, input, hr, table, pre');
-    const beforeMd = isEmptyDiv(beforeDiv)
-      ? ''
-      : (await invoke('serialize_markdown', { blocks: domToBlockDtos(beforeDiv) })).trim();
-    const afterMd = isEmptyDiv(afterDiv)
-      ? ''
-      : (await invoke('serialize_markdown', { blocks: domToBlockDtos(afterDiv) })).trim();
+    // 两次序列化并行（IPC 延迟是超长文档拆分卡顿的主要来源之一）
+    const [beforeMdRaw, afterMdRaw] = await Promise.all([
+      isEmptyDiv(beforeDiv)
+        ? ''
+        : invoke('serialize_markdown', { blocks: domToBlockDtos(beforeDiv) }),
+      isEmptyDiv(afterDiv)
+        ? ''
+        : invoke('serialize_markdown', { blocks: domToBlockDtos(afterDiv) }),
+    ]);
+    const beforeMd = beforeMdRaw.trim();
+    const afterMd = afterMdRaw.trim();
 
     // 追加流（文末 __append__）没有可替换的旧块：锚点为文末，拼接整段
     const isAppend = editingId.value === '__append__';
@@ -1844,23 +1993,20 @@ async function splitAndCommit() {
       content.value = content.value.slice(0, oldBlock.start) + combined + content.value.slice(oldBlock.end);
     }
 
-    // 增量重解析两段（锚点各自计算），原位替换并平移后续偏移
-    const beforeBlocks = await parseAnchoredBlocks(beforeMd, oldBlock.start);
-    const afterBlocks = await parseAnchoredBlocks(afterMd, oldBlock.start + beforeMd.length + 2);
-    const replacements = [...beforeBlocks, ...afterBlocks];
+    // 增量重解析合并片段（一次调用；空行分隔的两段与分别解析等价），
+    // 原位替换并平移后续偏移
+    const replacements = await parseAnchoredBlocks(combined, oldBlock.start);
     const delta = combined.length - (oldBlock.end - oldBlock.start);
     blocks.value.splice(index, isAppend ? 0 : 1, ...replacements);
-    for (let i = index + replacements.length; i < blocks.value.length; i++) {
-      const b = blocks.value[i];
-      if (b.start != null) {
-        b.start += delta;
-        b.end += delta;
-      }
-    }
+    shiftBlockOffsets(index + replacements.length, delta);
     publishBlocks();
 
     // 进入拆分出的新块编辑，光标在内容开头；抑制换块卸载触发的 blur 误提交
-    const next = afterBlocks[0] ?? replacements[replacements.length - 1];
+    //（目标 = 后段首块，即 start 越过 前段+空行 锚点的首个块；后段为空时取末块，与原行为一致）
+    const afterAnchor = oldBlock.start + beforeMd.length + 2;
+    const next =
+      (afterMd ? replacements.find((b) => b.start != null && b.start >= afterAnchor) : null) ??
+      replacements[replacements.length - 1];
     suppressBlurCommit = true;
     editingId.value = next ? next.id : null;
     cursorAtStart = true;
@@ -1939,13 +2085,7 @@ function removePrevSeparator(prevIndex) {
   const removedLen = removeEnd - removeStart;
   content.value = content.value.slice(0, removeStart) + content.value.slice(removeEnd);
   blocks.value.splice(prevIndex, 1);
-  for (let i = prevIndex; i < blocks.value.length; i++) {
-    const b = blocks.value[i];
-    if (b.start != null) {
-      b.start -= removedLen;
-      b.end -= removedLen;
-    }
-  }
+  shiftBlockOffsets(prevIndex, -removedLen);
   publishBlocks();
 }
 
@@ -2023,13 +2163,7 @@ async function deleteEmptyBlockAndFocusPrev() {
         const removedLen = removeEnd - removeStart;
         content.value = content.value.slice(0, removeStart) + content.value.slice(removeEnd);
         blocks.value.splice(index, 1);
-        for (let i = index; i < blocks.value.length; i++) {
-          const b = blocks.value[i];
-          if (b.start != null) {
-            b.start -= removedLen;
-            b.end -= removedLen;
-          }
-        }
+        shiftBlockOffsets(index, -removedLen);
         publishBlocks();
         const prev = blocks.value[index - 1];
         if (prev) focusId = prev.id;
@@ -2086,13 +2220,7 @@ async function commitCodeAndNewBlock() {
     const replacements = await parseAnchoredBlocks(combined, oldBlock.start);
     const delta = combined.length - (oldBlock.end - oldBlock.start);
     blocks.value.splice(index, isAppend ? 0 : 1, ...replacements);
-    for (let i = index + replacements.length; i < blocks.value.length; i++) {
-      const b = blocks.value[i];
-      if (b.start != null) {
-        b.start += delta;
-        b.end += delta;
-      }
-    }
+    shiftBlockOffsets(index + replacements.length, delta);
     publishBlocks();
 
     // 最后一个替换块即尾部空段落，进入编辑；抑制换块 blur 误提交
@@ -2136,10 +2264,11 @@ let suppressBlurCommit = false;
 // 输入时应用 Markdown 快捷转换与 HTML 标签自动闭合（输入法组合期间跳过）
 function onEditableInput(e) {
   if (e.isComposing || e.inputType === 'insertCompositionText') return;
-  // 代码块语言输入框：同步到 pre 的 data-language（提交随块序列化；不触发快捷转换/菜单）
+  // 代码块语言输入框：同步到 pre 的 data-language（提交随块序列化）并触发语言补全菜单
   const langInput = e.target?.closest?.('[data-lang-input]');
   if (langInput) {
     langInput.closest('pre')?.setAttribute('data-language', langInput.value.trim());
+    updateLangInputMenu(langInput);
     return;
   }
   applyMarkdownShortcuts();
@@ -2173,17 +2302,19 @@ function keepCaretAboveStatusBar() {
 
 // 粘贴图片：按偏好保存到文档目录/assets 子目录并插入相对路径引用（未保存文档跳过）
 async function onEditablePaste(e) {
+  // 代码块语言输入框内粘贴：原生文本粘贴（不走 Markdown 通道/图片落盘）
+  if (e.target?.closest?.('[data-lang-input]')) return;
   const items = Array.from(e.clipboardData?.items || []);
   const imageItem = items.find((item) => item.type.startsWith('image/'));
   if (!imageItem) {
     // 文本粘贴：含 Markdown 语法时按 Markdown 解析插入（标题/列表/代码/表格等结构保留）；
-    // 纯文本走浏览器默认插入
-    const text = e.clipboardData?.getData('text/plain') || '';
+    // 纯文本走浏览器默认插入。统一规范化换行符（外部剪贴板可能带 CRLF/CR）
+    const text = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
     // 代码/原文块（pre 编辑）与表格编辑中：内容即纯文本，绝不做 Markdown 解析——
     // 否则贴入的 #、```、| 等会被拆成新块，破坏代码与表格内容
     const el = currentEditable();
     const rawMode = !!el?.querySelector('pre') || editingBlock.value?.type === 'table';
-    if (!rawMode && text && looksLikeMarkdown(text)) {
+    if (!rawMode && text && (await looksLikeMarkdown(text))) {
       e.preventDefault();
       await pasteMarkdownAtCaret(text);
     }
@@ -2203,32 +2334,13 @@ async function onEditablePaste(e) {
   if (relPath) insertTextAtCursor(`![](${relPath})`);
 }
 
-// Markdown 语法嗅探：标题/列表/任务/引用/围栏/行内标记/链接/图片/表格/数学/
-// 高亮/脚注/HTML 标签/Front Matter/警告容器/[TOC] 任一命中即按 Markdown 解析
-const MD_HINT_RE = new RegExp(
-  [
-    '^#{1,6}\\s', // # 标题
-    '^\\s*[-*+]\\s', // 无序列表
-    '^\\s*\\d+\\.\\s', // 有序列表
-    '^\\s*- \\[[ xX]\\]', // 任务列表
-    '^>\\s?', // 引用
-    '```|~~~', // 代码围栏
-    '\\*\\*[^*\\n]+\\*\\*', // **粗体**
-    '\\[[^\\]\\n]+\\]\\([^)\\n]+\\)', // [链接](url) / ![图片](url)
-    '\\|[^|\\n]+\\|', // 表格行
-    '\\$\\$[\\s\\S]+?\\$\\$', // $$ 块级/行内数学 $$
-    '\\$[^\\s$][^$\\n]*[^\\s$]\\$|\\$[^\\s$]\\$', // $行内数学$（$5 和 $10 不误判）
-    '==[^=\\n]+==', // ==高亮==
-    '\\[\\^[^\\]\\n]+\\]', // [^脚注]
-    '</?[a-zA-Z][^>\\n]*>', // HTML 标签（<section>/<kbd>/<font>/<img> 等）
-    '^\\s*---\\s*$', // ---（Front Matter 界符/分隔线）
-    '^\\s*:::+|^\\s*!!!+', // ::: / !!! 警告容器
-    '^\\s*\\[TOC\\]\\s*$', // [TOC] 目录
-  ].join('|'),
-  'm',
-);
-function looksLikeMarkdown(text) {
-  return MD_HINT_RE.test(text);
+// Markdown 语法嗅探：判定在 Rust（looks_like_markdown，与解析器同源，规则不漂移）；
+// 调用前的轻量闸门（纯单行短文本且无任何标记字符直接判否，避免每贴一次一次 IPC）
+async function looksLikeMarkdown(text) {
+  if (!text.includes('\n') && text.length < 200 && !/[*_`#\[\]()>|~$=<%]/.test(text)) {
+    return false;
+  }
+  return invoke('looks_like_markdown', { markdown: text }).catch(() => false);
 }
 
 // Markdown 粘贴：光标处拆分当前块，粘贴文本作为 Markdown 经 Rust 解析插入，
@@ -2261,12 +2373,17 @@ async function pasteMarkdownAtCaret(text) {
     // 空段检测（与 splitAndCommit 同规则，避免孤立标记文本）
     const isEmptyDiv = (div) =>
       div.textContent.trim() === '' && !div.querySelector('img, input, hr, table, pre');
-    const beforeMd = isEmptyDiv(beforeDiv)
-      ? ''
-      : (await invoke('serialize_markdown', { blocks: domToBlockDtos(beforeDiv) })).trim();
-    const afterMd = isEmptyDiv(afterDiv)
-      ? ''
-      : (await invoke('serialize_markdown', { blocks: domToBlockDtos(afterDiv) })).trim();
+    // 前后段序列化并行（超长文档减少 IPC 等待）
+    const [beforeMdRaw, afterMdRaw] = await Promise.all([
+      isEmptyDiv(beforeDiv)
+        ? ''
+        : invoke('serialize_markdown', { blocks: domToBlockDtos(beforeDiv) }),
+      isEmptyDiv(afterDiv)
+        ? ''
+        : invoke('serialize_markdown', { blocks: domToBlockDtos(afterDiv) }),
+    ]);
+    const beforeMd = beforeMdRaw.trim();
+    const afterMd = afterMdRaw.trim();
 
     const pasted = text.trim();
     const combined = [beforeMd, pasted, afterMd].filter((s) => s !== '').join('\n\n');
@@ -2298,21 +2415,20 @@ async function pasteMarkdownAtCaret(text) {
     const replacements = await parseAnchoredBlocks(combined, oldBlock.start);
     const delta = combined.length - (oldBlock.end - oldBlock.start);
     blocks.value.splice(index, isAppend ? 0 : 1, ...replacements);
-    for (let i = index + replacements.length; i < blocks.value.length; i++) {
-      const b = blocks.value[i];
-      if (b.start != null) {
-        b.start += delta;
-        b.end += delta;
-      }
-    }
+    shiftBlockOffsets(index + replacements.length, delta);
     publishBlocks();
 
-    // 光标定位：粘贴内容之后（after 块开头；无 after 则末块末尾）
-    const afterCount = afterMd ? (await parseAnchoredBlocks(afterMd, 0)).length : 0;
-    const next = afterCount > 0 ? replacements[replacements.length - afterCount] : replacements[replacements.length - 1];
+    // 光标定位：粘贴内容之后（after 块开头；无 after 则末块末尾）。
+    // after 段起点锚点 = 替换起点 +（合并文本长度 - after 长度），不再为计数二次解析
+    let next = null;
+    if (afterMd) {
+      const anchor = oldBlock.start + (combined.length - afterMd.length);
+      next = replacements.find((b) => b.start != null && b.start >= anchor);
+    }
+    next = next ?? replacements[replacements.length - 1];
     suppressBlurCommit = true;
     editingId.value = next ? next.id : null;
-    cursorAtStart = afterCount > 0;
+    cursorAtStart = !!afterMd;
     if (!next) suppressBlurCommit = false;
     return true;
   } finally {
@@ -2322,17 +2438,6 @@ async function pasteMarkdownAtCaret(text) {
 
 function onEditableKeydown(e) {
   if (e.isComposing) return;
-  // 代码块语言输入框：Enter/Tab/Esc 回到代码区，其余按键原生（编辑语言）
-  if (e.target?.closest?.('[data-lang-input]')) {
-    if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape') {
-      e.preventDefault();
-      const pre = e.target.closest('pre');
-      const code = pre?.querySelector('code');
-      if (code) placeCursorAtStart(code);
-      pre?.closest('[contenteditable]')?.focus({ preventScroll: true });
-    }
-    return;
-  }
   // 斜杠菜单打开时优先路由：上下选择、Enter 应用、Esc 关闭
   if (slashOpen.value) {
     const items = slashItems.value;
@@ -2482,6 +2587,19 @@ function onEditableKeydown(e) {
       langOpen.value = false;
       return;
     }
+  }
+  // 代码块语言输入框：Enter/Tab/Esc 回到代码区（语言补全打开时上面的菜单路由已拦截），
+  // 其余按键原生（编辑语言；输入经 onEditableInput 触发补全菜单）
+  if (e.target?.closest?.('[data-lang-input]')) {
+    if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape') {
+      e.preventDefault();
+      langMenuInput = null;
+      const pre = e.target.closest('pre');
+      const code = pre?.querySelector('code');
+      if (code) placeCursorAtStart(code);
+      pre?.closest('[contenteditable]')?.focus({ preventScroll: true });
+    }
+    return;
   }
   // Ctrl+A 两段式：首次交给浏览器原生（选中当前块内容）；
   // 当前块已全选时再次按下，选择整个文档内容
@@ -2943,14 +3061,23 @@ function scrollToBlock(id) {
 
   const root = scrollRoot.value;
   if (!root) return;
-  // 渐进挂载：目标行可能尚在配额外（只有占位条），先扩配额把行创建出来
+  // 渐进挂载：目标行可能尚在配额外（只有占位条）。分批扩配额（每批 2000 行），
+  // 避免跳转大文档末尾时一次同步创建数千组件的单帧卡顿
   const idx = allBlocks.value.findIndex((b) => b.id === id);
-  if (idx >= 0 && idx >= rowQuota.value) rowQuota.value = idx + 1;
-  // 行创建/内容挂载是异步的：找不到元素时重试几次
+  if (idx >= 0 && idx >= rowQuota.value) {
+    const target = idx + 1;
+    const step = () => {
+      if (rowQuota.value >= target) return;
+      rowQuota.value = Math.min(target, rowQuota.value + 2000);
+      if (rowQuota.value < target) setTimeout(step, 0);
+    };
+    step();
+  }
+  // 行创建/内容挂载是异步的（配额分批扩展）：找不到元素时持续重试
   const tryScroll = (attempts) => {
     const el = root.querySelector(`[data-block-id="${id}"]`);
     if (!el) {
-      if (attempts > 0) nextTick(() => tryScroll(attempts - 1));
+      if (attempts > 0) setTimeout(() => tryScroll(attempts - 1), 60);
       return;
     }
     el.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -2959,7 +3086,7 @@ function scrollToBlock(id) {
       if (flashId.value === id) flashId.value = null;
     }, 1200);
   };
-  tryScroll(3);
+  tryScroll(30);
 }
 
 // 标题位置缓存（块树发布后重建，滚动停止后再校准；滚动判断零 DOM 查询）
@@ -3007,9 +3134,15 @@ function rebuildHeadingPositions() {
     headingPositions = [];
     return;
   }
+  // 单次遍历已挂载块元素建 id→元素 表，再查表取标题位置——
+  // 逐标题 querySelector 在标题上千时是每次提交数千次全树扫描（编辑卡顿主因）
+  const mountedEls = new Map();
+  for (const el of root.querySelectorAll('[data-block-id]')) {
+    mountedEls.set(el.getAttribute('data-block-id'), el);
+  }
   headingPositions = blocks.value
     .filter((b) => b.type === 'heading')
-    .map((b) => ({ id: b.id, top: root.querySelector(`[data-block-id="${b.id}"]`)?.offsetTop ?? null }))
+    .map((b) => ({ id: b.id, top: mountedEls.get(b.id)?.offsetTop ?? null }))
     .filter((h) => h.top != null);
 }
 
@@ -3324,8 +3457,19 @@ async function deleteBlockSelection(range) {
 
 // 表格编辑辅助监听：selectionchange 跟踪光标所在列对齐（工具栏高亮）；
 // 捕获阶段 mousedown 实现「点击工具栏/面板外部关闭弹出层」
+// 编辑中光标移动（方向键/鼠标点击）也保持光标在状态栏以上：
+// 输入有 input 事件覆盖，而纯移动没有——rAF 合帧避免高频 selectionchange 抖动
+let keepCaretRaf = 0;
+function rafKeepCaret() {
+  if (keepCaretRaf) return;
+  keepCaretRaf = requestAnimationFrame(() => {
+    keepCaretRaf = 0;
+    keepCaretAboveStatusBar();
+  });
+}
 function onDocumentSelectionChange() {
   if (editingBlock.value?.type === 'table') updateTableCaretAlign();
+  if (editingId.value !== null) rafKeepCaret();
 }
 function onDocumentMouseDown(e) {
   if (ctxMenu.value && !e.target.closest?.('.md-ctx-menu')) {
@@ -3350,6 +3494,8 @@ onBeforeUnmount(() => {
   document.removeEventListener('cut', onDocumentCut);
   clearTimeout(headingRebuildTimer);
   clearTimeout(scrollEndTimer);
+  cancelAnimationFrame(keepCaretRaf);
+  keepCaretRaf = 0;
   // 断开虚拟滚动与重活懒执行的观察器
   rowObserver?.disconnect();
   rowObserver = null;
@@ -3389,6 +3535,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         <div
           class="md-block-host"
           @mouseover="block.type === 'table' && onTableBlockHover(block)"
+          @mousemove="block.type === 'table' && onTableEdgeMove(block, $event)"
           @mouseleave="block.type === 'table' && onTableBlockLeave(block)"
         >
           <!-- 表格工具栏（Typora 式：左侧 尺寸/对齐，右侧 更多操作/删除；mousedown.prevent 保持单元格光标）。
@@ -3471,6 +3618,20 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
               </button>
             </div>
           </div>
+          <!-- 单元格四边 + 按钮：靠近上边→上方插行 / 下边→下方插行 / 左边→左侧插列 / 右边→右侧插列 -->
+          <button
+            v-if="tableEdgeBtn && tableEdgeBtn.blockId === block.id"
+            type="button"
+            class="md-table-edge-btn"
+            :style="{ top: `${tableEdgeBtn.top}px`, left: `${tableEdgeBtn.left}px` }"
+            :title="{ rowAbove: '上方插入行', rowBelow: '下方插入行', colLeft: '左侧插入列', colRight: '右侧插入列' }[tableEdgeBtn.kind]"
+            @mousedown.prevent
+            @click.stop="onTableEdgeAdd"
+          >
+            <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+              <path d="M6 1.5v9M1.5 6h9" />
+            </svg>
+          </button>
         <template v-if="editingId === block.id">
           <div
             :ref="setEditableEl"

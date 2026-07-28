@@ -1,13 +1,15 @@
 <script setup vapor>
 import { computed, inject, provide, ref, watch, onMounted } from 'vue';
-import { invoke } from '@tauri-apps/api/core';
 import InlineView from './InlineView.vue';
 import MathView from './MathView.vue';
 import SectionView from './SectionView.vue';
 import { plainText, numberedOrdinals } from '../utils/wysiwyg.js';
 import { highlightCodeHtml } from '../utils/highlight.js';
 import { resolveImageSrc } from '../utils/image.js';
-import { getPref, renderVersion } from '../utils/prefs.js';
+import { renderMermaid, peekMermaid } from '../utils/mermaid.js';
+import { plantumlUrl, plantumlRenderer, renderPlantumlLocal, peekPlantuml } from '../utils/plantuml.js';
+import { themeVersion } from '../themes/index.js';
+import { getPref, renderVersion, prefsVersion } from '../utils/prefs.js';
 
 // 递归块渲染器：渲染 velotype 移植版块模型（17 种块类型）。
 // 顶层块的编辑状态由 Editor.vue 管理，本组件只负责渲染与事件转发。
@@ -123,17 +125,62 @@ watch(
   { immediate: true },
 );
 
-// Mermaid 图：Rust render_mermaid 渲染 SVG（围栏剥离在 Rust 端完成；失败返回源码占位）
+// Mermaid 图：官方 mermaid.js 渲染 SVG（全语法支持；失败返回源码占位）。
+// 主题切换（themeVersion）时重渲染以匹配明暗配色；
+// 渲染结果按 主题|源 缓存——重挂载时先同步回填缓存（无空白帧），未命中再异步渲染
 const mermaidSvg = ref('');
 watch(
-  () => [props.block.id, rawText.value, renderVersion.value, mounted.value],
+  () => [props.block.id, rawText.value, renderVersion.value, themeVersion.value, mounted.value],
   async () => {
     mermaidSvg.value = '';
     // 偏好设置可关闭 Mermaid 渲染（回退源码占位）
     if (props.block.type !== 'mermaidBlock' || !getPref('render_mermaid') || !mounted.value) return;
     onBlockVisible(rootEl.value, async () => {
-      const svg = await invoke('render_mermaid', { source: rawText.value }).catch(() => null);
+      const cached = peekMermaid(rawText.value);
+      if (cached) {
+        mermaidSvg.value = cached;
+        return;
+      }
+      const svg = await renderMermaid(rawText.value).catch(() => null);
       if (svg) mermaidSvg.value = svg;
+    });
+  },
+  { immediate: true },
+);
+
+// PlantUML 图（codeBlock + plantuml/puml 语言）：两种渲染模式——
+// local 内置 TeaVM 引擎本地渲染（离线，进视口才加载引擎；SVG 缓存回填）；
+// server <img> 直连渲染服务器。加载失败（离线/语法错误）回退代码显示
+const isPlantumlBlock = computed(
+  () =>
+    props.block.type === 'codeBlock' &&
+    ['plantuml', 'puml'].includes((props.block.language || '').toLowerCase()),
+);
+const plantumlSvg = ref('');
+const plantumlUrlRef = ref(null);
+const plantumlFailed = ref(false);
+watch(
+  () => [props.block.id, plainText(props.block.title), renderVersion.value, prefsVersion.value, mounted.value],
+  async () => {
+    plantumlFailed.value = false;
+    plantumlSvg.value = '';
+    plantumlUrlRef.value = null;
+    if (!isPlantumlBlock.value || !getPref('render_plantuml')) return;
+    const src = plainText(props.block.title);
+    if (plantumlRenderer() === 'server') {
+      plantumlUrlRef.value = plantumlUrl(src);
+      return;
+    }
+    if (!mounted.value) return;
+    onBlockVisible(rootEl.value, async () => {
+      const cached = peekPlantuml(src);
+      if (cached) {
+        plantumlSvg.value = cached;
+        return;
+      }
+      const svg = await renderPlantumlLocal(src).catch(() => null);
+      if (svg) plantumlSvg.value = svg;
+      else plantumlFailed.value = true;
     });
   },
   { immediate: true },
@@ -145,9 +192,13 @@ const imageSrc = ref('');
 watch(
   () => [props.block.image?.src, documentDir.value],
   async () => {
-    imageSrc.value = '';
-    if (!props.block.image) return;
-    imageSrc.value = await resolveImageSrc(props.block.image.src, documentDir.value);
+    if (!props.block.image) {
+      imageSrc.value = '';
+      return;
+    }
+    // 解析期间保留旧值（asset URL 缓存命中仅一个微任务）：避免重挂载出现空白帧
+    const src = await resolveImageSrc(props.block.image.src, documentDir.value);
+    imageSrc.value = src || '';
   },
   { immediate: true },
 );
@@ -388,6 +439,7 @@ function alignStyle(alignments, index) {
         </button>
       </div>
       <pre
+        v-if="(!plantumlSvg && !plantumlUrlRef) || plantumlFailed"
         class="md-pre blk-code-block overflow-x-auto rounded p-3 font-mono text-[13px]"
         :class="[showLineNumbers ? 'flex' : '']"
       ><code
@@ -395,6 +447,12 @@ function alignStyle(alignments, index) {
           class="md-code-gutter mr-3 shrink-0 select-none border-r pr-2 text-right"
           aria-hidden="true"
         >{{ lineNumbersText }}</code><code class="min-w-0 flex-1" v-html="highlightedCode || escapedCode"></code></pre>
+      <!-- PlantUML 本地渲染态（内置 TeaVM 引擎，离线）：SVG 内联，角标/复制仍作用于源码 -->
+      <div v-else-if="plantumlSvg" class="plantuml-diagram blk-plantuml-block rounded border p-3" v-html="plantumlSvg"></div>
+      <!-- PlantUML 服务器渲染态：<img> 直连（跨域 fetch 会被 CORS 拦截）；加载失败回退代码显示 -->
+      <div v-else class="plantuml-diagram blk-plantuml-block rounded border p-3">
+        <img :src="plantumlUrlRef" alt="PlantUML 图表" class="mx-auto block max-w-full" @error="plantumlFailed = true" />
+      </div>
     </div>
   </div>
 

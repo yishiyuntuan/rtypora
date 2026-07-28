@@ -514,7 +514,11 @@ pub fn parse_table_region(lines: &[String]) -> Option<TableData> {
         rows.push(
             cells
                 .into_iter()
-                .map(|cell| InlineTextTree::from_markdown(&cell))
+                .map(|cell| {
+                    crate::markdown::inline::with_current_link_refs(|refs| {
+                        InlineTextTree::from_markdown_with_link_references(&cell, refs)
+                    })
+                })
                 .collect::<Vec<_>>(),
         );
     }
@@ -522,7 +526,11 @@ pub fn parse_table_region(lines: &[String]) -> Option<TableData> {
     Some(TableData {
         header: header
             .into_iter()
-            .map(|cell| InlineTextTree::from_markdown(&cell))
+            .map(|cell| {
+                crate::markdown::inline::with_current_link_refs(|refs| {
+                    InlineTextTree::from_markdown_with_link_references(&cell, refs)
+                })
+            })
             .collect(),
         rows,
         alignments,

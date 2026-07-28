@@ -21,13 +21,22 @@ const cachedHeight = ref(props.estimate);
 
 function onVisible(isVisible) {
   if (isVisible) {
+    // 重新进入视口：取消待执行的延迟卸载
+    clearTimeout(hideTimer);
+    hideTimer = null;
     visible.value = true;
-  } else if (!props.force && visible.value) {
-    // 卸载前缓存实测高度（估计值被修正为真值，滚动几乎不跳）
-    if (el.value) cachedHeight.value = el.value.offsetHeight;
-    visible.value = false;
+  } else if (!props.force && visible.value && !hideTimer) {
+    // 延迟卸载（3s 宽限）：快速来回滚动不重建内容——
+    // 图片重解码、Mermaid 重渲染的闪烁主要来自频繁的挂载/卸载
+    hideTimer = setTimeout(() => {
+      hideTimer = null;
+      // 卸载前缓存实测高度（估计值被修正为真值，滚动几乎不跳）
+      if (el.value) cachedHeight.value = el.value.offsetHeight;
+      visible.value = false;
+    }, 3000);
   }
 }
+let hideTimer = null;
 
 // 程序性进入编辑（如大纲/目录定位）时立即渲染
 watch(
@@ -44,6 +53,8 @@ onMounted(() => {
   observeRow(observedEl, onVisible);
 });
 onBeforeUnmount(() => {
+  clearTimeout(hideTimer);
+  hideTimer = null;
   if (observedEl) {
     unobserveRow(observedEl);
     observedEl = null;

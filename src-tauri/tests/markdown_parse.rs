@@ -226,7 +226,7 @@ fn 序列化对齐公共前缀() {
 
 #[test]
 fn 块模板生成() {
-    let table = markdown::block_template("table", Some(2), Some(3), None);
+    let table = markdown::block_template("table", Some(2), Some(3), None, None);
     assert_eq!(
         table.markdown,
         "| 列1 | 列2 | 列3 |\n| --- | --- | --- |\n|  |  |  |\n|  |  |  |"
@@ -238,30 +238,30 @@ fn 块模板生成() {
     assert_eq!(blocks[0].table.as_ref().unwrap().header.len(), 3);
     assert_eq!(blocks[0].table.as_ref().unwrap().rows.len(), 2);
 
-    let math = markdown::block_template("mathBlock", None, None, None);
+    let math = markdown::block_template("mathBlock", None, None, None, None);
     assert_eq!(math.markdown, "$$\n\n$$");
     assert_eq!(math.caret_offset, 3);
-    let section = markdown::block_template("sectionBlock", None, None, None);
+    let section = markdown::block_template("sectionBlock", None, None, None, None);
     assert_eq!(section.markdown, "<section>\n\n</section>");
     assert_eq!(section.caret_offset, "<section>\n".len());
-    let link = markdown::block_template("link", None, None, None);
+    let link = markdown::block_template("link", None, None, None, None);
     assert_eq!(link.markdown, "[链接]()");
     assert_eq!(link.caret_offset, 4);
-    let inline_math = markdown::block_template("inlineMath", None, None, None);
+    let inline_math = markdown::block_template("inlineMath", None, None, None, None);
     assert_eq!(inline_math.markdown, "$$");
     assert_eq!(inline_math.caret_offset, 1);
-    let footnote_def = markdown::block_template("footnoteDef", None, None, None);
+    let footnote_def = markdown::block_template("footnoteDef", None, None, None, None);
     assert_eq!(footnote_def.markdown, "[^1]: ");
-    let link_ref = markdown::block_template("linkRef", None, None, None);
+    let link_ref = markdown::block_template("linkRef", None, None, None, None);
     assert_eq!(link_ref.markdown, "[1]: url \"title\"");
     assert_eq!(link_ref.caret_offset, 5);
     // 警告框类型：默认 NOTE，指定类型生效，未知类型回落 NOTE
-    let note = markdown::block_template("callout", None, None, None);
+    let note = markdown::block_template("callout", None, None, None, None);
     assert_eq!(note.markdown, "> [!NOTE]\n> ");
-    let caution = markdown::block_template("callout", None, None, Some("CAUTION".into()));
+    let caution = markdown::block_template("callout", None, None, Some("CAUTION".into()), None);
     assert_eq!(caution.markdown, "> [!CAUTION]\n> ");
     assert_eq!(caution.caret_offset, caution.markdown.len());
-    let unknown = markdown::block_template("callout", None, None, Some("FOO".into()));
+    let unknown = markdown::block_template("callout", None, None, Some("FOO".into()), None);
     assert_eq!(unknown.markdown, "> [!NOTE]\n> ");
 }
 

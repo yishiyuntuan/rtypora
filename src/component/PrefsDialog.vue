@@ -205,6 +205,35 @@ function update(key, value) {
               <label class="flex cursor-pointer items-center gap-2">
                 <input
                   type="checkbox"
+                  :checked="form.render_plantuml"
+                  @change="update('render_plantuml', $event.target.checked)"
+                />
+                <span>PlantUML 图表渲染</span>
+              </label>
+              <label class="flex items-center justify-between gap-2">
+                <span>PlantUML 渲染方式</span>
+                <select
+                  class="prefs-select"
+                  :value="form.plantuml_renderer"
+                  @change="update('plantuml_renderer', $event.target.value)"
+                >
+                  <option value="local">本地引擎渲染（离线，无需服务器）</option>
+                  <option value="server">渲染服务器（需网络）</option>
+                </select>
+              </label>
+              <label class="flex items-center justify-between gap-2">
+                <span>PlantUML 服务器</span>
+                <input
+                  type="text"
+                  class="prefs-select w-64"
+                  :value="form.plantuml_server"
+                  placeholder="https://www.plantuml.com/plantuml"
+                  @change="update('plantuml_server', $event.target.value.trim() || 'https://www.plantuml.com/plantuml')"
+                />
+              </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
                   :checked="form.render_math"
                   @change="update('render_math', $event.target.checked)"
                 />

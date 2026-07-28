@@ -12,6 +12,7 @@ import PrefsDialog from "./component/PrefsDialog.vue";
 import AboutDialog from "./component/AboutDialog.vue";
 import ConfirmDialog from "./component/ConfirmDialog.vue";
 import { applyEditorOverrides, getPref, syncRustPrefs } from "./utils/prefs.js";
+import { assetUrlToDataUrl } from "./utils/image.js";
 
 const appWindow = new Window("main");
 
@@ -22,6 +23,24 @@ const editorStats = ref({ wordCount: 0, charCount: 0, lineCount: 1, cursorLine: 
 const docBlocks = ref([]);
 const activeHeadingId = ref(null);
 const editorRef = ref(null);
+
+// Editor 高频发布块树（每次提交）：静默期首次立即更新（打开/切文档无延迟感），
+// 连续编辑期 150ms 去抖——数千标题时侧栏不再每次提交都全量重建/重绘
+let docBlocksTimer = null;
+let lastBlocksApply = 0;
+function onDocBlocks(blocks) {
+  const now = Date.now();
+  clearTimeout(docBlocksTimer);
+  if (now - lastBlocksApply > 500) {
+    lastBlocksApply = now;
+    docBlocks.value = blocks;
+  } else {
+    docBlocksTimer = setTimeout(() => {
+      lastBlocksApply = Date.now();
+      docBlocks.value = blocks;
+    }, 150);
+  }
+}
 
 // 当前文件路径（新建为 null）；文件名用于标题栏显示
 const currentFilePath = ref(null);
@@ -89,10 +108,17 @@ function autoSaveEligible() {
   return getPref("auto_save_enabled") && currentFilePath.value && editorRef.value?.isDirty?.();
 }
 
+// 当前文档的换行风格（打开文件时由 Rust 探测；新文档默认 LF）。
+// 编辑模型统一 LF，保存时按此还原，保持磁盘文件原有换行约定
+const lineEnding = ref("lf");
+function serializeForSave(text) {
+  return lineEnding.value === "crlf" ? text.replace(/\n/g, "\r\n") : text;
+}
+
 async function autoSave() {
   if (!autoSaveEligible()) return;
   try {
-    await invoke("save_file", { path: currentFilePath.value, content: editorRef.value.getContent() });
+    await invoke("save_file", { path: currentFilePath.value, content: serializeForSave(editorRef.value.getContent()) });
     editorRef.value.markSaved();
   } catch (e) {
     console.error("自动保存失败:", e);
@@ -113,6 +139,7 @@ watch(editorStats, scheduleDelaySave);
 
 function doNew() {
   currentFilePath.value = null;
+  lineEnding.value = "lf";
   editorRef.value?.loadDocument("");
 }
 
@@ -120,6 +147,7 @@ async function doOpen() {
   const opened = await invoke("open_markdown_parsed");
   if (!opened) return;
   currentFilePath.value = opened.path;
+  lineEnding.value = opened.lineEnding || "lf";
   recordRecent(opened.path);
   editorRef.value?.loadDocument(opened.content, { blocks: opened.blocks, tailFrom: opened.tailFrom });
 }
@@ -129,6 +157,7 @@ async function onSidebarOpenFile(path) {
   const opened = await invoke("read_markdown_parsed", { path });
   if (!opened) return;
   currentFilePath.value = opened.path;
+  lineEnding.value = opened.lineEnding || "lf";
   recordRecent(opened.path);
   editorRef.value?.loadDocument(opened.content, { blocks: opened.blocks, tailFrom: opened.tailFrom });
 }
@@ -156,7 +185,7 @@ async function doSave() {
     await doSaveAs();
     return;
   }
-  const content = editorRef.value?.getContent() ?? "";
+  const content = serializeForSave(editorRef.value?.getContent() ?? "");
   try {
     await invoke("save_file", { path: currentFilePath.value, content });
     editorRef.value?.markSaved();
@@ -166,7 +195,7 @@ async function doSave() {
 }
 
 async function doSaveAs() {
-  const content = editorRef.value?.getContent() ?? "";
+  const content = serializeForSave(editorRef.value?.getContent() ?? "");
   const result = await invoke("save_file_as", { content });
   if (!result) return;
   if (result.Err) {
@@ -187,6 +216,15 @@ async function doExport() {
   if (!root) return;
   const clone = root.cloneNode(true);
   clone.querySelectorAll("[contenteditable]").forEach((el) => el.removeAttribute("contenteditable"));
+  // 编辑器内图片走 asset 协议（仅 webview 内可访问）：导出时换回 data URL 保证自包含
+  await Promise.all(
+    [...clone.querySelectorAll("img")].map(async (img) => {
+      const src = img.getAttribute("src") || "";
+      if (!src) return;
+      const dataUrl = await assetUrlToDataUrl(src);
+      if (dataUrl) img.setAttribute("src", dataUrl);
+    }),
+  );
   const rootStyle = document.documentElement.style;
   const vars = Array.from(rootStyle)
     .filter((name) => name.startsWith("--t-"))
@@ -347,7 +385,7 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
             ref="editorRef"
             :source-mode="sourceMode"
             @update:stats="editorStats = $event"
-            @update:blocks="docBlocks = $event"
+            @update:blocks="onDocBlocks"
             @update:active-heading="activeHeadingId = $event"
           />
         </main>

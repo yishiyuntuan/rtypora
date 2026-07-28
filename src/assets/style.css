@@ -295,6 +295,14 @@
   max-width: 100%;
   height: auto;
 }
+/* PlantUML 渲染态（本地引擎内联 SVG / 服务器 <img>） */
+.t-root .plantuml-diagram {
+  text-align: center;
+}
+.t-root .plantuml-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
 
 /* section 图文排版（Mdmdt 式 grid 布局：每个直接子元素为一列，列宽按内容自动分配；
    列内嵌套 span 为多段落；列/图片可用 style="width:200px" 单独定宽，建议具体值勿用百分比。
@@ -411,6 +419,35 @@
 .t-statusbar .t-btn.active {
   background: color-mix(in srgb, var(--t-tab-indicator) 18%, transparent);
   color: var(--t-tab-indicator);
+}
+
+/* 表格边框 + 按钮（行/列快速添加）：圆形小按钮，跨坐在表格边框线上，跟随鼠标所在行/列 */
+.md-table-edge-btn {
+  position: absolute;
+  z-index: 21;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--t-table-border);
+  border-radius: 50%;
+  background: var(--t-editor-background);
+  color: var(--t-tab-indicator);
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+  transition: background 0.08s, color 0.08s, transform 0.08s;
+}
+.md-table-edge-btn svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+}
+.md-table-edge-btn:hover {
+  background: var(--t-tab-indicator);
+  color: #fff;
+  transform: scale(1.12);
 }
 
 /* 表格编辑工具栏（Typora 式：左侧 尺寸/对齐，右侧 更多操作/删除；按钮 mousedown.prevent 保持单元格光标）。

@@ -537,7 +537,7 @@ pub fn resolve_code_language_key(language: Option<&str>) -> Option<CodeLanguageK
     descriptor_for_language(normalized).map(|descriptor| descriptor.key)
 }
 
-/// 围栏代码块语言自动补全清单：mermaid/math 为特殊渲染围栏（图表/公式），
+/// 围栏代码块语言自动补全清单：mermaid/math/plantuml 为特殊渲染围栏（图表/公式），
 /// 与 tree-sitter 语法高亮语言一起按字典序返回（前端按前缀匹配过滤）。
 #[tauri::command]
 pub fn code_languages() -> Vec<String> {
@@ -547,6 +547,7 @@ pub fn code_languages() -> Vec<String> {
         .collect();
     languages.push("mermaid".to_string());
     languages.push("math".to_string());
+    languages.push("plantuml".to_string());
     languages.sort_by_key(|name| name.to_lowercase());
     languages.dedup();
     languages

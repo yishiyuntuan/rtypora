@@ -117,7 +117,12 @@ fn render_cached(
                 .then(|| render_latex_to_svg(&aliased, &color, font_size).ok())
                 .flatten()
         });
-    LATEX_CACHE.lock().ok()?.insert(key, rendered.clone());
+    // 进程内缓存上限（防无界增长）：满 500 条清空重建（命中率损失可接受）
+    let mut cache = LATEX_CACHE.lock().ok()?;
+    if cache.len() >= 500 {
+        cache.clear();
+    }
+    cache.insert(key, rendered.clone());
     rendered
 }
 

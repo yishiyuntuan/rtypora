@@ -188,8 +188,9 @@ export function blockToHtml(block, rawSource, depth = 0) {
     }
     case 'codeBlock':
       // 编辑态不内嵌高亮（避免 contenteditable 拆分 span），渲染态经 Rust tree-sitter 高亮；
-      // 右上角语言输入框（输入同步到 data-language，提交时随块序列化）
-      return `<pre class="${PRE_CLASS} blk-code-block relative" data-language="${escapeHtml(block.language || '')}"><input class="md-code-lang-input" data-lang-input value="${escapeHtml(block.language || '')}" placeholder="text" spellcheck="false" /><code>${escapeHtml(plainText(block.title))}</code></pre>`;
+      // 右上角语言输入框（输入同步到 data-language，提交时随块序列化；
+      // contenteditable="false" 必须——否则 Chromium 下键入由编辑宿主接管，不产生 input 事件）
+      return `<pre class="${PRE_CLASS} blk-code-block relative" data-language="${escapeHtml(block.language || '')}"><input class="md-code-lang-input" data-lang-input contenteditable="false" value="${escapeHtml(block.language || '')}" placeholder="text" spellcheck="false" /><code>${escapeHtml(plainText(block.title))}</code></pre>`;
     // 原子/保留类块：编辑原始 Markdown 切片，保证不丢内容
     case 'separator':
     case 'callout':
@@ -481,6 +482,23 @@ export function domToBlockDtos(root) {
 
 // ---------- Markdown 快捷输入（Typora 式即时转换） ----------
 
+// 代码块编辑 DOM：pre + 右上角语言输入框 + code（结构与 blockToHtml 一致；
+// 输入框 contenteditable="false" 否则 Chromium 下键入不产生 input 事件）
+export function createCodePre(language) {
+  const pre = document.createElement('pre');
+  pre.className = `${PRE_CLASS} relative`;
+  pre.setAttribute('data-language', language || '');
+  const input = document.createElement('input');
+  input.className = 'md-code-lang-input';
+  input.setAttribute('data-lang-input', '');
+  input.setAttribute('contenteditable', 'false');
+  input.placeholder = 'text';
+  input.spellcheck = false;
+  input.value = language || '';
+  pre.append(input, styled('code', ''));
+  return pre;
+}
+
 // 围栏行（```lang / ~~~lang）按 Enter 时调用：把当前编辑容器转换为代码块编辑
 // （pre[data-language]，光标进入块内），返回是否已转换。
 // 语言标记由 Rust 命令 detect_block_shortcut 判定。
@@ -490,10 +508,7 @@ export async function convertFenceToCodeBlock(container) {
   if (!/^[`~]/.test(text)) return false;
   const hit = await invoke('detect_block_shortcut', { line: text }).catch(() => null);
   if (!hit || hit.type !== 'codeBlock') return false;
-  const pre = document.createElement('pre');
-  pre.className = PRE_CLASS;
-  pre.setAttribute('data-language', hit.language || '');
-  pre.append(styled('code', ''));
+  const pre = createCodePre(hit.language);
   container.innerHTML = '';
   container.append(pre);
   placeCursorAtEnd(pre);
@@ -737,10 +752,7 @@ async function transformBlockShortcut() {
     replacement = styled('ul', '', 'my-2 pl-6 list-disc');
     replacement.append(styled('li', rest, 'my-0.5'));
   } else if (hit.type === 'codeBlock') {
-    replacement = document.createElement('pre');
-    replacement.className = PRE_CLASS;
-    replacement.setAttribute('data-language', hit.language || '');
-    replacement.append(styled('code', ''));
+    replacement = createCodePre(hit.language);
   } else if (hit.type === 'separator') {
     // 分割线：替换为新段落，前方插入 hr，光标落在空段落里
     const hr = styled('hr', '', 'my-4');
@@ -841,6 +853,7 @@ export const SLASH_ITEMS = [
 // 语言补全菜单的徽章图标（按语言缩写 + 品牌色，mermaid/math 为特殊渲染围栏）
 export const LANG_BADGES = {
   mermaid: { text: 'Mm', color: '#3e69d7' },
+  plantuml: { text: 'Pu', color: '#2f9dbb' },
   math: { text: '∑', color: '#8250df' },
   rust: { text: 'Rs', color: '#b7410e' },
   javascript: { text: 'JS', color: '#c9a227' },

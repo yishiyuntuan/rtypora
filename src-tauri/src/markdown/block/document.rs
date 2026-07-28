@@ -16,6 +16,9 @@ use crate::markdown::table::{
     parse_root_table_region, parse_table_region,
 };
 
+/// 块级嵌套深度上限（防栈溢出）：超过时引用/警告框按 None 回落、列表嵌套区域按原文子块保留
+const MAX_NESTING_DEPTH: usize = 128;
+
 /// 文档块节点：BlockRecord + 嵌套子块（替代 velotype 的 Entity<Block> 与 parent/content 链接）。
 #[derive(Clone, Debug)]
 pub struct BlockNode {
@@ -721,7 +724,9 @@ fn collect_list_item_region(lines: &[String], start: usize, marker_indent_column
 
         return index.saturating_sub(pending_blank_lines);
     }
-    index
+    // 文件在列表项中结束：尾随空行不吞入项区域（与中途返回同规则），
+    // 交由空行处理产出空段落——否则 "- a\n\n" 末尾的空段落丢失
+    index.saturating_sub(pending_blank_lines)
 }
 
 fn looks_like_root_block_start(lines: &[String], index: usize) -> bool {
@@ -918,8 +923,11 @@ fn native_block(
     kind: BlockKind,
     markdown: String,
 ) -> BlockNode {
-    BlockNode::leaf(BlockRecord::new(kind, InlineTextTree::from_markdown(&markdown)),
-    )
+    // 行内解析接入当前解析作用域的链接引用定义（[text][label] 引用式链接）
+    let title = crate::markdown::inline::with_current_link_refs(|refs| {
+        InlineTextTree::from_markdown_with_link_references(&markdown, refs)
+    });
+    BlockNode::leaf(BlockRecord::new(kind, title))
 }
 
 fn standalone_image_block( markdown: String) -> BlockNode {
@@ -1357,7 +1365,7 @@ fn build_blocks_from_lines_internal(
             if index >= lines.len() {
                 return None; // 未闭合：按普通文本处理
             }
-            let block = build_native_callout_block(&inner, variant, title)
+            let block = build_native_callout_block(&inner, variant, title, 1)
                 .unwrap_or_else(|| raw_block(lines[start..=index].join("\n")));
             return Some((block, index + 1));
         }
@@ -1394,7 +1402,7 @@ fn build_blocks_from_lines_internal(
             if inner.is_empty() {
                 return None;
             }
-            let block = build_native_callout_block(&inner, variant, title)
+            let block = build_native_callout_block(&inner, variant, title, 1)
                 .unwrap_or_else(|| raw_block(lines[start..index].join("\n")));
             return Some((block, index));
         }
@@ -1405,7 +1413,19 @@ fn build_blocks_from_lines_internal(
         lines: &[String],
         start: usize,
     ) -> (BlockNode, usize) {
+        collect_quote_block_with_depth(lines, start, 0)
+    }
+
+    fn collect_quote_block_with_depth(
+        lines: &[String],
+        start: usize,
+        depth: usize,
+    ) -> (BlockNode, usize) {
         let end = collect_quote_raw_region(lines, start);
+        // 嵌套深度上限（防栈溢出）：超深引用/列表/警告框嵌套降级为原文块
+        if depth >= MAX_NESTING_DEPTH {
+            return (raw_block(lines[start..end].join("\n")), end);
+        }
         let region = &lines[start..end];
         let mut dequoted = Vec::with_capacity(region.len());
         for line in region {
@@ -1420,7 +1440,7 @@ fn build_blocks_from_lines_internal(
             dequoted.push(content);
         }
 
-        let Some(block) = build_native_quote_block(&dequoted) else {
+        let Some(block) = build_native_quote_block(&dequoted, depth) else {
             return (raw_block(region.join("\n")), end);
         };
 
@@ -1439,13 +1459,18 @@ fn build_blocks_from_lines_internal(
 
     fn build_native_quote_block(
         lines: &[String],
+        depth: usize,
     ) -> Option<BlockNode> {
+        if depth >= MAX_NESTING_DEPTH {
+            return None;
+        }
         if let Some(header_index) = lines.iter().position(|line| !line.trim().is_empty())
             && let Some((variant, title)) = parse_callout_header(&lines[header_index])
         {
             return build_native_callout_block(&lines[header_index + 1..],
                 variant,
                 title,
+                depth + 1,
             );
         }
 
@@ -1546,7 +1571,7 @@ fn build_blocks_from_lines_internal(
                 if pending_blank_lines > 0 && (!title_markdown.is_empty() || !children.is_empty()) {
                     append_quote_separator_children(&mut children, pending_blank_lines);
                 }
-                let (quote, consumed) = collect_quote_block(lines, index);
+                let (quote, consumed) = collect_quote_block_with_depth(lines, index, depth + 1);
                 if quote.record.kind == BlockKind::RawMarkdown {
                     return None;
                 }
@@ -1561,7 +1586,7 @@ fn build_blocks_from_lines_internal(
                 if pending_blank_lines > 0 && (!title_markdown.is_empty() || !children.is_empty()) {
                     append_quote_separator_children(&mut children, pending_blank_lines);
                 }
-                let (list_blocks, consumed) = collect_list_blocks(lines, index);
+                let (list_blocks, consumed) = collect_list_blocks_with_depth(lines, index, depth + 1);
                 if list_blocks
                     .iter()
                     .any(|block| block.node.record.kind == BlockKind::RawMarkdown)
@@ -1675,7 +1700,11 @@ fn build_blocks_from_lines_internal(
         lines: &[String],
         variant: CalloutVariant,
         title: String,
+        depth: usize,
     ) -> Option<BlockNode> {
+        if depth >= MAX_NESTING_DEPTH {
+            return None;
+        }
         let mut children = Vec::new();
         let mut index = 0usize;
         let mut pending_blank_lines = 0usize;
@@ -1743,7 +1772,7 @@ fn build_blocks_from_lines_internal(
             }
 
             if is_quote_start(line) {
-                let (quote, consumed) = collect_quote_block(lines, index);
+                let (quote, consumed) = collect_quote_block_with_depth(lines, index, depth + 1);
                 if quote.record.kind == BlockKind::RawMarkdown {
                     return None;
                 }
@@ -1753,7 +1782,7 @@ fn build_blocks_from_lines_internal(
             }
 
             if parse_list_marker(line).is_some() {
-                let (list_blocks, consumed) = collect_list_blocks(lines, index);
+                let (list_blocks, consumed) = collect_list_blocks_with_depth(lines, index, depth + 1);
                 if list_blocks
                     .iter()
                     .any(|block| block.node.record.kind == BlockKind::RawMarkdown)
@@ -1827,6 +1856,14 @@ fn build_blocks_from_lines_internal(
         lines: &[String],
         start: usize,
     ) -> (Vec<RootBlock>, usize) {
+        collect_list_blocks_with_depth(lines, start, 0)
+    }
+
+    fn collect_list_blocks_with_depth(
+        lines: &[String],
+        start: usize,
+        depth: usize,
+    ) -> (Vec<RootBlock>, usize) {
         let mut roots = Vec::new();
         let mut index = start;
 
@@ -1883,8 +1920,13 @@ fn build_blocks_from_lines_internal(
                         dedent_lines(&lines[body_index..item_end], line_indent_columns);
 
                     if parse_list_marker(&anchor_dedented[0]).is_some() {
+                        // 嵌套深度上限（防栈溢出）：超深嵌套列表区域按原文子块保留
+                        if depth + 1 >= MAX_NESTING_DEPTH {
+                            block.children.push(raw_block(anchor_dedented.join("\n")));
+                            break;
+                        }
                         let (children, consumed) =
-                            collect_list_blocks(&anchor_dedented, 0);
+                            collect_list_blocks_with_depth(&anchor_dedented, 0, depth + 1);
                         block.children.extend(children.into_iter().map(|root| root.node));
                         body_index += consumed;
                         pending_blank_lines = 0;
@@ -1893,7 +1935,7 @@ fn build_blocks_from_lines_internal(
                     }
 
                     if is_quote_start(&anchor_dedented[0]) {
-                        let (quote, consumed) = collect_quote_block(&anchor_dedented, 0);
+                        let (quote, consumed) = collect_quote_block_with_depth(&anchor_dedented, 0, depth + 1);
                         if quote.record.kind == BlockKind::RawMarkdown {
                             fallback_raw = true;
                             break;

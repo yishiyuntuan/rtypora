@@ -7,7 +7,6 @@ pub mod mermaid;
 pub mod latex;
 
 use tauri_plugin_autostart::MacosLauncher;
-use tauri_plugin_autostart::ManagerExt;
 
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -22,6 +21,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             markdown::parse_markdown,
             markdown::parse_blocks,
+            markdown::parse_blocks_async,
+            markdown::parse_markdown_async,
+            markdown::text_stats_async,
             markdown::serialize_markdown,
             markdown::toggle_task_markdown,
             markdown::text_stats,
@@ -37,6 +39,7 @@ pub fn run() {
             files::read_markdown_parsed,
             files::list_dir,
             files::read_image_data_url,
+            files::resolve_image_path,
             files::save_file,
             files::save_file_as,
             files::save_pasted_image,
@@ -48,6 +51,7 @@ pub fn run() {
             markdown::lcp_offsets,
             markdown::block_template,
             markdown::merge_block_markdown,
+            markdown::looks_like_markdown,
             markdown::set_html_to_md,
             markdown::set_callout_unify,
             markdown::format_table_source,
@@ -57,16 +61,7 @@ pub fn run() {
             latex::render_inline_math,
             latex::set_math_unicode_font
         ])
-        .setup(|app| {
-            // 获取自动启动管理器
-            let autostart_manager = app.autolaunch();
-            // 启用 autostart
-            let _ = autostart_manager.enable();
-            // 检查 enable 状态
-            println!("registered for autostart? {}", autostart_manager.is_enabled().unwrap());
-            // 禁用 autostart
-            let _ = autostart_manager.disable();
-
+        .setup(|_app| {
             Ok(())
         })
         .run(tauri::generate_context!())
