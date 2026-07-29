@@ -3,7 +3,6 @@
 pub mod markdown;
 pub mod files;
 pub mod highlight;
-pub mod mermaid;
 pub mod latex;
 
 use tauri_plugin_autostart::MacosLauncher;
@@ -56,7 +55,6 @@ pub fn run() {
             markdown::set_callout_unify,
             markdown::format_table_source,
             files::build_export_html,
-            mermaid::render_mermaid,
             latex::render_display_math,
             latex::render_inline_math,
             latex::set_math_unicode_font

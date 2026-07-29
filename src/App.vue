@@ -364,7 +364,7 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
 
 <template>
 
-  <div class="t-app flex h-screen flex-col">
+  <div class="t-app relative flex h-screen flex-col">
     <div class="flex flex-1 overflow-hidden">
       <Sidebar
         v-model:visible="sidebarVisible"
@@ -403,8 +403,12 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
       </div>
     </div>
 
+    <!-- 偏好设置：覆盖整个窗口的整页层（含侧边栏/标题栏/状态栏），同一窗口打开非对话框 -->
+    <PrefsDialog v-if="prefsVisible" :visible="prefsVisible" :page="prefsPage" @close="prefsVisible = false" />
+
     <MenuDrawer :visible="menuVisible" :recent-files="recentFiles" @close="menuVisible = false" @action="onMenuAction" />
-    <PrefsDialog :visible="prefsVisible" :page="prefsPage" @close="prefsVisible = false" />
+
+    <MenuDrawer :visible="menuVisible" :recent-files="recentFiles" @close="menuVisible = false" @action="onMenuAction" />
     <AboutDialog :visible="aboutVisible" @close="aboutVisible = false" />
     <ConfirmDialog
       :visible="confirmVisible"

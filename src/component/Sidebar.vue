@@ -1,5 +1,5 @@
 <script setup vapor>
-import { computed, ref, watch, nextTick, onMounted } from 'vue';
+import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { plainText } from '../utils/wysiwyg.js';
 import { getPref, prefsVersion } from '../utils/prefs.js';
@@ -25,6 +25,12 @@ const scrollbarAutoHide = computed(() => {
   return !!getPref('scrollbar_auto_hide');
 });
 
+// 侧边栏底部操作栏自动隐藏开关（偏好设置）：侧栏据此挂载 .sb-toolbar-autohide 类
+const toolbarAutoHide = computed(() => {
+  prefsVersion.value;
+  return !!getPref('sidebar_toolbar_auto_hide');
+});
+
 // 覆盖层滚动条（与编辑器同方案：原生 none 隐藏 + 彩色可拖动滑轨；滚动/右缘悬停显示）
 const sideRoot = ref(null);
 const {
@@ -39,6 +45,13 @@ const {
   onTrackPointerDown: sbOnTrackPointerDown,
 } = useOverlayScrollbar(() => sideRoot.value?.querySelector('.sb-scroll'), scrollbarAutoHide);
 onMounted(() => nextTick(updateSbThumb));
+
+// 窗口重新聚焦时自动刷新目录（捕捉外部新建/删除/重命名；应用内新建文件已即时刷新）
+function onWindowFocus() {
+  if (props.workspaceDir) softRefreshTree();
+}
+onMounted(() => window.addEventListener('focus', onWindowFocus));
+onBeforeUnmount(() => window.removeEventListener('focus', onWindowFocus));
 
 // ---------- 宽度（默认 280，右缘拖拽调整，localStorage 持久化） ----------
 const SIDEBAR_WIDTH_KEY = 'tauri-editor.sidebar-width';
@@ -67,13 +80,22 @@ function startResize(e) {
 
 // ---------- 目录：文件面板 ----------
 
+// 排序选项（Rust list_dir 排序；名称/修改时间/创建时间各升降序，文件夹恒在前）
+const SORT_OPTIONS = [
+  { id: 'asc', label: '名称升序' },
+  { id: 'desc', label: '名称降序' },
+  { id: 'modified_desc', label: '最近修改' },
+  { id: 'modified_asc', label: '最早修改' },
+  { id: 'created_desc', label: '最近创建' },
+  { id: 'created_asc', label: '最早创建' },
+];
 // 视图模式：tree（树形）| list（列表）
 const viewMode = ref('tree');
-// 操作菜单显隐 / 搜索框显隐 / 搜索关键字 / 排序（asc 名称升序、desc 名称降序）
+// 操作菜单显隐 / 搜索框显隐 / 搜索关键字 / 排序（localStorage 记忆）
 const opsMenuOpen = ref(false);
 const searchOpen = ref(false);
 const searchKeyword = ref('');
-const sortMode = ref('asc');
+const sortMode = ref(localStorage.getItem('tauri-editor.dir-sort') || 'asc');
 // 标签页/搜索框切换后重算覆盖层滑轨位置
 watch([activeTab, searchOpen], () => nextTick(updateSbThumb));
 
@@ -217,10 +239,20 @@ function onOps(action) {
   }
 }
 
-// 排序切换：已加载目录按新方向经 Rust 重新拉取
+// 软刷新：保留各目录展开状态，重新拉取已加载的目录内容
+//（手动刷新按钮与窗口聚焦自动刷新共用；refreshTree 全量重建用于切换文件夹）
+async function softRefreshTree() {
+  if (!props.workspaceDir) return;
+  const paths = new Set([props.workspaceDir, ...dirTree.value.keys()]);
+  await Promise.all([...paths].map((p) => loadChildren(p)));
+  rebuildFolderItems();
+}
+
+// 排序切换：已加载目录按新方向经 Rust 重新拉取（localStorage 记忆选择）
 async function onSort(mode) {
   if (mode === sortMode.value) return;
   sortMode.value = mode;
+  localStorage.setItem('tauri-editor.dir-sort', mode);
   await Promise.all([...dirTree.value.keys()].map((path) => loadChildren(path)));
   rebuildFolderItems();
 }
@@ -287,6 +319,7 @@ const outlineItems = computed(() => {
       ref="sideRoot"
       v-show="visible"
       class="t-app relative flex h-full flex-col border-r border-(--t-table-border) text-[13px]"
+      :class="{ 'sb-toolbar-autohide': toolbarAutoHide }"
       :style="{ width: `${width}px` }"
     >
       <!-- 右缘拖拽调宽手柄 -->
@@ -430,10 +463,16 @@ const outlineItems = computed(() => {
           <div v-else class="t-dim flex h-full items-center justify-center text-[12px]">文件列表为空</div>
         </div>
 
-        <!-- 底部工具栏（与状态栏同高 h-7，图标文字垂直居中） -->
-        <div class="relative flex h-7 items-center justify-between border-t border-(--t-table-border) px-2">
+        <!-- 底部工具栏（与状态栏同高 h-7，图标文字垂直居中；偏好开启时自动隐藏，悬停侧栏显现） -->
+        <div class="side-toolbar relative flex h-7 items-center justify-between border-t border-(--t-table-border) px-2">
           <template v-if="workspaceDir">
             <div class="t-btn flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1 text-[14px] leading-none" style="color: #03b736" title="在当前文件夹新建文件" @click="startNaming">+</div>
+            <!-- 刷新：软刷新（保留目录展开状态；窗口聚焦也会自动刷新） -->
+            <div class="t-btn flex shrink-0 cursor-pointer items-center rounded px-1 py-1" title="刷新目录" @click="softRefreshTree">
+              <svg viewBox="0 0 16 16" class="size-[13px]" aria-hidden="true" style="color: #2f9dbb">
+                <path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7M13.3 2.4v3h-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </div>
             <div
               class="t-btn flex min-w-0 flex-1 cursor-pointer items-center justify-center rounded px-1.5 py-1 text-[12px]"
               :title="workspaceDir"
@@ -491,27 +530,23 @@ const outlineItems = computed(() => {
               <span class="font-medium">操作</span>
               <span class="t-btn cursor-pointer rounded px-1 text-[13px]" @click="opsMenuOpen = false">×</span>
             </div>
-            <div v-if="workspaceDir" class="t-btn cursor-pointer px-3 py-1.5" @click="onOps('create')">新建文件</div>
-            <div class="t-btn cursor-pointer px-3 py-1.5" @click="onOps('search')">搜索</div>
-            <div v-if="workspaceDir" class="t-btn cursor-pointer px-3 py-1.5" @click="onOps('explorer')">在资源管理器中显示</div>
-            <div class="t-btn cursor-pointer px-3 py-1.5" @click="onOps('open-folder')">打开文件夹…</div>
-            <div v-if="workspaceDir" class="t-btn cursor-pointer px-3 py-1.5" @click="onOps('refresh')">刷新</div>
+            <!-- 分区标题下的菜单项向内缩进（pl-5） -->
+            <div v-if="workspaceDir" class="t-btn cursor-pointer py-1.5 pl-5 pr-3" @click="onOps('create')">新建文件</div>
+            <div class="t-btn cursor-pointer py-1.5 pl-5 pr-3" @click="onOps('search')">搜索</div>
+            <div v-if="workspaceDir" class="t-btn cursor-pointer py-1.5 pl-5 pr-3" @click="onOps('explorer')">在资源管理器中显示</div>
+            <div class="t-btn cursor-pointer py-1.5 pl-5 pr-3" @click="onOps('open-folder')">打开文件夹…</div>
+            <div v-if="workspaceDir" class="t-btn cursor-pointer py-1.5 pl-5 pr-3" @click="onOps('refresh')">刷新</div>
 
-            <div class="mt-1 flex items-center justify-between border-t border-(--t-table-border) px-3 pb-1 pt-1.5">
+            <div class="mt-1 border-t border-(--t-table-border) px-3 pb-1 pt-1.5">
               <span class="t-dim text-[11px]">排序</span>
-              <div class="flex items-center gap-1">
+              <div class="mt-1 grid grid-cols-2 gap-1 pl-2">
                 <span
-                  class="t-btn cursor-pointer rounded px-1.5 py-0.5 text-[12px]"
-                  :class="{ 'bg-(--t-status-bar-button-hover) font-semibold': sortMode === 'asc' }"
-                  title="名称升序"
-                  @click="onSort('asc')"
-                >A↓Z</span>
-                <span
-                  class="t-btn cursor-pointer rounded px-1.5 py-0.5 text-[12px]"
-                  :class="{ 'bg-(--t-status-bar-button-hover) font-semibold': sortMode === 'desc' }"
-                  title="名称降序"
-                  @click="onSort('desc')"
-                >Z↓A</span>
+                  v-for="opt in SORT_OPTIONS"
+                  :key="opt.id"
+                  class="t-btn cursor-pointer rounded px-1.5 py-1 text-[12px]"
+                  :class="{ 'bg-(--t-status-bar-button-hover) font-semibold': sortMode === opt.id }"
+                  @click="onSort(opt.id)"
+                >{{ opt.label }}</span>
               </div>
             </div>
 

@@ -1,14 +1,29 @@
 <script setup vapor>
-import { reactive, ref, watch } from 'vue';
+import { reactive, ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { getPrefs, setPref } from '../utils/prefs.js';
+import { listThemes, currentThemeId, applyTheme, importThemeJson, removeCustomTheme, themeVersion, previewTheme } from '../themes/index.js';
 
-// 偏好设置对话框：编辑器 / 图像 / Markdown / 外观 四页（Typora 一体化外观风格）。
+// 偏好设置页：编辑器 / 图像 / Markdown / 外观 四页。
+// 两种形态：整窗页面层（默认）/ 菜单第三列内嵌（embedded）。
+// 返回编辑器：右上角 × / Esc / 「← 返回」按钮
 const props = defineProps({
   visible: { type: Boolean, default: false },
   page: { type: String, default: 'editor' },
+  // 内嵌模式（菜单第三列）：根节点脱离整窗绝对定位，变为普通列容器
+  embedded: { type: Boolean, default: false },
 });
 
 const emit = defineEmits(['close']);
+
+// Esc 返回编辑器（与 × 等效）
+function onPrefsKeydown(e) {
+  if (e.key === 'Escape') {
+    e.stopPropagation();
+    emit('close');
+  }
+}
+onMounted(() => window.addEventListener('keydown', onPrefsKeydown, true));
+onBeforeUnmount(() => window.removeEventListener('keydown', onPrefsKeydown, true));
 
 const activePage = ref(props.page);
 // 打开时同步目标页并载入当前值
@@ -17,6 +32,10 @@ watch(() => props.visible, (v) => {
     activePage.value = props.page;
     Object.assign(form, getPrefs());
   }
+});
+// 内嵌模式下列间切换：外部 page 变化同步到分页
+watch(() => props.page, (p) => {
+  activePage.value = p;
 });
 
 const form = reactive({ ...getPrefs() });
@@ -37,33 +56,129 @@ const imageBehaviors = [
 function update(key, value) {
   setPref(key, value === '' ? null : value);
 }
+
+// ---------- 外观页：主题选择 / 导入 / 删除自定义主题 / 公式中文字体 ----------
+const themeFileInput = ref(null);
+const themes = computed(() => {
+  themeVersion.value;
+  return listThemes();
+});
+
+// 系统字体列表（queryLocalFonts 同步；不支持/无权限时回落常见字体）
+const systemFonts = ref([]);
+const FALLBACK_FONTS = [
+  '微软雅黑', '宋体', '等线', '黑体', '楷体', '仿宋', '苹方-简',
+  'Consolas', 'Cascadia Mono', 'Cascadia Code', 'JetBrains Mono', 'Courier New', 'Georgia', 'Arial',
+];
+onMounted(async () => {
+  try {
+    if ('queryLocalFonts' in window) {
+      const fonts = await window.queryLocalFonts();
+      systemFonts.value = [...new Set(fonts.map((f) => f.family))].sort((a, b) =>
+        a.localeCompare(b, 'zh-CN'),
+      );
+    }
+  } catch {
+    // 权限拒绝或平台不支持：回落常见字体清单
+  }
+  if (!systemFonts.value.length) systemFonts.value = FALLBACK_FONTS;
+});
+const activeThemeId = computed(() => {
+  themeVersion.value;
+  return currentThemeId();
+});
+
+// 主题卡片缩略图配色（解析主题继承链后的完整配色，一次预计算）
+const themePreviews = computed(() => {
+  themeVersion.value;
+  const map = new Map();
+  for (const pack of listThemes()) {
+    const c = previewTheme(pack).colors || {};
+    map.set(pack.id, {
+      bg: c.editor_background,
+      heading: c.text_h1 || c.text_default,
+      text: c.text_default,
+      strong: c.text_strong || c.text_default,
+      link: c.text_link,
+      markBg: c.mark_bg,
+      markText: c.mark_text,
+      inlineCodeBg: c.inline_code_bg,
+      inlineCodeText: c.inline_code_text,
+      quoteBorder: c.border_quote,
+      quoteBg: c.quote_bg,
+      quoteText: c.text_quote || c.text_default,
+      marker: c.list_marker,
+      codeBg: c.code_bg,
+      codeKw: c.code_syntax_keyword,
+      codeStr: c.code_syntax_string,
+      codeNum: c.code_syntax_number,
+      codeComment: c.code_syntax_comment,
+      tblHeaderBg: c.table_header_bg,
+      tblCellBg: c.table_cell_bg,
+      accent: c.tab_indicator,
+      border: c.table_border,
+      statusBg: c.status_bar_background,
+      statusText: c.status_bar_text_dim || c.status_bar_text,
+    });
+  }
+  return map;
+});
+
+function onSelectTheme(id) {
+  applyTheme(id);
+}
+function onRemoveTheme(id) {
+  removeCustomTheme(id);
+  themeVersion.value += 1;
+}
+function onImportTheme(e) {
+  const file = e.target.files?.[0];
+  e.target.value = '';
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      importThemeJson(String(reader.result || ''));
+    } catch (err) {
+      alert(`导入主题失败：${err.message || err}`);
+    }
+  };
+  reader.readAsText(file);
+}
 </script>
 
 <template>
-  <Teleport to="body">
-    <div v-if="visible" class="prefs-backdrop" @click.self="emit('close')">
-      <div class="prefs-panel t-app" @click.stop>
-        <div class="flex h-9 items-center justify-between border-b border-(--t-table-border) px-4">
-          <span class="text-[13px] font-medium">偏好设置</span>
-          <span class="t-btn cursor-pointer rounded px-1.5 text-[15px]" @click="emit('close')">×</span>
+  <div v-if="visible" class="prefs-page t-app" :class="{ 'prefs-page-embedded': embedded }">
+    <!-- 内嵌列顶部拖拽条（设置打开时窗口顶部可拖动；整窗模式用下方头部） -->
+    <div v-if="embedded" class="prefs-drag-strip" data-tauri-drag-region></div>
+    <!-- 整窗模式的头部（内嵌列不显示：页面切换由菜单卡片列承担，Esc 收列） -->
+    <div v-if="!embedded" class="flex h-9 shrink-0 items-center justify-between border-b border-(--t-table-border) px-4" data-tauri-drag-region>
+      <span class="text-[13px] font-medium" data-tauri-drag-region>偏好设置</span>
+      <span class="t-btn flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-[13px]" title="返回编辑器（Esc）" @click="emit('close')">
+        <svg viewBox="0 0 16 16" class="size-[12px]" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 3L5 8l5 5" />
+        </svg>
+        返回
+      </span>
+    </div>
+    <div class="flex flex-1 overflow-hidden">
+      <!-- 左侧导航（内嵌列不显示） -->
+      <div v-if="!embedded" class="w-36 shrink-0 border-r border-(--t-table-border) py-2">
+        <div
+          v-for="p in pages"
+          :key="p.id"
+          class="t-btn cursor-pointer px-4 py-2 text-[12px]"
+          :class="{ 'bg-(--t-status-bar-button-hover) font-medium': activePage === p.id }"
+          @click="activePage = p.id"
+        >
+          {{ p.label }}
         </div>
-        <div class="flex flex-1 overflow-hidden">
-          <!-- 左侧导航 -->
-          <div class="w-28 border-r border-(--t-table-border) py-2">
-            <div
-              v-for="p in pages"
-              :key="p.id"
-              class="t-btn cursor-pointer px-4 py-2 text-[12px]"
-              :class="{ 'bg-(--t-status-bar-button-hover) font-medium': activePage === p.id }"
-              @click="activePage = p.id"
-            >
-              {{ p.label }}
-            </div>
-          </div>
+      </div>
 
-          <!-- 内容区 -->
-          <div class="flex-1 overflow-y-auto p-4 text-[13px]">
-            <!-- 编辑器 -->
+      <!-- 内容区 -->
+      <div class="flex-1 overflow-y-auto text-[13px]" :class="embedded ? 'px-8 py-7' : 'p-6'">
+        <div class="mx-auto max-w-160">
+        <!-- 编辑器 -->
             <div v-if="activePage === 'editor'" class="space-y-4">
               <label class="block">
                 <span class="t-dim mb-1 block text-[12px]">正文字号（px，留空跟随主题）</span>
@@ -120,6 +235,14 @@ function update(key, value) {
                   @change="update('scrollbar_auto_hide', $event.target.checked)"
                 />
                 <span>滚动条自动隐藏（悬停或滚动时显示）</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.sidebar_toolbar_auto_hide"
+                  @change="update('sidebar_toolbar_auto_hide', $event.target.checked)"
+                />
+                <span>侧边栏操作栏自动隐藏（鼠标滑过侧栏时显示）</span>
               </label>
               <p class="t-dim text-[12px]">仅对普通段落生效；引用、列表、表格等容器内的段落不缩进。</p>
 
@@ -280,36 +403,149 @@ function update(key, value) {
             </div>
 
             <!-- 外观 -->
-            <div v-else-if="activePage === 'appearance'" class="space-y-3">
-              <p class="t-dim text-[12px]">主题与字体</p>
-              <p class="text-[13px]">主题切换、自定义主题导入、按块样式与公式中文字体请使用菜单「主题」或状态栏的主题下拉。</p>
+            <div v-else-if="activePage === 'appearance'" class="space-y-4">
+              <div>
+                <span class="t-dim mb-2 block text-[12px]">主题（内置与自定义，点击卡片切换）</span>
+                <div class="grid grid-cols-2 gap-3">
+                  <div
+                    v-for="theme in themes"
+                    :key="theme.id"
+                    class="theme-card"
+                    :class="{ 'theme-card-active': activeThemeId === theme.id }"
+                    :title="theme.name"
+                    @click="onSelectTheme(theme.id)"
+                  >
+                    <!-- 竖版卡片（扑克牌式）：上方主题缩略图（该主题完整配色画的迷你编辑器：
+                         标题/正文行内样式/引用/列表/代码语法/表格/状态条），下方名称与操作 -->
+                    <div
+                      class="theme-thumb"
+                      :style="{ background: themePreviews.get(theme.id)?.bg, borderColor: themePreviews.get(theme.id)?.border, color: themePreviews.get(theme.id)?.text }"
+                    >
+                      <div class="thumb-h" :style="{ color: themePreviews.get(theme.id)?.heading }">标题 Aa</div>
+                      <div class="thumb-line">
+                        正文 <span :style="{ color: themePreviews.get(theme.id)?.link }">链接</span>
+                        <b :style="{ color: themePreviews.get(theme.id)?.strong }">加粗</b>
+                        <span class="thumb-mark" :style="{ background: themePreviews.get(theme.id)?.markBg, color: themePreviews.get(theme.id)?.markText }">标记</span>
+                        <code class="thumb-icode" :style="{ background: themePreviews.get(theme.id)?.inlineCodeBg, color: themePreviews.get(theme.id)?.inlineCodeText }">code</code>
+                      </div>
+                      <div
+                        class="thumb-quote"
+                        :style="{ borderLeftColor: themePreviews.get(theme.id)?.quoteBorder, background: themePreviews.get(theme.id)?.quoteBg, color: themePreviews.get(theme.id)?.quoteText }"
+                      >引用文本一行</div>
+                      <div class="thumb-line">
+                        <span class="thumb-li"><i :style="{ background: themePreviews.get(theme.id)?.marker }"></i>列表项一</span>
+                        <span class="thumb-li"><i :style="{ background: themePreviews.get(theme.id)?.marker }"></i>列表项二</span>
+                      </div>
+                      <div class="thumb-code" :style="{ background: themePreviews.get(theme.id)?.codeBg }">
+                        <span :style="{ color: themePreviews.get(theme.id)?.codeKw }">fn</span>
+                        <span :style="{ color: themePreviews.get(theme.id)?.codeStr }"> "str"</span>
+                        <span :style="{ color: themePreviews.get(theme.id)?.codeNum }"> 42</span>
+                        <span :style="{ color: themePreviews.get(theme.id)?.codeComment }"> // 注释</span>
+                      </div>
+                      <div class="thumb-table" :style="{ borderColor: themePreviews.get(theme.id)?.border }">
+                        <span class="thumb-th" :style="{ background: themePreviews.get(theme.id)?.tblHeaderBg, borderColor: themePreviews.get(theme.id)?.border }">表头</span>
+                        <span class="thumb-td" :style="{ background: themePreviews.get(theme.id)?.tblCellBg, borderColor: themePreviews.get(theme.id)?.border }">单元格</span>
+                      </div>
+                      <div class="thumb-status" :style="{ background: themePreviews.get(theme.id)?.statusBg, color: themePreviews.get(theme.id)?.statusText }">
+                        <span class="thumb-dot" :style="{ background: themePreviews.get(theme.id)?.accent }"></span>
+                        <span class="thumb-stext">Ln 1, Col 1</span>
+                      </div>
+                    </div>
+                    <div class="theme-card-foot">
+                      <span class="theme-card-check">{{ activeThemeId === theme.id ? '✓' : '' }}</span>
+                      <span class="min-w-0 flex-1 truncate">{{ theme.name }}</span>
+                      <span
+                        v-if="theme.id.startsWith('custom-')"
+                        class="theme-card-del t-dim"
+                        title="删除该自定义主题"
+                        @click.stop="onRemoveTheme(theme.id)"
+                      >删除</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <!-- 设置项同样卡片化 -->
+              <div class="settings-card">
+                <span class="t-dim mb-2 block text-[12px]">编辑器字体（列表与系统同步，留空跟随主题）</span>
+                <input
+                  type="text"
+                  class="prefs-input w-full max-w-100"
+                  list="prefs-font-list"
+                  :value="form.editor_font_family"
+                  placeholder="跟随主题（如 微软雅黑）"
+                  @change="update('editor_font_family', $event.target.value.trim() || null)"
+                />
+              </div>
+              <div class="settings-card">
+                <span class="t-dim mb-2 block text-[12px]">代码块字体（等宽，留空跟随主题）</span>
+                <input
+                  type="text"
+                  class="prefs-input w-full max-w-100"
+                  list="prefs-font-list"
+                  :value="form.code_font_family"
+                  placeholder="跟随主题（如 Consolas）"
+                  @change="update('code_font_family', $event.target.value.trim() || null)"
+                />
+              </div>
+              <datalist id="prefs-font-list">
+                <option v-for="f in systemFonts" :key="f" :value="f" />
+              </datalist>
+              <div class="settings-card">
+                <span class="t-dim mb-2 block text-[12px]">导入主题</span>
+                <button type="button" class="prefs-select cursor-pointer" @click="themeFileInput?.click()">导入主题（JSON/JSONC/YAML）…</button>
+                <input ref="themeFileInput" type="file" accept=".json,.jsonc,.yaml,.yml" class="hidden" @change="onImportTheme" />
+                <p class="t-dim mt-2 text-[12px]">按块样式、伪元素/状态键与主题 token 的编写方式见项目内「自定义主题.md」。</p>
+              </div>
+              <div class="settings-card">
+                <span class="t-dim mb-2 block text-[12px]">公式中文字体</span>
+                <input
+                  type="text"
+                  class="prefs-input w-full max-w-100"
+                  :value="form.math_cjk_font"
+                  placeholder="C:\Windows\Fonts\simsun.ttc#SimSun"
+                  @change="update('math_cjk_font', $event.target.value.trim() || null)"
+                />
+                <p class="t-dim mt-2 text-[12px]">ratex 字体规格：路径 或 路径#字体族名；留空跟随主题，重启应用后生效。</p>
+              </div>
             </div>
-          </div>
         </div>
       </div>
     </div>
-  </Teleport>
+  </div>
 </template>
 
 <style scoped>
-.prefs-backdrop {
-  position: fixed;
+/* 偏好设置整页层（覆盖整个窗口含侧边栏，同一窗口打开非对话框） */
+.prefs-page {
+  position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
-  z-index: 95;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--t-editor-background);
+  color: var(--t-text-default);
+}
+/* 内嵌模式（菜单第三列）：脱离整窗绝对定位，作为普通列容器撑满高度 */
+.prefs-page.prefs-page-embedded {
+  position: relative;
+  inset: auto;
+  z-index: auto;
+  height: 100%;
+}
+/* 内嵌列顶部拖拽条（菜单/设置打开时的窗口拖动区） */
+.prefs-drag-strip {
+  flex-shrink: 0;
+  height: 12px;
   display: flex;
   align-items: center;
   justify-content: center;
 }
-.prefs-panel {
-  width: 560px;
-  height: 380px;
-  border: 1px solid var(--t-table-border);
-  border-radius: 10px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+.prefs-drag-strip::after {
+  content: '';
+  width: 28px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--t-table-border);
 }
 .prefs-input {
   width: 200px;
@@ -333,5 +569,143 @@ function update(key, value) {
 .prefs-select option {
   background: var(--t-editor-background);
   color: var(--t-text-default);
+}
+
+/* 主题卡片（竖版扑克牌式：上方缩略图取该主题完整配色画的迷你编辑器） */
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--t-table-border);
+  border-radius: 8px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 0.1s, box-shadow 0.1s;
+}
+.theme-card:hover {
+  border-color: color-mix(in srgb, var(--t-tab-indicator) 45%, transparent);
+}
+.theme-card-active {
+  border-color: var(--t-tab-indicator);
+  box-shadow: 0 0 0 1px var(--t-tab-indicator);
+}
+.theme-thumb {
+  position: relative;
+  height: 196px;
+  flex-shrink: 0;
+  padding: 10px 12px 16px;
+  border-bottom: 1px solid var(--t-table-border);
+  font-size: 11px;
+  line-height: 1.6;
+  overflow: hidden;
+  user-select: none;
+}
+.thumb-h {
+  font-size: 13px;
+  font-weight: 700;
+}
+.thumb-line {
+  margin-top: 2px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+.thumb-mark {
+  padding: 0 3px;
+  border-radius: 3px;
+}
+.thumb-icode {
+  padding: 0 4px;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 10px;
+}
+.thumb-quote {
+  margin-top: 4px;
+  padding: 1px 6px;
+  border-left: 2px solid;
+  border-radius: 0 3px 3px 0;
+}
+.thumb-li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+}
+.thumb-li i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+}
+.thumb-code {
+  display: inline-block;
+  margin-top: 4px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+.thumb-table {
+  display: inline-flex;
+  margin-top: 5px;
+  border: 1px solid;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.thumb-th,
+.thumb-td {
+  padding: 0 8px;
+  font-size: 10px;
+}
+.thumb-th {
+  border-right: 1px solid;
+  font-weight: 600;
+}
+.thumb-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 9px;
+}
+.thumb-dot {
+  width: 14px;
+  height: 2px;
+  border-radius: 1px;
+}
+.thumb-stext {
+  opacity: 0.9;
+}
+.theme-card-foot {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 8px;
+  font-size: 12px;
+  min-width: 0;
+}
+.theme-card-check {
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--t-text-link);
+}
+.theme-card-del {
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.theme-card-del:hover {
+  color: #d35d2e;
+}
+
+/* 设置项卡片（与主题卡片同一容器语言） */
+.settings-card {
+  border: 1px solid var(--t-table-border);
+  border-radius: 8px;
+  padding: 12px 14px;
 }
 </style>

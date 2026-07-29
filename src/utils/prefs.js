@@ -22,6 +22,13 @@ const DEFAULTS = {
   first_line_indent: false,  // 段落首行缩进（2em）
   // 滚动条自动隐藏：平时隐藏，悬停或滚动时显示
   scrollbar_auto_hide: true,
+  // 侧边栏底部操作栏自动隐藏：平时隐藏，鼠标滑过侧栏时显现
+  sidebar_toolbar_auto_hide: true,
+  // 公式中文回落字体覆盖（ratex 字体规格：路径 或 路径#字体族名；留空跟随主题 token，重启后生效）
+  math_cjk_font: null,
+  // 编辑器字体 / 代码块字体覆盖（字体族名；留空跟随主题 typography.font_family/code_font_family）
+  editor_font_family: null,
+  code_font_family: null,
   // 图像
   image_paste_behavior: 'document', // 'off' | 'document'（文档目录）| 'assets'（assets 子目录）
   // Markdown 渲染开关
@@ -104,6 +111,19 @@ export function applyEditorOverrides(prefs = load()) {
   apply('--t-text-line-height-pref', prefs.text_line_height);
   apply('--t-content-max-width-pref', prefs.content_max_width);
   apply('--t-editor-padding-pref', prefs.editor_padding);
+  // 字体族覆盖（字符串值，带空格族名加引号；CSS 以 var(--t-x-pref, var(--t-x)) 回落主题）
+  const applyFont = (name, value) => {
+    if (value === null || value === undefined || value === '') style.removeProperty(name);
+    else style.setProperty(name, JSON.stringify(value));
+  };
+  applyFont('--t-font-family-pref', prefs.editor_font_family);
+  applyFont('--t-code-font-family-pref', prefs.code_font_family);
   // 滚动条自动隐藏开关（html.sb-auto-hide 驱动 CSS 显隐规则）
   document.documentElement.classList.toggle('sb-auto-hide', !!prefs.scrollbar_auto_hide);
+  // 公式中文回落字体覆盖（ratex 字体规格；空值跟随主题 token，重启后生效）
+  if (prefs.math_cjk_font) {
+    invoke('set_math_unicode_font', { spec: prefs.math_cjk_font }).catch((e) =>
+      console.error('set_math_unicode_font 失败:', e),
+    );
+  }
 }

@@ -1023,19 +1023,6 @@ fn 高亮标记() {
 }
 
 #[test]
-fn mermaid渲染() {
-    use tauri_app_lib::mermaid;
-
-    // flowchart 应渲染为 SVG
-    let svg = mermaid::render_mermaid("graph TD;\nA-->B\n").expect("flowchart 应渲染成功");
-    assert!(svg.contains("<svg"), "应输出 SVG: {}", &svg[..svg.len().min(200)]);
-
-    // 非图表源码 / 语法错误返回 None
-    assert!(mermaid::render_mermaid("普通文本").is_none());
-    assert!(mermaid::render_mermaid("graph TD;\nA-->\n").is_none() || true); // 容错：渲染器可能宽容
-}
-
-#[test]
 fn 独立图片段落识别() {
     // `![alt](src)` 独立成段 → paragraph + image 信息；行内文本中的图片不识别
     let blocks = parse("![sss](./img/pic.png \"标题\")\n");

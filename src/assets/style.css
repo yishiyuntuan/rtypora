@@ -9,14 +9,14 @@
 .t-app {
   background: var(--t-editor-background);
   color: var(--t-text-default);
-  font-family: var(--t-font-family);
+  font-family: var(--t-font-family-pref, var(--t-font-family));
 }
 
 /* 编辑区根：背景、正文、字号、行高、光标、选区 */
 .t-root {
   background: var(--t-editor-background);
   color: var(--t-text-default);
-  font-family: var(--t-font-family);
+  font-family: var(--t-font-family-pref, var(--t-font-family));
   font-size: var(--t-text-size-pref, var(--t-text-size));
   line-height: var(--t-text-line-height-pref, var(--t-text-line-height));
   caret-color: var(--t-cursor);
@@ -125,7 +125,7 @@
   border: 1px solid var(--t-kbd-border);
   border-radius: 4px;
   padding: 1px 5px;
-  font-family: var(--t-code-font-family);
+  font-family: var(--t-code-font-family-pref, var(--t-code-font-family));
   font-size: 0.85em;
 }
 /* 上下标（blocks.superscript / subscript 可覆盖字号与偏移） */
@@ -166,13 +166,13 @@
   background: var(--t-code-bg);
   color: var(--t-code-text);
   border-radius: var(--t-code-bg-radius);
-  font-family: var(--t-code-font-family);
+  font-family: var(--t-code-font-family-pref, var(--t-code-font-family));
   font-size: var(--t-code-size);
 }
 .t-root .md-pre {
   background: var(--t-code-bg);
   color: var(--t-code-text);
-  font-family: var(--t-code-font-family);
+  font-family: var(--t-code-font-family-pref, var(--t-code-font-family));
   font-size: var(--t-code-size);
 }
 .t-root .md-pre code {
@@ -419,6 +419,27 @@
 .t-statusbar .t-btn.active {
   background: color-mix(in srgb, var(--t-tab-indicator) 18%, transparent);
   color: var(--t-tab-indicator);
+}
+
+/* 侧栏底部操作栏自动隐藏（偏好 sidebar_toolbar_auto_hide）：
+   平时隐藏（绝对定位脱离文档流，不占空间），悬停侧栏/聚焦时浮现 */
+.sb-toolbar-autohide .side-toolbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  background: var(--t-editor-background);
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.sb-toolbar-autohide:hover .side-toolbar,
+.sb-toolbar-autohide .side-toolbar:focus-within {
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
 }
 
 /* 表格边框 + 按钮（行/列快速添加）：圆形小按钮，跨坐在表格边框线上，跟随鼠标所在行/列 */
@@ -700,7 +721,7 @@
 .md-code-lang-badge {
   padding: 1px 4px;
   color: var(--t-text-placeholder);
-  font-family: var(--t-code-font-family);
+  font-family: var(--t-code-font-family-pref, var(--t-code-font-family));
   font-size: 12px;
   line-height: 1.5;
   letter-spacing: 0.02em;
@@ -736,7 +757,7 @@
   border-radius: 999px;
   background: transparent;
   color: var(--t-text-placeholder);
-  font-family: var(--t-code-font-family);
+  font-family: var(--t-code-font-family-pref, var(--t-code-font-family));
   font-size: 12px;
   line-height: 1.5;
   text-align: center;
@@ -986,7 +1007,7 @@ pre:hover .md-code-lang-input,
   padding: 2px 5px;
   border-radius: 4px;
   text-align: center;
-  font-family: var(--t-code-font-family);
+  font-family: var(--t-code-font-family-pref, var(--t-code-font-family));
   font-size: 15px;
   font-weight: 600;
   line-height: 1;
@@ -1024,7 +1045,7 @@ pre:hover .md-code-lang-input,
   display: inline-block;
   min-width: 22px;
   text-align: center;
-  font-family: var(--t-code-font-family);
+  font-family: var(--t-code-font-family-pref, var(--t-code-font-family));
   font-size: 10px;
   font-weight: 700;
 }

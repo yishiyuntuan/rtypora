@@ -167,7 +167,9 @@ pub fn read_markdown_parsed(path: &str) -> Option<OpenedFileParsed> {
     Some(parsed_open(path.to_string(), content))
 }
 
-/// 列出目录内容：文件夹在前，文件在后，各自按名称排序（sort: "asc" 默认升序 / "desc" 降序；不递归）。
+/// 列出目录内容：文件夹在前，文件在后，各自排序（不递归）。
+/// sort: "asc" 名称升序（默认）| "desc" 名称降序 |
+/// "created_asc"/"created_desc" 创建时间升/降序 | "modified_asc"/"modified_desc" 修改时间升/降序
 #[tauri::command]
 pub fn list_dir(path: &str, sort: Option<&str>) -> Vec<DirEntry> {
     let mut dirs = Vec::new();
@@ -194,13 +196,33 @@ pub fn list_dir(path: &str, sort: Option<&str>) -> Vec<DirEntry> {
             files.push(item);
         }
     }
-    let desc = matches!(sort, Some("desc"));
-    let by_name = |a: &DirEntry, b: &DirEntry| {
-        let ord = a.name.to_lowercase().cmp(&b.name.to_lowercase());
-        if desc { ord.reverse() } else { ord }
+    let mode = sort.unwrap_or("asc");
+    let by_name = |a: &DirEntry, b: &DirEntry| a.name.to_lowercase().cmp(&b.name.to_lowercase());
+    // 时间戳取不到（权限/删除竞争）时按最早处理（排升序在前、降序在后）
+    let time_of = |e: &DirEntry, created: bool| {
+        std::fs::metadata(&e.path)
+            .and_then(|m| if created { m.created() } else { m.modified() })
+            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
     };
-    dirs.sort_by(by_name);
-    files.sort_by(by_name);
+    match mode {
+        "desc" => {
+            dirs.sort_by(|a, b| by_name(a, b).reverse());
+            files.sort_by(|a, b| by_name(a, b).reverse());
+        }
+        "created_asc" | "created_desc" | "modified_asc" | "modified_desc" => {
+            let created = mode.starts_with("created");
+            let by_time = |a: &DirEntry, b: &DirEntry| {
+                let ord = time_of(a, created).cmp(&time_of(b, created));
+                if mode.ends_with("_desc") { ord.reverse() } else { ord }
+            };
+            dirs.sort_by(by_time);
+            files.sort_by(by_time);
+        }
+        _ => {
+            dirs.sort_by(by_name);
+            files.sort_by(by_name);
+        }
+    }
     dirs.extend(files);
     dirs
 }

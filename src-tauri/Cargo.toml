@@ -24,6 +24,9 @@ test = false
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[dev-dependencies]
+filetime = "0.2"
+
 [dependencies]
 tauri = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
@@ -33,7 +36,6 @@ base64 = "0.22"
 ratex-layout = "0.1.9"
 ratex-parser = "0.1.9"
 ratex-svg = { version = "0.1.9", features = ["embed-fonts", "standalone"] }
-mermaid-rs-renderer = { version = "0.3.0", default-features = false }
 tree-sitter = "0.26.9"
 tree-sitter-highlight = "0.26.9"
 tree-sitter-rust = "0.24"

@@ -263,9 +263,13 @@ function applyCssVars(theme) {
   }
 }
 
+/** 解析主题继承链后的完整主题（外观页主题卡片缩略图取色用）。 */
+export function previewTheme(pack) {
+  return resolveTheme(pack);
+}
+
 /** 应用指定 id 的主题；返回是否成功（id 不存在则回退默认主题）。 */
-export function applyTheme(id) {
-  let pack = findTheme(id);
+export function applyTheme(id) {  let pack = findTheme(id);
   if (!pack) {
     pack = findTheme(DEFAULT_THEME_ID);
     id = DEFAULT_THEME_ID;

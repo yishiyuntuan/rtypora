@@ -1,9 +1,10 @@
 <script setup vapor>
 import { ref, watch } from 'vue';
-import { listThemes, currentThemeId, applyTheme, importThemeJson } from '../themes/index.js';
+import PrefsDialog from './PrefsDialog.vue';
 
 // 一体化菜单（Typora 风格）：左侧深色菜单列 + 右侧内容面板。
-// 动作项（新建/保存/另存为/打印/关闭）直接执行；内容项（打开/导出/主题/偏好设置/关于）在右侧展示。
+// 动作项（新建/保存/另存为/打印/关闭）直接执行；内容项（打开/导出/偏好设置/关于）在右侧展示。
+// 主题管理在 偏好设置→外观 页（主题卡片），菜单不再单设主题页。
 const props = defineProps({
   visible: { type: Boolean, default: false },
   recentFiles: { type: Array, default: () => [] },
@@ -18,34 +19,7 @@ watch(() => props.visible, (v) => {
 });
 
 const fileInput = ref(null);
-const themeFileInput = ref(null);
 const themeFilter = ref('');
-
-// 主题
-const themes = ref(listThemes());
-const themeId = ref(currentThemeId());
-watch(() => props.visible, (v) => {
-  if (v) {
-    themes.value = listThemes();
-    themeId.value = currentThemeId();
-  }
-});
-
-function onSelectTheme(id) {
-  themeId.value = applyTheme(id);
-}
-
-async function onImportTheme(e) {
-  const file = e.target.files?.[0];
-  e.target.value = '';
-  if (!file) return;
-  try {
-    themeId.value = importThemeJson(await file.text());
-    themes.value = listThemes();
-  } catch (err) {
-    alert(`主题导入失败：${err.message}`);
-  }
-}
 
 // 最近文件过滤
 const filteredRecent = () => {
@@ -77,7 +51,6 @@ const menuItems = [
   { action: 'save-as', label: '另存为', kind: 'action' },
   { action: 'export', label: '导出', kind: 'content' },
   { action: 'print', label: '打印', kind: 'action' },
-  { action: 'theme', label: '主题', kind: 'content' },
   { action: 'prefs', label: '偏好设置', kind: 'content' },
   { action: 'about', label: '关于', kind: 'content' },
   { action: 'close', label: '关闭', kind: 'action' },
@@ -88,7 +61,15 @@ function onItem(item) {
     emit('action', item.action);
   } else {
     selected.value = item.action;
+    // 切离偏好设置时收起第三列
+    if (item.action !== 'prefs') prefsColumn.value = null;
   }
+}
+
+// 偏好设置第三列：点击卡片在右侧新增一列显示该页设置表单（不整窗替换）
+const prefsColumn = ref(null);
+function openPrefsColumn(pageId) {
+  prefsColumn.value = pageId;
 }
 </script>
 
@@ -96,11 +77,13 @@ function onItem(item) {
   <Teleport to="body">
     <Transition name="menu-slide">
       <div v-if="visible" class="menu-overlay" @click.self="emit('close')">
+        <!-- 全宽顶部拖拽带（菜单打开时整个上缘均可拖动窗口；16px 不遮挡下方按钮） -->
+        <div class="menu-drag-top" data-tauri-drag-region></div>
         <!-- 左侧深色菜单列 -->
         <div class="menu-sidebar">
           <div class="menu-header">
             <span class="menu-back" title="返回" @click="emit('close')">❮</span>
-            <span class="menu-title">菜单</span>
+            <span class="menu-title" data-tauri-drag-region>菜单</span>
           </div>
           <div
             v-for="item in menuItems"
@@ -117,7 +100,7 @@ function onItem(item) {
         <div class="menu-content t-app" @click.stop>
           <!-- 打开 -->
           <div v-if="selected === 'open'" class="menu-page">
-            <h2 class="menu-page-title">打开</h2>
+            <h2 class="menu-page-title" data-tauri-drag-region>打开</h2>
             <button class="menu-btn" @click="emit('action', 'open')">
               <span class="menu-btn-icon">📂</span> 打开…
             </button>
@@ -143,7 +126,7 @@ function onItem(item) {
 
           <!-- 导出 -->
           <div v-else-if="selected === 'export'" class="menu-page">
-            <h2 class="menu-page-title">导出</h2>
+            <h2 class="menu-page-title" data-tauri-drag-region>导出</h2>
             <button class="menu-btn" @click="emit('action', 'export')">
               <span class="menu-btn-icon">📄</span> HTML（含主题样式与渲染结果）
             </button>
@@ -152,32 +135,15 @@ function onItem(item) {
             </button>
           </div>
 
-          <!-- 主题 -->
-          <div v-else-if="selected === 'theme'" class="menu-page">
-            <h2 class="menu-page-title">主题</h2>
-            <div
-              v-for="theme in themes"
-              :key="theme.id"
-              class="menu-theme-item"
-              @click="onSelectTheme(theme.id)"
-            >
-              <span class="menu-theme-check">{{ theme.id === themeId ? '✓' : '' }}</span>
-              <span>{{ theme.name }}</span>
-            </div>
-            <button class="menu-btn mt-3" @click="themeFileInput?.click()">
-              <span class="menu-btn-icon">📥</span> 导入主题…
-            </button>
-            <input ref="themeFileInput" type="file" accept=".json,.jsonc" class="hidden" @change="onImportTheme" />
-          </div>
-
           <!-- 偏好设置 -->
           <div v-else-if="selected === 'prefs'" class="menu-page">
-            <h2 class="menu-page-title">偏好设置</h2>
+            <h2 class="menu-page-title" data-tauri-drag-region>偏好设置</h2>
             <div
               v-for="page in prefsPages"
               :key="page.id"
               class="menu-prefs-item"
-              @click="emit('action', { type: 'prefs', page: page.id })"
+              :class="{ 'menu-prefs-item-active': prefsColumn === page.id }"
+              @click="openPrefsColumn(page.id)"
             >
               <div class="menu-prefs-label">{{ page.label }}</div>
               <div class="menu-prefs-desc">{{ page.desc }}</div>
@@ -186,13 +152,18 @@ function onItem(item) {
 
           <!-- 关于 -->
           <div v-else-if="selected === 'about'" class="menu-page">
-            <h2 class="menu-page-title">tauri-editor</h2>
+            <h2 class="menu-page-title" data-tauri-drag-region>tauri-editor</h2>
             <p class="menu-dim mb-3">版本 0.1.0</p>
             <p>基于 Tauri 2 + Vue 3 的桌面 Markdown 编辑器，支持所见即所得与源码双模式编辑。</p>
             <p class="mt-2">
               Markdown 核心移植自 velotype（Apache-2.0）；公式渲染基于 ratex，图表基于 mermaid-rs-renderer，代码高亮基于 tree-sitter。
             </p>
           </div>
+        </div>
+
+        <!-- 偏好设置第三列：选中卡片后在右侧显示该页设置表单（返回键收起本列） -->
+        <div v-if="prefsColumn" class="menu-prefs-column t-app" @click.stop>
+          <PrefsDialog :visible="true" :page="prefsColumn" embedded @close="prefsColumn = null" />
         </div>
       </div>
     </Transition>
@@ -205,6 +176,15 @@ function onItem(item) {
   inset: 0;
   z-index: 90;
   display: flex;
+}
+/* 全宽顶部拖拽带（菜单打开时整个上缘可拖动窗口） */
+.menu-drag-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 16px;
+  z-index: 95;
 }
 /* 左侧深色菜单列（固定深色，与参考一致） */
 .menu-sidebar {
@@ -254,6 +234,20 @@ function onItem(item) {
   flex: 1;
   height: 100%;
   overflow-y: auto;
+}
+/* 偏好设置第三列（选中卡片后出现）：独立表单列，内容自滚动；
+   与中间列同一主题底色 + 发丝分隔线，整列统一观感 */
+.menu-prefs-column {
+  width: 640px;
+  flex-shrink: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--t-editor-background);
+  border-left: 1px solid var(--t-table-border);
+}
+.menu-prefs-item-active {
+  background: color-mix(in srgb, var(--t-tab-indicator) 14%, transparent);
+  border-color: color-mix(in srgb, var(--t-tab-indicator) 40%, transparent);
 }
 .menu-slide-enter-active,
 .menu-slide-leave-active {
@@ -345,22 +339,6 @@ function onItem(item) {
   flex-shrink: 0;
   max-width: 60%;
 }
-.menu-theme-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border-radius: 6px;
-  cursor: pointer;
-  max-width: 460px;
-}
-.menu-theme-item:hover {
-  background: var(--t-status-bar-button-hover);
-}
-.menu-theme-check {
-  width: 14px;
-  color: var(--t-text-link);
-}
 .menu-prefs-item {
   max-width: 460px;
   padding: 10px 12px;
@@ -368,6 +346,7 @@ function onItem(item) {
   border-radius: 8px;
   margin-bottom: 10px;
   cursor: pointer;
+  transition: background 0.1s, border-color 0.1s;
 }
 .menu-prefs-item:hover {
   background: var(--t-status-bar-button-hover);

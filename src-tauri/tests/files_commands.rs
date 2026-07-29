@@ -38,6 +38,29 @@ fn 目录排序升降序() {
 }
 
 #[test]
+fn 目录按修改时间排序() {
+    let dir = std::env::temp_dir().join(format!("tauri-app-listdir-time-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let old_path = dir.join("old.md");
+    let new_path = dir.join("new.md");
+    std::fs::write(&old_path, "").unwrap();
+    // 把 old 的修改时间拨到过去，确保序关系确定
+    let past = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    filetime::FileTime::from_system_time(past);
+    std::fs::write(&new_path, "").unwrap();
+    filetime::set_file_mtime(&old_path, filetime::FileTime::from_system_time(past)).unwrap();
+
+    let desc = list_dir(dir.to_str().unwrap(), Some("modified_desc"));
+    let asc = list_dir(dir.to_str().unwrap(), Some("modified_asc"));
+    std::fs::remove_dir_all(&dir).ok();
+
+    let names: Vec<&str> = desc.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["new.md", "old.md"], "最近修改在前");
+    let names: Vec<&str> = asc.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names, ["old.md", "new.md"], "最早修改在前");
+}
+
+#[test]
 fn 按名称创建文件() {
     use tauri_app_lib::files::create_markdown_file;
     let dir = std::env::temp_dir().join(format!("tauri-app-create-{}", std::process::id()));
