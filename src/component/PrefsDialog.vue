@@ -1,7 +1,9 @@
 <script setup vapor>
 import { reactive, ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
+import { invoke } from '@tauri-apps/api/core';
 import { getPrefs, setPref } from '../utils/prefs.js';
-import { listThemes, currentThemeId, applyTheme, importThemeJson, removeCustomTheme, themeVersion, previewTheme } from '../themes/index.js';
+import { isMac, mathCjkFontSpec } from '../utils/platform.js';
+import { listThemes, currentThemeId, applyTheme, importThemeJson, removeCustomTheme, themeVersion, previewTheme, isSystemDark } from '../themes/index.js';
 
 // 偏好设置页：编辑器 / 图像 / Markdown / 外观 四页。
 // 两种形态：整窗页面层（默认）/ 菜单第三列内嵌（embedded）。
@@ -40,6 +42,8 @@ watch(() => props.page, (p) => {
 
 const form = reactive({ ...getPrefs() });
 
+// 部分设置项仅 macOS 生效（原生标题栏红绿灯相关）
+
 const pages = [
   { id: 'editor', label: '编辑器' },
   { id: 'image', label: '图像' },
@@ -58,7 +62,6 @@ function update(key, value) {
 }
 
 // ---------- 外观页：主题选择 / 导入 / 删除自定义主题 / 公式中文字体 ----------
-const themeFileInput = ref(null);
 const themes = computed(() => {
   themeVersion.value;
   return listThemes();
@@ -125,25 +128,27 @@ const themePreviews = computed(() => {
 });
 
 function onSelectTheme(id) {
-  applyTheme(id);
+  if (form.theme_follow_system) {
+    // 跟随系统模式：卡片选择写入当前系统外观对应的主题槽位
+    // （prefsVersion watcher 会自动应用）
+    update(isSystemDark() ? 'theme_dark_id' : 'theme_light_id', id);
+  } else {
+    applyTheme(id);
+  }
 }
 function onRemoveTheme(id) {
   removeCustomTheme(id);
   themeVersion.value += 1;
 }
-function onImportTheme(e) {
-  const file = e.target.files?.[0];
-  e.target.value = '';
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      importThemeJson(String(reader.result || ''));
-    } catch (err) {
-      alert(`导入主题失败：${err.message || err}`);
-    }
-  };
-  reader.readAsText(file);
+// 导入主题：Rust 端原生对话框选读主题包（WKWebView 不认隐藏 file input 的程序化点击）
+async function onImportTheme() {
+  const text = await invoke('pick_theme_file').catch(() => null);
+  if (!text) return;
+  try {
+    importThemeJson(text);
+  } catch (err) {
+    alert(`导入主题失败：${err.message || err}`);
+  }
 }
 </script>
 
@@ -464,7 +469,52 @@ function onImportTheme(e) {
                   </div>
                 </div>
               </div>
+              <!-- 主题跟随系统：暗色/亮色外观可分别指定主题 -->
+              <div class="settings-card">
+                <label class="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    :checked="form.theme_follow_system"
+                    @change="update('theme_follow_system', $event.target.checked)"
+                  />
+                  <span>主题跟随系统外观</span>
+                </label>
+                <template v-if="form.theme_follow_system">
+                  <label class="mt-2 block">
+                    <span class="t-dim mb-1 block text-[12px]">暗色外观主题</span>
+                    <select
+                      class="prefs-select w-full max-w-100"
+                      :value="form.theme_dark_id"
+                      @change="update('theme_dark_id', $event.target.value)"
+                    >
+                      <option v-for="t in themes" :key="t.id" :value="t.id">{{ t.name }}</option>
+                    </select>
+                  </label>
+                  <label class="mt-2 block">
+                    <span class="t-dim mb-1 block text-[12px]">亮色外观主题</span>
+                    <select
+                      class="prefs-select w-full max-w-100"
+                      :value="form.theme_light_id"
+                      @change="update('theme_light_id', $event.target.value)"
+                    >
+                      <option v-for="t in themes" :key="t.id" :value="t.id">{{ t.name }}</option>
+                    </select>
+                  </label>
+                  <p class="t-dim mt-2 text-[12px]">系统外观切换时自动应用对应主题；点击上方主题卡片可设置当前外观使用的主题。</p>
+                </template>
+              </div>
               <!-- 设置项同样卡片化 -->
+              <div v-if="isMac" class="settings-card">
+                <label class="flex cursor-pointer items-center gap-2">
+                  <input
+                    type="checkbox"
+                    :checked="form.traffic_light_autohide"
+                    @change="update('traffic_light_autohide', $event.target.checked)"
+                  />
+                  <span>窗口按钮自动隐藏</span>
+                </label>
+                <p class="t-dim mt-1 text-[12px]">仅 macOS 生效：平时隐藏左上角的红绿灯按钮，鼠标滑过左上角时显示。</p>
+              </div>
               <div class="settings-card">
                 <span class="t-dim mb-2 block text-[12px]">编辑器字体（列表与系统同步，留空跟随主题）</span>
                 <input
@@ -492,8 +542,7 @@ function onImportTheme(e) {
               </datalist>
               <div class="settings-card">
                 <span class="t-dim mb-2 block text-[12px]">导入主题</span>
-                <button type="button" class="prefs-select cursor-pointer" @click="themeFileInput?.click()">导入主题（JSON/JSONC/YAML）…</button>
-                <input ref="themeFileInput" type="file" accept=".json,.jsonc,.yaml,.yml" class="hidden" @change="onImportTheme" />
+                <button type="button" class="prefs-select cursor-pointer" @click="onImportTheme">导入主题（JSON/JSONC/YAML）…</button>
                 <p class="t-dim mt-2 text-[12px]">按块样式、伪元素/状态键与主题 token 的编写方式见项目内「自定义主题.md」。</p>
               </div>
               <div class="settings-card">
@@ -502,7 +551,7 @@ function onImportTheme(e) {
                   type="text"
                   class="prefs-input w-full max-w-100"
                   :value="form.math_cjk_font"
-                  placeholder="C:\Windows\Fonts\simsun.ttc#SimSun"
+                  :placeholder="mathCjkFontSpec"
                   @change="update('math_cjk_font', $event.target.value.trim() || null)"
                 />
                 <p class="t-dim mt-2 text-[12px]">ratex 字体规格：路径 或 路径#字体族名；留空跟随主题，重启应用后生效。</p>

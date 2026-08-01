@@ -716,6 +716,12 @@ fn collect_list_item_region(lines: &[String], start: usize, marker_indent_column
         if indent_columns <= marker_indent_columns && BlockKind::parse_separator_line(line) {
             return index.saturating_sub(pending_blank_lines);
         }
+        // 同级或更浅缩进的开围栏行同样终止列表项区域（CommonMark：围栏可打断段落，
+        // 未缩进围栏不属于列表项内容）。否则 ``` 紧随项文本时围栏被懒惰续行吞入项内，
+        // 含空行/缩进内容的 mermaid 等图源会被切碎（闭合围栏沦为游离段落）
+        if indent_columns <= marker_indent_columns && parse_opening_fence(line).is_some() {
+            return index.saturating_sub(pending_blank_lines);
+        }
         if indent_columns > marker_indent_columns || pending_blank_lines == 0 {
             pending_blank_lines = 0;
             index += 1;

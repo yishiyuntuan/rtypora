@@ -65,7 +65,7 @@
       "code_syntax_variable": null,     // 变量
       "code_syntax_property": null,     // 属性/字段
       "code_syntax_operator": null,     // 运算符
-      "code_syntax_punctuation": null   // 标点
+      "code_syntax_punctuation": null,  // 标点
       "table_border": null,             // 表格边框（兼作通用边框色）
       "table_header_bg": null,          // 表头背景
       "table_cell_bg": null,            // 表格单元格背景

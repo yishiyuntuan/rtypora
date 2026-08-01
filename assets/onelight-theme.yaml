@@ -1,0 +1,223 @@
+# OneLight 主题复刻（源：https://github.com/caolib/typora-onelight-theme，GPL-3.0）
+# 浅灰底 + 白色卡片式块（引用/代码/表格带柔和阴影），主题蓝 #166ff3。
+# 标题细字重：h1 居中、h2 主题蓝底线、h3 主题蓝左边条、h4 蓝底白字胶囊。
+# 源主题未覆盖的项（callout 五色、高亮标记、状态栏等）按整体风格适配。
+# 导入：偏好设置 → 外观 → 导入主题，选择本文件。
+name: OneLight
+creator: caolib（复刻）
+baseThemeId: velotype-light
+description: 复刻 Typora OneLight 主题：浅灰底、白卡片、主题蓝
+version: 1.0.0
+homepage: https://github.com/caolib/typora-onelight-theme
+license: GPL-3.0
+
+theme:
+  colors:
+    # ---- 基础 ----
+    editor_background: '#f2f2f2'        # --bg-color
+    source_mode_block_bg: '#ffffff'     # 聚焦块白底（源主题 md-focus 白卡片）
+    comment_bg: '#166ff314'
+    text_default: '#000000'
+    text_link: '#166ff3'                # --theme-color
+    text_placeholder: '#b2b2b2'         # --light-color
+    text_h1: '#000000'
+    text_h2: '#000000'
+    text_h3: '#000000'
+    text_h4: '#ffffff'                  # h4 蓝底白字
+    text_h5: '#000000'
+    text_h6: '#000000'
+    text_strong: '#000000'
+    text_em: '#000000'
+    text_strikethrough: '#666666'
+    cursor: '#166ff3'
+    selection: '#3266d0'                # --select-text-bg-color
+
+    # ---- 引用 / callout ----
+    text_quote: '#000000cc'             # 正文 80% 黑
+    border_quote: '#166ff3'
+    quote_bg: '#ffffff'                 # 扩展 token：白卡片引用
+    callout_note_bg: '#0969da1a'        # GitHub alert 五色（透明度 0.1）
+    callout_note_border: '#0969da'
+    callout_tip_bg: '#1f883d1a'
+    callout_tip_border: '#1f883d'
+    callout_important_bg: '#8250df1a'
+    callout_important_border: '#8250df'
+    callout_warning_bg: '#faad141a'
+    callout_warning_border: '#faad14'
+    callout_caution_bg: '#cf222e1a'
+    callout_caution_border: '#cf222e'
+
+    # ---- 行内元素 ----
+    mark_bg: '#f9b03d4d'                # 主黄柔和高亮（适配设计）
+    mark_text: '#000000'
+    kbd_bg: '#f4f5f6'
+    kbd_text: '#666666'
+    kbd_border: 'transparent'
+    inline_code_bg: '#00000014'         # 扩展 token：--item-hover-bg-color 近似
+    inline_code_text: '#eb4c37'
+    link_hover: '#0b56c4'               # 扩展 token：主题蓝加深
+    strikethrough_line: '#ff6b6b'       # 扩展 token：main-red
+
+    # ---- 代码 ----
+    code_bg: '#ffffff'                  # --code-bg-color 白底代码块
+    code_text: '#000000'
+    code_syntax_comment: '#00301180'
+    code_syntax_keyword: '#c94ae9'      # main-purple
+    code_syntax_string: '#00ad47'
+    code_syntax_number: '#ff5370'
+    code_syntax_type: '#ea6717'
+    code_syntax_function: '#ff8c00'
+    code_syntax_constant: '#f9b03d'     # main-yellow（builtin #ffcb6b 提亮版）
+    code_syntax_variable: '#42a5f5'
+    code_syntax_property: '#ff6b6b'     # main-red
+    code_syntax_operator: '#166ff3'     # 源主题 #89ddff 在白底下过浅，用主题蓝适配
+    code_syntax_punctuation: '#666666'
+
+    # ---- 列表 / 任务 ----
+    list_marker: '#166ff3'
+    task_checkbox_border: '#166ff3'
+    task_checkbox_bg: 'transparent'
+    task_checkbox_checked_bg: '#166ff3'
+    task_checkbox_check: '#ffffff'
+
+    # ---- 表格 ----
+    table_border: '#e8e8e8'             # --tb-border-color（通用边框）
+    table_header_bg: '#166ff333'        # 主题蓝 20%（table-square 表头）
+    table_cell_bg: '#ffffff'
+    table_header_text: '#000000'
+    table_zebra_bg: 'transparent'       # 扩展 token：OneLight 不用斑马纹
+
+    # ---- 其他块 ----
+    footnote_badge_text: '#166ff3'
+    separator_color: '#e8e8e8'
+    image_placeholder_bg: '#ffffff'
+    image_placeholder_border: '#e8e8e8'
+    image_placeholder_text: '#b2b2b2'
+
+    # ---- 界面 ----
+    scrollbar_thumb: '#0000001a'        # rgba(0,0,0,.1)
+    status_bar_background: '#f2f2f2'
+    status_bar_border: '#e8e8e8'
+    tab_indicator: '#166ff3'
+    status_bar_text: '#000000'
+    status_bar_text_dim: '#666666'
+    status_bar_button_hover: '#0000000f'
+
+  typography:
+    # 源主题正文/代码同栈：JetBrains Mono 优先的等宽风格
+    font_family: '"JetBrains Mono", "Cascadia Code", consolas, "PingFang SC", "Microsoft YaHei", sans-serif'
+    code_font_family: '"JetBrains Mono", "Cascadia Code", consolas, monospace'
+    text_size: 16
+    text_line_height: 1.6
+    # 标题细字重（font-weight: lighter），字号按 rem 折算（基准 16px）
+    h1_size: 40                         # 2.5rem
+    h1_weight: light
+    h2_size: 32                         # 2rem
+    h2_weight: light
+    h3_size: 27                         # 1.7rem
+    h3_weight: light
+    h4_size: 24                         # 1.5rem
+    h4_weight: light
+    h5_size: 21                         # 1.3rem
+    h5_weight: light
+    h6_size: 19                         # 1.2rem
+    h6_weight: light
+    code_size: 14
+    script_scale: 0.75
+
+  dimensions:
+    editor_padding: 32
+    quote_border_width: 5               # 引用 5px 左边条
+    callout_radius: 10
+    code_bg_radius: 5                   # 行内代码圆角（--radius-xsmall）
+
+  blocks:
+    # 标题：细字重 + 分级装饰（h1 居中、h2 底线、h3 左边条、h4 蓝底胶囊）
+    heading:
+      letterSpacing: 0
+      lineHeight: 1.5
+      margin: 0.72em 0
+      h1:
+        textAlign: center
+        paddingBottom: 0.3em
+        borderBottom: none              # 覆盖基主题 h1 底线（OneLight 无）
+      h2:
+        borderBottom: 2px solid #166ff3
+        paddingBottom: 0.2em
+        margin: 1em 0
+      h3:
+        borderLeft: 4px solid #166ff3
+        paddingLeft: 8px
+        margin: 20px 0
+      h4:
+        color: '#ffffff'
+        background: '#166ff3'
+        borderRadius: 5px
+        padding: 1px 12px
+        width: fit-content
+        margin: 20px 0
+      h5:
+        margin: 20px 0
+      h6:
+        margin: 20px 0
+    paragraph:
+      letterSpacing: 0
+    bulletedListItem:
+      letterSpacing: 0
+    numberedListItem:
+      letterSpacing: 0
+    taskListItem:
+      letterSpacing: 0
+    # 引用：白卡片 + 右侧圆角 + 柔和阴影（blockquote2 风格）
+    quote:
+      letterSpacing: 0
+      background: '#ffffff'
+      borderRadius: 0 10px 10px 0
+      padding: 10px 10px 10px 20px
+      fontSize: 0.9em
+      boxShadow: 0 4px 4px rgba(0, 0, 0, 0.1)
+    # 代码块：白底卡片 + 阴影
+    codeBlock:
+      borderRadius: 10px
+      boxShadow: 0 4px 4px rgba(0, 0, 0, 0.1)
+    # 表格：主题蓝 2px 方框（table-square 风格，经后代选择器覆盖单元格边框）
+    table:
+      border: 2px solid #166ff3
+      borderRadius: 10px
+      boxShadow: 0 4px 4px rgba(0, 0, 0, 0.1)
+      tr th:
+        borderRight: 2px solid #166ff3
+        borderBottom: 2px solid #166ff3
+      tr td:
+        borderRight: 2px solid #166ff3
+        borderBottom: 2px solid #166ff3
+      tbody tr:nth-child(even) td:
+        background: transparent           # 覆盖基主题斑马纹
+    # 行内代码：浅灰底 + 橙红文字
+    inlineCode:
+      background: '#00000014'
+      color: '#eb4c37'
+      padding: 1px 5px
+      borderRadius: 5px
+    link:
+      textDecoration: none
+      fontWeight: 400                   # 覆盖基主题 500
+      ':hover':
+        color: '#0b56c4'
+        textDecoration: underline
+    strong:
+      fontWeight: 700
+    mark:
+      padding: 0 4px
+      borderRadius: 5px
+    kbd:
+      border: none
+      borderRadius: 8px
+      padding: 0 6px
+      fontWeight: 400                   # 覆盖基主题 900
+      boxShadow: inset 0 -3px 0 #dddddd
+    taskCheckbox:
+      width: 15px
+      height: 15px
+      borderWidth: 2px
+      borderRadius: 4px

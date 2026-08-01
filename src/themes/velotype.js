@@ -4,6 +4,8 @@
 // h1 底部分隔线、引用蓝底圆角、表格斑马纹。token 名称与 velotype 主题 JSON 接口一致，
 // Mdmdt 特有的扩展 token（quote_bg 等）供 blocks 引用，自定义主题可同法新增。
 
+import { mathCjkFontSpec } from '../utils/platform.js';
+
 export default {
   id: 'velotype',
   name: 'Mdmdt Dark',
@@ -109,7 +111,7 @@ export default {
       h6_weight: 'bold',
       code_size: 14,
       script_scale: 0.75,
-      math_cjk_font: 'C:\\Windows\\Fonts\\simsun.ttc#SimSun',
+      math_cjk_font: mathCjkFontSpec,
     },
     dimensions: {
       editor_padding: 32,

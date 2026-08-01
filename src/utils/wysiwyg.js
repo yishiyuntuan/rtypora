@@ -147,7 +147,8 @@ function mergeHtmlStyle(outer, inner) {
 // 富编辑块带与渲染态一致的 blk-* 语义类（按块自定义样式在编辑态同样生效）。
 // depth 为列表嵌套层级（0 起）：ul/ol 带 lst-d{1..3} 层级类，编辑态标记随层级
 // 区分（圆点 disc/circle/square、序号 decimal/lower-alpha/lower-roman，与渲染态一致）。
-export function blockToHtml(block, rawSource, depth = 0) {
+// ordinal 为有序列表项在兄弟中的 1 基序号（写入 <ol start>，否则每项都显示 1.）
+export function blockToHtml(block, rawSource, depth = 0, ordinal = 1) {
   const lstClass = `lst-d${Math.min(depth + 1, 3)}`;
   switch (block.type) {
     case 'paragraph':
@@ -156,8 +157,10 @@ export function blockToHtml(block, rawSource, depth = 0) {
       return `<h${block.level} class="blk-heading whitespace-pre-wrap ${headingClasses[block.level] || 'my-2'}">${inlineToHtml(block.title)}</h${block.level}>`;
     case 'bulletedListItem':
       return `<ul class="blk-bulleted-list-item ${lstClass} my-2 pl-6 list-disc"><li class="my-0.5">${listItemBodyHtml(block, depth)}</li></ul>`;
-    case 'numberedListItem':
-      return `<ol class="blk-numbered-list-item ${lstClass} my-2 pl-6 list-decimal"><li class="my-0.5">${listItemBodyHtml(block, depth)}</li></ol>`;
+    case 'numberedListItem': {
+      const start = ordinal > 1 ? ` start="${ordinal}"` : '';
+      return `<ol class="blk-numbered-list-item ${lstClass} my-2 pl-6 list-decimal"${start}><li class="my-0.5">${listItemBodyHtml(block, depth)}</li></ol>`;
+    }
     case 'taskListItem': {
       // 勾选框不可编辑、不可点击（勾选在渲染态完成）
       const checkbox = `<input type="checkbox" class="pointer-events-none mt-[5px] shrink-0" data-checked="${block.checked ? 'x' : ' '}" ${block.checked ? 'checked' : ''} contenteditable="false">`;
@@ -168,7 +171,8 @@ export function blockToHtml(block, rawSource, depth = 0) {
       const title = plainText(block.title)
         ? `<p class="${P_CLASS}">${inlineToHtml(block.title)}</p>`
         : '';
-      return `<blockquote class="blk-quote ${QUOTE_CLASS}">${title}${(block.children || []).map((c) => blockToHtml(c, undefined, depth)).join('')}</blockquote>`;
+      const ords = numberedOrdinals(block.children);
+      return `<blockquote class="blk-quote ${QUOTE_CLASS}">${title}${(block.children || []).map((c) => blockToHtml(c, undefined, depth, ords.get(c.id) || 1)).join('')}</blockquote>`;
     }
     case 'table': {
       // 表格富编辑：thead/tbody 单元格就地编辑（对齐信息写在单元格 textAlign，
@@ -209,7 +213,8 @@ export function blockToHtml(block, rawSource, depth = 0) {
 
 function listItemBodyHtml(block, depth = 0) {
   const title = plainText(block.title) ? inlineToHtml(block.title) : '<br>';
-  return title + (block.children || []).map((c) => blockToHtml(c, undefined, depth + 1)).join('');
+  const ords = numberedOrdinals(block.children);
+  return title + (block.children || []).map((c) => blockToHtml(c, undefined, depth + 1, ords.get(c.id) || 1)).join('');
 }
 
 // ---------- contenteditable DOM → BlockDto JSON ----------
@@ -1260,6 +1265,11 @@ function exitListAtEmptyItem(li) {
       afterUl.append(n);
       n = next;
     }
+    // 有序列表后半段的起始序号 = 原起始 + 前段项数（cloneNode 复制了原 start，不修正则重号）
+    if (afterUl.tagName === 'OL') {
+      const base = Number(ul.getAttribute('start') || 1);
+      afterUl.setAttribute('start', String(base + index));
+    }
     li.remove();
     ul.after(p, afterUl);
   }
@@ -1362,8 +1372,9 @@ export function demoteEditableToParagraph(el, dto) {
   p.className = `blk-paragraph ${P_CLASS}`;
   p.innerHTML = inlineToHtml(dto.title) || '<br>';
   el.replaceChildren(p);
+  const ords = numberedOrdinals(dto.children);
   for (const child of dto.children || []) {
-    el.insertAdjacentHTML('beforeend', blockToHtml(child));
+    el.insertAdjacentHTML('beforeend', blockToHtml(child, undefined, 0, ords.get(child.id) || 1));
   }
   placeCursorAtStart(el);
 }

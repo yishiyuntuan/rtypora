@@ -64,7 +64,14 @@ fn collect_single_block_markdown_lines(node: &BlockNode, list_depth: usize, line
     match &node.record.kind {
         BlockKind::Table => {
             if let Some(table) = node.record.table.as_ref() {
-                lines.extend(serialize_table_markdown_lines(table));
+                // 列表项内的表格子块必须带项内容列缩进，否则重解析时
+                // 未缩进的管道行被懒惰续行吞入项标题（表格子块丢失）
+                let indentation = "  ".repeat(list_depth);
+                lines.extend(
+                    serialize_table_markdown_lines(table)
+                        .into_iter()
+                        .map(|line| format!("{indentation}{line}")),
+                );
             }
         }
         BlockKind::CodeBlock { language } => {

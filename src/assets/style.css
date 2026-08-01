@@ -384,13 +384,6 @@
 .t-root .md-block:hover {
   background: color-mix(in srgb, var(--t-text-default) 5%, transparent);
 }
-.t-root .md-editing {
-  background: var(--t-source-mode-block-bg);
-  border-radius: 4px;
-  outline: 1px solid #f59102;
-  outline-offset: 2px;
-}
-
 /* 大纲点击定位后的闪烁高亮 */
 .t-root .md-flash {
   background: var(--t-source-mode-block-bg);

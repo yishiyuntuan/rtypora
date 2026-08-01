@@ -18,15 +18,21 @@ static LATEX_CACHE: LazyLock<Mutex<HashMap<String, Option<String>>>> =
 static FONT_INIT: Once = Once::new();
 
 /// ratex 的 Unicode 回落字体（CJK 等）默认走无衬线系统字体（如微软雅黑），
-/// 与公式的衬线风格不一致。这里默认指定衬线中文字体（宋体），
+/// 与公式的衬线风格不一致。这里默认指定衬线中文字体，
 /// 主题 token math_cjk_font 或 RATEX_UNICODE_FONT 环境变量可覆盖。
+/// Windows 宋体（SimSun）；macOS 华文宋体（Songti SC，同为衬线）。
+#[cfg(target_os = "macos")]
+const DEFAULT_CJK_FONT_SPEC: &str = "/System/Library/Fonts/Supplemental/Songti.ttc#Songti SC";
+#[cfg(not(target_os = "macos"))]
+const DEFAULT_CJK_FONT_SPEC: &str = r"C:\Windows\Fonts\simsun.ttc#SimSun";
+
 fn init_unicode_fallback_font() {
     FONT_INIT.call_once(|| {
         if std::env::var("RATEX_UNICODE_FONT").is_err() {
-            // Windows 宋体（衬线）；不存在时 ratex 自动回退系统字体发现。
+            // 字体不存在时 ratex 自动回退系统字体发现。
             // SAFETY: 在首次渲染前经 Once 单线程初始化，此时没有其他线程读该变量。
             unsafe {
-                std::env::set_var("RATEX_UNICODE_FONT", r"C:\Windows\Fonts\simsun.ttc#SimSun");
+                std::env::set_var("RATEX_UNICODE_FONT", DEFAULT_CJK_FONT_SPEC);
             }
         }
     });

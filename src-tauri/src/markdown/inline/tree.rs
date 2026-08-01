@@ -633,8 +633,14 @@ impl InlineTextTree {
                 let raw_markdown = footnote.raw_markdown();
                 let raw_len = raw_markdown.len();
                 let run_visible_len = self.fragments[index].text.len();
+                // 脚注引用携带样式（如 **文本[^1]**）时按样式栈包裹定界符，
+                // 否则 raw 直通会丢样式（序列化为 **文本**[^1]，重解析样式漂移）
+                let (open, close) = style_wrapper_markers(&self.fragments[index]);
                 let run_start = output.len();
+                output.push_str(&open);
+                let raw_start = output.len();
                 output.push_str(&raw_markdown);
+                output.push_str(&close);
                 let run_end = output.len();
 
                 for local_visible in 0..=run_visible_len {
@@ -643,15 +649,16 @@ impl InlineTextTree {
                     } else {
                         (raw_len * local_visible) / run_visible_len
                     };
-                    visible_to_markdown[visible_cursor + local_visible] = run_start + mapped;
+                    visible_to_markdown[visible_cursor + local_visible] = raw_start + mapped;
                 }
 
                 markdown_to_visible.resize(run_end + 1, visible_cursor);
-                for local_markdown in 0..=raw_len {
+                for local_markdown in 0..=(run_end - run_start) {
+                    let in_raw = local_markdown.saturating_sub(open.len()).min(raw_len);
                     let mapped = if raw_len == 0 {
                         0
                     } else {
-                        (run_visible_len * local_markdown) / raw_len
+                        (run_visible_len * in_raw) / raw_len
                     };
                     markdown_to_visible[run_start + local_markdown] = visible_cursor + mapped;
                 }
@@ -665,19 +672,25 @@ impl InlineTextTree {
                 let raw_markdown = math.source;
                 let raw_len = raw_markdown.len();
                 let run_visible_len = self.fragments[index].text.len();
+                // 与脚注引用同理：行内公式携带样式时包裹定界符，避免样式漂移
+                let (open, close) = style_wrapper_markers(&self.fragments[index]);
                 let run_start = output.len();
+                output.push_str(&open);
+                let raw_start = output.len();
                 output.push_str(&raw_markdown);
+                output.push_str(&close);
                 let run_end = output.len();
 
                 for local_visible in 0..=run_visible_len {
                     visible_to_markdown[visible_cursor + local_visible] =
-                        run_start + local_visible.min(raw_len);
+                        raw_start + local_visible.min(raw_len);
                 }
 
                 markdown_to_visible.resize(run_end + 1, visible_cursor);
-                for local_markdown in 0..=raw_len {
+                for local_markdown in 0..=(run_end - run_start) {
+                    let in_raw = local_markdown.saturating_sub(open.len()).min(raw_len);
                     markdown_to_visible[run_start + local_markdown] =
-                        visible_cursor + local_markdown.min(run_visible_len);
+                        visible_cursor + in_raw.min(run_visible_len);
                 }
 
                 visible_cursor += run_visible_len;
@@ -766,6 +779,19 @@ impl InlineTextTree {
             markdown_to_visible,
         }
     }
+}
+
+/// 单片段的样式包裹定界符（raw 直通片段专用：脚注引用/行内公式携带样式时
+/// 在其 raw 标记外包裹粗体/斜体等定界符，与样式栈序列化行为一致）。
+fn style_wrapper_markers(fragment: &InlineFragment) -> (String, String) {
+    let stack = choose_fragment_stacks(std::slice::from_ref(fragment))
+        .into_iter()
+        .next()
+        .unwrap_or_default();
+    (
+        stack_transition_string(&[], &stack),
+        stack_transition_string(&stack, &[]),
+    )
 }
 
 fn serialize_fragment_run_markdown_with_offset_map(

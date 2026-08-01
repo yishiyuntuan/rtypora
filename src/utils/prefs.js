@@ -53,6 +53,13 @@ const DEFAULTS = {
   // 警告框扩展语法统一转换：Obsidian 别名（[!hint] 等）与 :::type / !!! type
   // 容器按 GitHub 五变体解析，保存时落源为标准 [!TYPE] 引用格式
   callout_unify: true,
+  // macOS 专用：平时隐藏原生红绿灯窗口按钮，鼠标滑过左上角时显示
+  traffic_light_autohide: false,
+  // 主题跟随系统外观：开启后按系统明暗自动切换下述两个主题
+  theme_follow_system: false,
+  // 跟随系统时暗色/亮色外观各自使用的主题 id
+  theme_dark_id: 'velotype',
+  theme_light_id: 'velotype-light',
 };
 
 let cache = null;
@@ -125,5 +132,45 @@ export function applyEditorOverrides(prefs = load()) {
     invoke('set_math_unicode_font', { spec: prefs.math_cjk_font }).catch((e) =>
       console.error('set_math_unicode_font 失败:', e),
     );
+  }
+  // macOS 红绿灯自动隐藏（仅 mac 生效）
+  applyTrafficLightAutohide(!!prefs.traffic_light_autohide);
+}
+
+// ---------- macOS 红绿灯自动隐藏 ----------
+// 平时经 Rust 命令隐藏原生红绿灯按钮，鼠标进入左上角热区时显示、移出后隐藏。
+// 仅在 macOS（原生 Overlay 标题栏）生效；其余平台为空操作。
+import { isMac as IS_MAC } from './platform.js';
+const tlState = { enabled: false, visible: true, listener: null };
+// 红绿灯当前是否可见（响应式）：标题栏/侧边栏据此收起避让留白，
+// 隐藏时目录/大纲标签顶到上边框、菜单按钮贴近左缘
+export const trafficLightsVisible = ref(true);
+// 左上角热区（覆盖红绿灯区域及其周边，像素）
+const TL_HOT_X = 96;
+const TL_HOT_Y = 40;
+
+function setTrafficLights(visible) {
+  if (tlState.visible === visible) return;
+  tlState.visible = visible;
+  trafficLightsVisible.value = visible;
+  invoke('set_traffic_lights_visible', { visible }).catch((e) =>
+    console.error('set_traffic_lights_visible 失败:', e),
+  );
+}
+
+export function applyTrafficLightAutohide(enabled) {
+  if (!IS_MAC) return;
+  if (enabled === tlState.enabled) return;
+  tlState.enabled = enabled;
+  if (enabled) {
+    const onMove = (e) => setTrafficLights(e.clientX <= TL_HOT_X && e.clientY <= TL_HOT_Y);
+    window.addEventListener('mousemove', onMove);
+    tlState.listener = onMove;
+    // 启用后立即隐藏，等首次滑入热区再显示
+    setTrafficLights(false);
+  } else {
+    if (tlState.listener) window.removeEventListener('mousemove', tlState.listener);
+    tlState.listener = null;
+    setTrafficLights(true);
   }
 }

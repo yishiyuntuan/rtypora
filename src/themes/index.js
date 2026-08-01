@@ -19,14 +19,16 @@
 
 import velotype from './velotype.js';
 import velotypeLight from './velotype-light.js';
-import { ref } from 'vue';
+import { ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { applyEditorOverrides } from '../utils/prefs.js';
+import { applyEditorOverrides, getPref, prefsVersion } from '../utils/prefs.js';
 
 // 主题版本号：applyTheme 时递增，依赖主题色的异步渲染（公式 SVG 等）据此重渲染
 export const themeVersion = ref(0);
 
 const STORAGE_THEME_ID = 'tauri-editor.theme.id';
+// 上次主题的编辑器背景色：index.html 首帧防白闪脚本读取（样式加载前设色）
+export const STORAGE_THEME_BG = 'tauri-editor.theme.bg';
 const STORAGE_CUSTOM = 'tauri-editor.theme.custom';
 const DEFAULT_THEME_ID = 'velotype-light';
 
@@ -277,6 +279,10 @@ export function applyTheme(id) {  let pack = findTheme(id);
   const resolved = resolveTheme(pack);
   applyCssVars(resolved);
   applyBlockCss(resolved.blocks);
+  // 持久化解析后的背景色，供下次启动首帧防白闪
+  const bg = resolved.colors?.editor_background;
+  if (bg) localStorage.setItem(STORAGE_THEME_BG, String(bg));
+  else localStorage.removeItem(STORAGE_THEME_BG);
   // 主题值写入后再叠加编辑器排版偏好覆盖（主题切换时覆盖不丢失）
   applyEditorOverrides();
   // 公式中文回落字体随主题下发（ratex 首次加载后进程内锁定，运行中切换需重启生效）
@@ -296,7 +302,45 @@ export function currentThemeId() {
 
 /** 启动时恢复上次选择的主题。 */
 export function initTheme() {
-  applyTheme(currentThemeId());
+  initFollowSystem();
+  if (getPref('theme_follow_system')) applySystemTheme();
+  else applyTheme(currentThemeId());
+}
+
+// ---------- 主题跟随系统外观 ----------
+// 开启偏好 theme_follow_system 后：按系统明暗在 theme_dark_id / theme_light_id
+// 之间切换；系统外观变化与偏好变化均即时生效。
+const systemDarkMedia = window.matchMedia('(prefers-color-scheme: dark)');
+let followSystemInited = false;
+
+/** 当前系统是否为暗色外观。 */
+export function isSystemDark() {
+  return systemDarkMedia.matches;
+}
+
+/** 按系统外观应用偏好中设置的暗/亮色主题。 */
+export function applySystemTheme() {
+  const dark = systemDarkMedia.matches;
+  const id = dark ? getPref('theme_dark_id') : getPref('theme_light_id');
+  applyTheme(id || (dark ? 'velotype' : 'velotype-light'));
+}
+
+function initFollowSystem() {
+  if (followSystemInited) return;
+  followSystemInited = true;
+  // 系统外观切换时跟随换主题
+  systemDarkMedia.addEventListener('change', () => {
+    if (getPref('theme_follow_system')) applySystemTheme();
+  });
+  // 跟随开关/暗色主题/亮色主题偏好变更时即时应用（applyTheme 不动 prefsVersion，无循环）。
+  // 仅在主题相关键变化时应用——无关偏好（字号等）变更不得把手动导入/选择的主题换回槽位主题
+  let lastThemeSig = '';
+  watch(prefsVersion, () => {
+    const sig = [getPref('theme_follow_system'), getPref('theme_dark_id'), getPref('theme_light_id')].join('|');
+    if (sig === lastThemeSig) return;
+    lastThemeSig = sig;
+    if (getPref('theme_follow_system')) applySystemTheme();
+  });
 }
 
 // 剥离 JSONC 注释（跳过字符串内部的 // 与 /*）
@@ -329,6 +373,38 @@ function stripJsonComments(text) {
     } else {
       out += ch;
     }
+  }
+  return out;
+}
+
+// 去掉 JSONC 尾逗号（跳过字符串内部），使 JSON.parse 兼容
+function stripJsonTrailingCommas(text) {
+  let out = '';
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      out += ch;
+      if (ch === '\\') {
+        out += text[i + 1] ?? '';
+        i++;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    if (ch === ',') {
+      // 下一个非空白字符是 } 或 ] 时该逗号为尾逗号，丢弃
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j])) j++;
+      if (text[j] === '}' || text[j] === ']') continue;
+    }
+    out += ch;
   }
   return out;
 }
@@ -432,13 +508,15 @@ function parseYamlSubset(text) {
 
 /**
  * 导入自定义主题包（JSON/JSONC 或 YAML 文本），注册、持久化并应用。
- * 格式按内容自动识别（以 { 开头为 JSON，否则按 YAML 解析）。
+ * 格式按内容自动识别（跳过前导注释后以 { 开头为 JSON/JSONC，否则按 YAML 解析）。
  * 返回新主题 id；格式非法时抛错。
  */
 export function importThemeJson(text) {
   const trimmed = text.trimStart();
-  const pack = trimmed.startsWith('{')
-    ? JSON.parse(stripJsonComments(text))
+  // JSONC 常以注释开头（如示例文件），跳过前导注释再判定格式——否则会被误判为 YAML
+  const head = trimmed.replace(/^(\/\/[^\n]*\n?|\/\*[\s\S]*?\*\/\s*)+/, '');
+  const pack = head.startsWith('{')
+    ? JSON.parse(stripJsonTrailingCommas(stripJsonComments(text)))
     : parseYamlSubset(text);
   if (!pack || typeof pack.name !== 'string' || !pack.name.trim()) {
     throw new Error('主题包缺少必填字段 name');

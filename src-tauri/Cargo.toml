@@ -60,6 +60,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.6", features = ["serde", "v4"] }
 im = "15.1" # 持久化不可变树，高效undo/redo
+tokio = { version = "1", features = ["sync"] } # 对话框回调 oneshot 通道
 
 
 
@@ -81,3 +82,8 @@ opt-level = 1
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-autostart = "2"
+
+# macOS：操作原生红绿灯窗口按钮（标准按钮显隐）
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView"] }

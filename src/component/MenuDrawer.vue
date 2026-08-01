@@ -1,6 +1,7 @@
 <script setup vapor>
 import { ref, watch } from 'vue';
 import PrefsDialog from './PrefsDialog.vue';
+import { isMac } from '../utils/platform.js';
 
 // 一体化菜单（Typora 风格）：左侧深色菜单列 + 右侧内容面板。
 // 动作项（新建/保存/另存为/打印/关闭）直接执行；内容项（打开/导出/偏好设置/关于）在右侧展示。
@@ -11,6 +12,8 @@ const props = defineProps({
 });
 
 const emit = defineEmits(['close', 'action']);
+
+// macOS 使用原生标题栏（Overlay 样式），需为左上角红绿灯留白
 
 // 当前选中的内容页（默认「打开」，与参考一致）
 const selected = ref('open');
@@ -34,7 +37,8 @@ function fileName(path) {
 function fileDir(path) {
   const parts = path.split(/[\\/]/);
   parts.pop();
-  return parts.join('\\') || path;
+  // 拼接统一用正斜杠（macOS/Linux 原生，Windows 侧 Rust 路径 API 同样接受）
+  return parts.join('/') || path;
 }
 
 const prefsPages = [
@@ -78,7 +82,7 @@ function openPrefsColumn(pageId) {
     <Transition name="menu-slide">
       <div v-if="visible" class="menu-overlay" @click.self="emit('close')">
         <!-- 全宽顶部拖拽带（菜单打开时整个上缘均可拖动窗口；16px 不遮挡下方按钮） -->
-        <div class="menu-drag-top" data-tauri-drag-region></div>
+        <div class="menu-drag-top" :class="{ 'menu-drag-top-mac': isMac }" data-tauri-drag-region></div>
         <!-- 左侧深色菜单列 -->
         <div class="menu-sidebar">
           <div class="menu-header">
@@ -185,6 +189,10 @@ function openPrefsColumn(pageId) {
   right: 0;
   height: 16px;
   z-index: 95;
+}
+/* macOS 原生红绿灯在左上角，拖拽带让出该区域 */
+.menu-drag-top-mac {
+  left: 76px;
 }
 /* 左侧深色菜单列（固定深色，与参考一致） */
 .menu-sidebar {

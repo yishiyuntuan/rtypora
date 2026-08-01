@@ -49,11 +49,12 @@ const currentFileName = computed(() => {
   return currentFilePath.value.split(/[\\/]/).pop() || "";
 });
 // 文档所在目录（图片相对路径的解析基准，注入给块渲染层）
+// 拼接统一用正斜杠：macOS/Linux 原生分隔符，Windows 侧 Rust 路径 API 同样接受
 const documentDir = computed(() => {
   if (!currentFilePath.value) return null;
   const parts = currentFilePath.value.split(/[\\/]/);
   parts.pop();
-  return parts.join("\\") || null;
+  return parts.join("/") || null;
 });
 provide("documentDir", documentDir);
 // 侧边栏工作目录（打开文件时跟随其目录，也可经「打开文件夹」独立设置）
@@ -62,7 +63,7 @@ watch(currentFilePath, (path) => {
   if (path) {
     const parts = path.split(/[\\/]/);
     parts.pop();
-    workspaceDir.value = parts.join("\\") || path;
+    workspaceDir.value = parts.join("/") || path;
   }
 });
 
@@ -379,7 +380,7 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
         @show-in-explorer="onShowInExplorer"
       />
       <div class="flex flex-1 flex-col overflow-hidden">
-        <TitleBar :file-name="currentFileName" @toggle-menu="menuVisible = !menuVisible" />
+        <TitleBar :file-name="currentFileName" :sidebar-visible="sidebarVisible" @toggle-menu="menuVisible = !menuVisible" />
         <main class="mt-1 flex-1 overflow-hidden">
           <Editor
             ref="editorRef"
@@ -405,8 +406,6 @@ onUnmounted(() => window.removeEventListener("keydown", onGlobalKeydown));
 
     <!-- 偏好设置：覆盖整个窗口的整页层（含侧边栏/标题栏/状态栏），同一窗口打开非对话框 -->
     <PrefsDialog v-if="prefsVisible" :visible="prefsVisible" :page="prefsPage" @close="prefsVisible = false" />
-
-    <MenuDrawer :visible="menuVisible" :recent-files="recentFiles" @close="menuVisible = false" @action="onMenuAction" />
 
     <MenuDrawer :visible="menuVisible" :recent-files="recentFiles" @close="menuVisible = false" @action="onMenuAction" />
     <AboutDialog :visible="aboutVisible" @close="aboutVisible = false" />

@@ -1,9 +1,15 @@
 <script setup vapor>
 import { Window } from '@tauri-apps/api/window';
+import { isMac } from '../utils/platform.js';
+import { trafficLightsVisible } from '../utils/prefs.js';
 
 // 自定义标题栏：拖拽区、菜单按钮（打开滑出式菜单）、文件名显示、窗口控制按钮
+// macOS 使用原生标题栏（Overlay 样式，原生红绿灯覆盖在左上角），
+// 此处只提供拖拽区 + 居中标题 + 菜单按钮；其余平台为无边框自绘窗口控制。
 defineProps({
   fileName: { type: String, default: '' },
+  // macOS 下侧边栏收起时标题栏顶到窗口左缘，需为红绿灯留白
+  sidebarVisible: { type: Boolean, default: true },
 });
 
 const emit = defineEmits(['toggle-menu']);
@@ -12,7 +18,33 @@ const appWindow = new Window('main');
 </script>
 
 <template>
+  <!-- macOS：原生红绿灯在左上，菜单按钮紧挨着最大化（绿）按钮；
+       侧边栏展开时红绿灯落在侧边栏留白条上，无需额外留白 -->
   <div
+    v-if="isMac"
+    data-tauri-drag-region
+    class="relative flex h-8 items-center bg-transparent select-none"
+    :class="{ 'pl-[84px]': !sidebarVisible && trafficLightsVisible }"
+  >
+    <div
+      id="titlebar-menu"
+      class="inline-flex h-full w-[46px] shrink-0 items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-(--t-status-bar-button-hover)"
+      @click="emit('toggle-menu')"
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]" style="color: #3e69d7">
+        <line x1="2" y1="4" x2="14" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+        <line x1="2" y1="12" x2="14" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+      </svg>
+    </div>
+    <div class="flex-1 text-center text-xs text-inherit opacity-90 pointer-events-none" data-tauri-drag-region>
+      {{ fileName ? `tauri-editor - ${fileName}` : 'tauri-editor' }}
+    </div>
+  </div>
+
+  <!-- Windows/Linux：无边框自绘标题栏 -->
+  <div
+    v-else
     data-tauri-drag-region
     class="relative flex h-8 items-center justify-between bg-transparent select-none"
   >

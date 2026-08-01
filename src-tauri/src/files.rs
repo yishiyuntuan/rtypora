@@ -2,9 +2,35 @@
 //! 文件对话框仅在 Rust 端使用（tauri-plugin-dialog 的 DialogExt），前端无需插件权限。
 
 use serde::Serialize;
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, FileDialogBuilder};
 
 use crate::markdown;
+
+/// 对话框种类（打开文件 / 选择文件夹 / 保存文件）。
+enum DialogMode {
+    PickFile,
+    PickFolder,
+    SaveFile,
+}
+
+/// 回调式文件对话框（异步命令专用）。
+/// macOS 上阻塞式（blocking_*）对话框在同步命令里会卡死主线程（窗口一直转圈），
+/// 回调式由插件内部调度到主线程执行，结果经 oneshot 通道传回。
+async fn pick_dialog(
+    builder: FileDialogBuilder<tauri::Wry>,
+    mode: DialogMode,
+) -> Option<std::path::PathBuf> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let send = move |picked| {
+        let _ = tx.send(picked);
+    };
+    match mode {
+        DialogMode::PickFile => builder.pick_file(send),
+        DialogMode::PickFolder => builder.pick_folder(send),
+        DialogMode::SaveFile => builder.save_file(send),
+    }
+    rx.await.ok()??.into_path().ok()
+}
 
 /// 大文件渐进加载：首屏前缀的目标字节数（前缀安全截断后解析返回，
 /// 尾部由前端后台再解析补齐，避免整棵块树的大 IPC 阻塞首屏）。
@@ -117,13 +143,14 @@ fn is_markdown_name(name: &str) -> bool {
 
 /// 弹出文件选择框选择并读取 Markdown 文件；取消或读取失败返回 None。
 #[tauri::command]
-pub fn open_markdown_file(app: tauri::AppHandle) -> Option<OpenedFile> {
-    let picked = app
-        .dialog()
-        .file()
-        .add_filter("Markdown", &["md", "markdown"])
-        .blocking_pick_file()?;
-    let path = picked.into_path().ok()?;
+pub async fn open_markdown_file(app: tauri::AppHandle) -> Option<OpenedFile> {
+    let path = pick_dialog(
+        app.dialog()
+            .file()
+            .add_filter("Markdown", &["md", "markdown"]),
+        DialogMode::PickFile,
+    )
+    .await?;
     let content = std::fs::read_to_string(&path).ok()?;
     Some(OpenedFile {
         path: path.to_string_lossy().to_string(),
@@ -146,13 +173,14 @@ pub fn read_markdown_file(path: &str) -> Option<OpenedFile> {
 
 /// 打开 Markdown 文件并返回首屏解析块（大文件渐进加载）。
 #[tauri::command]
-pub fn open_markdown_parsed(app: tauri::AppHandle) -> Option<OpenedFileParsed> {
-    let picked = app
-        .dialog()
-        .file()
-        .add_filter("Markdown", &["md", "markdown"])
-        .blocking_pick_file()?;
-    let path = picked.into_path().ok()?;
+pub async fn open_markdown_parsed(app: tauri::AppHandle) -> Option<OpenedFileParsed> {
+    let path = pick_dialog(
+        app.dialog()
+            .file()
+            .add_filter("Markdown", &["md", "markdown"]),
+        DialogMode::PickFile,
+    )
+    .await?;
     let content = std::fs::read_to_string(&path).ok()?;
     Some(parsed_open(path.to_string_lossy().to_string(), content))
 }
@@ -232,19 +260,63 @@ pub fn list_dir(path: &str, sort: Option<&str>) -> Vec<DirEntry> {
 use base64::Engine;
 use std::path::PathBuf;
 
-/// 读取本地图片为 data URL（相对路径基于文档目录解析）；远程 http(s) URL 原样返回。
-/// 读取失败返回 None（前端显示占位）。
+/// URL 百分号编码解码（Typora 等编辑器会对含中文/空格的图片路径做编码）。
+/// 无 % 时返回 None；非法 % 序列原样保留（路径语境，不做表单 + 号转换）。
+fn percent_decode(s: &str) -> Option<String> {
+    if !s.contains('%') {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let h = (bytes[i + 1] as char).to_digit(16);
+            let l = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (h, l) {
+                out.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// 解析本地图片路径：相对路径按 base_dir 拼接；候选依次为原文、百分号解码后路径
+///（目录名本身含合法 % 序列时原文优先，避免误解码），返回第一个存在的文件。
+fn resolve_local_image(source: &str, base_dir: Option<&str>) -> Option<PathBuf> {
+    let mut candidates = vec![source.to_string()];
+    if let Some(decoded) = percent_decode(source) {
+        if decoded != source {
+            candidates.push(decoded);
+        }
+    }
+    for cand in candidates {
+        let p = std::path::Path::new(&cand);
+        let resolved: PathBuf = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            PathBuf::from(base_dir?).join(p)
+        };
+        if resolved.is_file() {
+            return Some(resolved);
+        }
+    }
+    None
+}
+
+
+/// 读取本地图片为 data URL（相对路径基于文档目录解析，支持百分号编码路径）；
+/// 远程 http(s) URL 原样返回。读取失败返回 None（前端显示占位）。
 #[tauri::command]
 pub fn read_image_data_url(source: &str, base_dir: Option<&str>) -> Option<String> {
     if source.starts_with("http://") || source.starts_with("https://") {
         return Some(source.to_string());
     }
-    let path = std::path::Path::new(source);
-    let resolved: PathBuf = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        PathBuf::from(base_dir?).join(path)
-    };
+    let resolved = resolve_local_image(source, base_dir)?;
     let bytes = std::fs::read(&resolved).ok()?;
     let mime = match resolved
         .extension()
@@ -274,15 +346,7 @@ pub fn resolve_image_path(source: &str, base_dir: Option<&str>) -> Option<String
     if source.starts_with("http://") || source.starts_with("https://") {
         return None;
     }
-    let path = std::path::Path::new(source);
-    let resolved: PathBuf = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        PathBuf::from(base_dir?).join(path)
-    };
-    if !resolved.is_file() {
-        return None;
-    }
+    let resolved = resolve_local_image(source, base_dir)?;
     Some(resolved.to_string_lossy().to_string())
 }
 
@@ -294,14 +358,15 @@ pub fn save_file(path: &str, content: &str) -> Result<(), String> {
 
 /// 另存为：弹出保存对话框并写入；取消返回 None，写失败返回错误信息。
 #[tauri::command]
-pub fn save_file_as(app: tauri::AppHandle, content: &str) -> Option<Result<String, String>> {
-    let picked = app
-        .dialog()
-        .file()
-        .add_filter("Markdown", &["md", "markdown"])
-        .set_file_name("untitled.md")
-        .blocking_save_file()?;
-    let path = picked.into_path().ok()?;
+pub async fn save_file_as(app: tauri::AppHandle, content: String) -> Option<Result<String, String>> {
+    let path = pick_dialog(
+        app.dialog()
+            .file()
+            .add_filter("Markdown", &["md", "markdown"])
+            .set_file_name("untitled.md"),
+        DialogMode::SaveFile,
+    )
+    .await?;
     let path_str = path.to_string_lossy().to_string();
     Some(std::fs::write(&path, content).map(|_| path_str).map_err(|e| e.to_string()))
 }
@@ -369,23 +434,38 @@ pub fn build_export_html(content_html: &str, css_text: &str, title: &str) -> Str
 
 /// 导出 HTML：弹出保存对话框（.html 过滤器，建议文件名由源文件名推导）并写入；取消返回 None。
 #[tauri::command]
-pub fn save_html_as(app: tauri::AppHandle, content: &str, source_name: &str) -> Option<Result<String, String>> {
-    let picked = app
-        .dialog()
-        .file()
-        .add_filter("HTML", &["html", "htm"])
-        .set_file_name(html_export_name(source_name))
-        .blocking_save_file()?;
-    let path = picked.into_path().ok()?;
+pub async fn save_html_as(app: tauri::AppHandle, content: String, source_name: String) -> Option<Result<String, String>> {
+    let path = pick_dialog(
+        app.dialog()
+            .file()
+            .add_filter("HTML", &["html", "htm"])
+            .set_file_name(html_export_name(&source_name)),
+        DialogMode::SaveFile,
+    )
+    .await?;
     let path_str = path.to_string_lossy().to_string();
     Some(std::fs::write(&path, content).map(|_| path_str).map_err(|e| e.to_string()))
 }
 
 /// 选择文件夹对话框；取消返回 None。
 #[tauri::command]
-pub fn pick_folder(app: tauri::AppHandle) -> Option<String> {
-    let picked = app.dialog().file().blocking_pick_folder()?;
-    Some(picked.into_path().ok()?.to_string_lossy().to_string())
+pub async fn pick_folder(app: tauri::AppHandle) -> Option<String> {
+    let path = pick_dialog(app.dialog().file(), DialogMode::PickFolder).await?;
+    Some(path.to_string_lossy().to_string())
+}
+
+/// 弹出文件选择框选择并读取主题包文件（JSON/JSONC/YAML）；取消或读取失败返回 None。
+/// 前端隐藏 file input 的程序化点击在 WKWebView 不弹窗，主题导入统一走原生对话框。
+#[tauri::command]
+pub async fn pick_theme_file(app: tauri::AppHandle) -> Option<String> {
+    let path = pick_dialog(
+        app.dialog()
+            .file()
+            .add_filter("主题包", &["json", "jsonc", "yaml", "yml"]),
+        DialogMode::PickFile,
+    )
+    .await?;
+    std::fs::read_to_string(&path).ok()
 }
 
 /// 在当前文件夹创建新的 Markdown 文件，返回路径。

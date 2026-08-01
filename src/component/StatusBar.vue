@@ -1,6 +1,7 @@
 <script setup vapor>
 import { computed, ref } from 'vue';
-import { listThemes, currentThemeId, applyTheme, importThemeJson } from '../themes/index.js';
+import { invoke } from '@tauri-apps/api/core';
+import { listThemes, currentThemeId, applyTheme, importThemeJson, isSystemDark, themeVersion } from '../themes/index.js';
 import { getPref, setPref, prefsVersion } from '../utils/prefs.js';
 
 const emit = defineEmits(['toggle-sidebar', 'toggle-source']);
@@ -28,29 +29,42 @@ const autoSaveOn = computed(() => {
 });
 
 // 主题选择：内置明暗两套 + 用户导入的自定义主题（参照 velotype 的 Theme 菜单）
-const themeId = ref(currentThemeId());
-const themes = ref(listThemes());
-const fileInput = ref(null);
+// themeVersion 驱动：偏好设置页/跟随系统切换主题、任何入口导入主题后此处同步刷新
+const themes = computed(() => {
+  themeVersion.value;
+  return listThemes();
+});
+// 主题选择（v-model 双向）：get 取当前应用主题（themeVersion 驱动刷新）；
+// set 处理切换/导入。vModelSelect 在选项渲染后写值，避免 :value 与 v-for 的竞态
+const selectedTheme = computed({
+  get() {
+    themeVersion.value;
+    return currentThemeId();
+  },
+  set(value) {
+    if (value === '__import__') {
+      // 原生文件对话框选择主题包（WKWebView 不认隐藏 file input 的程序化点击）；
+      // 强制重建下拉使显示还原为当前主题
+      onThemeImport();
+      selectKey.value += 1;
+      return;
+    }
+    // 跟随系统模式：写入当前系统外观对应的主题槽位（prefsVersion watcher 自动应用）
+    if (getPref('theme_follow_system')) {
+      setPref(isSystemDark() ? 'theme_dark_id' : 'theme_light_id', value);
+      return;
+    }
+    applyTheme(value);
+  },
+});
+const selectKey = ref(0);
 
-function onThemeChange(e) {
-  const value = e.target.value;
-  if (value === '__import__') {
-    // 还原选中项，改为触发文件选择
-    e.target.value = themeId.value;
-    fileInput.value?.click();
-    return;
-  }
-  themeId.value = applyTheme(value);
-}
-
-async function onThemeFile(e) {
-  const file = e.target.files?.[0];
-  e.target.value = '';
-  if (!file) return;
+// 导入主题：Rust 端原生对话框选读主题包文件
+async function onThemeImport() {
+  const text = await invoke('pick_theme_file').catch(() => null);
+  if (!text) return;
   try {
-    const text = await file.text();
-    themeId.value = importThemeJson(text);
-    themes.value = listThemes();
+    importThemeJson(text);
   } catch (err) {
     console.error('主题导入失败:', err);
     alert(`主题导入失败：${err.message}`);
@@ -126,15 +140,14 @@ async function onThemeFile(e) {
         {{ charCount }} 字符
       </div>
       <select
+        :key="`${themes.length}-${selectKey}`"
+        v-model="selectedTheme"
         class="t-btn mx-0.5 h-[22px] cursor-pointer rounded-md bg-transparent px-1.5 text-[11px] outline-none"
-        :value="themeId"
-        @change="onThemeChange"
         title="编辑器主题"
       >
         <option v-for="theme in themes" :key="theme.id" :value="theme.id">{{ theme.name }}</option>
         <option value="__import__">导入主题…</option>
       </select>
-      <input ref="fileInput" type="file" accept=".json,.jsonc,.yaml,.yml" class="hidden" @change="onThemeFile" />
     </div>
   </div>
 </template>

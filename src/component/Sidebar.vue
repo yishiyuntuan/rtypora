@@ -2,8 +2,9 @@
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { plainText } from '../utils/wysiwyg.js';
-import { getPref, prefsVersion } from '../utils/prefs.js';
+import { getPref, prefsVersion, trafficLightsVisible } from '../utils/prefs.js';
 import { useOverlayScrollbar } from '../utils/scrollbar.js';
+import { isMac } from '../utils/platform.js';
 
 // 侧边栏：「目录」（文件面板）与「大纲」（标题嵌套树）两个标签页。
 // 目录页结构：中部文件列表/树 + 底部工具栏（文件夹名操作菜单、新建文件、列表/树切换）。
@@ -18,6 +19,8 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'select-block', 'open-file', 'open-folder', 'create-file', 'show-in-explorer']);
 
 const activeTab = ref('toc');
+
+// macOS 使用原生标题栏（Overlay 样式），侧边栏顶部需为红绿灯留出拖拽区
 
 // 滚动条自动隐藏开关（偏好设置）：滚动容器据此挂载 .sb-auto-hide 类
 const scrollbarAutoHide = computed(() => {
@@ -324,6 +327,8 @@ const outlineItems = computed(() => {
     >
       <!-- 右缘拖拽调宽手柄 -->
       <div class="sidebar-resizer" title="拖拽调整宽度" @pointerdown="startResize"></div>
+      <!-- macOS：顶部留白避让原生红绿灯（红绿灯隐藏时目录/大纲顶到上边框），同时作为窗口拖拽区 -->
+      <div v-if="isMac && trafficLightsVisible" class="h-7 shrink-0" data-tauri-drag-region></div>
       <div class="flex border-b border-(--t-table-border)">
         <div
           class="t-tab flex flex-1 cursor-pointer items-center justify-center gap-1.5 px-4 pb-2 pt-3 text-center text-[12px] font-medium"
@@ -533,7 +538,7 @@ const outlineItems = computed(() => {
             <!-- 分区标题下的菜单项向内缩进（pl-5） -->
             <div v-if="workspaceDir" class="t-btn cursor-pointer py-1.5 pl-5 pr-3" @click="onOps('create')">新建文件</div>
             <div class="t-btn cursor-pointer py-1.5 pl-5 pr-3" @click="onOps('search')">搜索</div>
-            <div v-if="workspaceDir" class="t-btn cursor-pointer py-1.5 pl-5 pr-3" @click="onOps('explorer')">在资源管理器中显示</div>
+            <div v-if="workspaceDir" class="t-btn cursor-pointer py-1.5 pl-5 pr-3" @click="onOps('explorer')">{{ isMac ? '在访达中显示' : '在资源管理器中显示' }}</div>
             <div class="t-btn cursor-pointer py-1.5 pl-5 pr-3" @click="onOps('open-folder')">打开文件夹…</div>
             <div v-if="workspaceDir" class="t-btn cursor-pointer py-1.5 pl-5 pr-3" @click="onOps('refresh')">刷新</div>
 

@@ -38,6 +38,7 @@ import {
   insertInlineWrapper,
   plainText,
 } from '../utils/wysiwyg.js';
+import { formatShortcut } from '../utils/platform.js';
 import { getPref, prefsVersion, structureVersion } from '../utils/prefs.js';
 import { themeVersion } from '../themes/index.js';
 
@@ -1751,7 +1752,7 @@ function setEditableEl(el) {
   if (stashedEdit && stashedEdit.id === editingId.value) {
     el.innerHTML = stashedEdit.html;
   } else {
-    el.innerHTML = editingId.value === '__append__' || !block ? emptyParagraphHtml() : blockToHtml(block, rawSource);
+    el.innerHTML = editingId.value === '__append__' || !block ? emptyParagraphHtml() : blockToHtml(block, rawSource, 0, rootOrdinals.value.get(block.id) || 1);
   }
   stashedEdit = null;
   nextTick(() => {
@@ -3512,7 +3513,6 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
       v-if="sourceMode"
       ref="sourceRoot"
       class="t-root flex-1 resize-none border-none font-mono outline-none"
-      placeholder="开始写作..."
       v-model="content"
       @input="onInput"
       @keyup="onInput"
@@ -3668,9 +3668,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         @keydown="onEditableKeydown"
         @blur="onEditableBlur"
       ></div>
-      <div v-else class="min-h-24 cursor-text p-4" @click="startAppend">
-        <span v-if="renderedBlocks.length === 0" class="t-dim px-1">开始写作...</span>
-      </div>
+      <div v-else class="min-h-24 cursor-text p-4" @click="startAppend"></div>
       <!-- 脚注定义集中显示在文档末尾，支持点击引用跳转与返回 -->
       <div v-if="footnotes.length" class="md-footnotes">
         <div class="md-footnotes-title">脚注</div>
@@ -3764,7 +3762,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
           <div v-if="item === 'sep'" class="md-table-menu-sep"></div>
           <button v-else type="button" class="md-table-menu-item" @click="runTableMore(item)">
             <span>{{ item.label }}</span>
-            <span v-if="item.shortcut" class="md-table-menu-shortcut">{{ item.shortcut }}</span>
+            <span v-if="item.shortcut" class="md-table-menu-shortcut">{{ formatShortcut(item.shortcut) }}</span>
           </button>
         </template>
       </div>

@@ -1,6 +1,7 @@
 <script setup vapor>
 import { ref } from 'vue';
 import { SLASH_ICON, FONT_COLORS, FONT_SIZES } from '../utils/wysiwyg.js';
+import { formatShortcut } from '../utils/platform.js';
 
 // 编辑器右键菜单（Typora 式）：顶部剪贴板图标行 + 复制/粘贴为、行内格式与
 // 块类型图标行 + 段落/插入子菜单（hover 展开）。只负责展示与事件转发，
@@ -126,7 +127,7 @@ const BLOCK_ACTIONS = [
               <div v-if="it === 'sep'" class="md-ctx-sep"></div>
               <div v-else class="md-ctx-sub-item" @click="emit('action', it.id)">
                 <span>{{ it.label }}</span>
-                <span v-if="it.shortcut" class="md-ctx-shortcut">{{ it.shortcut }}</span>
+                <span v-if="it.shortcut" class="md-ctx-shortcut">{{ formatShortcut(it.shortcut) }}</span>
               </div>
             </template>
           </div>
@@ -214,7 +215,7 @@ const BLOCK_ACTIONS = [
                   <span class="md-ctx-check">{{ currentType === it.id ? '✓' : '' }}</span>
                   {{ it.label }}
                 </span>
-                <span v-if="it.shortcut" class="md-ctx-shortcut">{{ it.shortcut }}</span>
+                <span v-if="it.shortcut" class="md-ctx-shortcut">{{ formatShortcut(it.shortcut) }}</span>
               </div>
             </template>
           </div>
@@ -228,7 +229,7 @@ const BLOCK_ACTIONS = [
               <div v-if="it === 'sep'" class="md-ctx-sep"></div>
               <div v-else class="md-ctx-sub-item" @click="emit('action', it.id)">
                 <span>{{ it.label }}</span>
-                <span v-if="it.shortcut" class="md-ctx-shortcut">{{ it.shortcut }}</span>
+                <span v-if="it.shortcut" class="md-ctx-shortcut">{{ formatShortcut(it.shortcut) }}</span>
               </div>
             </template>
           </div>

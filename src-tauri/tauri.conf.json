@@ -10,16 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "tauri-editor",
-        "width": 1300,
-        "height": 750,
-        "resizable": true,
-        "fullscreen": false,
-        "decorations": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null,
       "assetProtocol": {

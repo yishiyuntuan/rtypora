@@ -1255,3 +1255,30 @@ fn 定界符与physics包() {
         );
     }
 }
+
+#[test]
+fn 列表项后紧跟未缩进围栏解析为根级块() {
+    // CommonMark：围栏可打断段落，未缩进围栏不属于列表项内容。
+    // 回归：此前 ``` 紧随列表项文本时被懒惰续行吞入项内，
+    // 含空行/缩进内容的 mermaid 图源被切碎、闭合围栏沦为游离段落。
+    let md = "3. 单层搜索的过程:回溯法的搜索过程就是一个树型结构的遍历过程。\n```mermaid\nflowchart\n    subgraph AA\n        A[\"[1,2,3,4]\"]\n\n        A--2-->C[\"[3,4]\"]\n    end\n\n```\n";
+    let blocks = parse(md);
+    assert_eq!(blocks.len(), 2, "应为 列表项 + 根级 mermaid 块: {:?}", blocks.iter().map(|b| &b.kind).collect::<Vec<_>>());
+    assert!(matches!(blocks[0].kind, BlockKindDto::NumberedListItem { .. }));
+    assert_eq!(title_text(&blocks[0]), "单层搜索的过程:回溯法的搜索过程就是一个树型结构的遍历过程。");
+    assert!(matches!(blocks[1].kind, BlockKindDto::MermaidBlock), "应为 mermaidBlock: {:?}", blocks[1].kind);
+    let raw = blocks[1].raw_fallback.as_deref().unwrap_or("");
+    assert!(raw.starts_with("```mermaid"), "raw 含开围栏");
+    assert!(raw.trim_end().ends_with("```"), "raw 含闭围栏");
+
+    // 普通代码围栏同规则：紧随项文本时不吞入项内
+    let blocks = parse("- item\n```js\ncode\n```\n");
+    assert_eq!(blocks.len(), 2);
+    assert!(matches!(blocks[0].kind, BlockKindDto::BulletedListItem { .. }));
+    assert!(matches!(blocks[1].kind, BlockKindDto::CodeBlock { .. }));
+
+    // 缩进到项内容列的围栏仍属于列表项（作为子块，行为不变）
+    let blocks = parse("- item\n  ```js\n  code\n  ```\n");
+    assert_eq!(blocks.len(), 1);
+    assert!(matches!(blocks[0].kind, BlockKindDto::BulletedListItem { .. }));
+}
