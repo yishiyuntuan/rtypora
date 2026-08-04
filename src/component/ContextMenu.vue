@@ -104,7 +104,7 @@ const BLOCK_ACTIONS = [
 <template>
   <Teleport to="body">
     <div class="t-app">
-      <div class="md-ctx-menu" :style="pos" @mousedown.prevent @contextmenu.prevent>
+      <div class="md-ctx-menu" :style="pos" @mousedown.prevent @contextmenu.prevent @mouseleave="openSub = null">
         <!-- 剪贴板 -->
         <div class="md-ctx-icons">
           <button
@@ -133,8 +133,9 @@ const BLOCK_ACTIONS = [
           </div>
         </div>
         <div class="md-ctx-sep"></div>
-        <!-- 行内格式（B/I/U/S） -->
-        <div class="md-ctx-icons" @mouseenter="openSub = null">
+        <!-- 行内格式（B/I/U/S）；行 hover 不关子菜单——颜色/字号飞出板在上方，
+             移入途中会经过本行，提前关闭会永远点不到（由菜单根 mouseleave 统一关闭） -->
+        <div class="md-ctx-icons">
           <button
             v-for="a in FORMAT_ROW1"
             :key="a.id"
@@ -152,7 +153,6 @@ const BLOCK_ACTIONS = [
             type="button"
             :title="a.label"
             :style="{ color: a.color }"
-            @mouseenter="openSub = null"
             @click="emit('action', a.id)"
           >
             <span v-if="a.icon" v-html="a.icon"></span>
@@ -191,7 +191,7 @@ const BLOCK_ACTIONS = [
           </div>
         </div>
         <!-- 块类型 -->
-        <div class="md-ctx-icons" @mouseenter="openSub = null">
+        <div class="md-ctx-icons">
           <button
             v-for="a in BLOCK_ACTIONS"
             :key="a.id"

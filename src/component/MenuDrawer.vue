@@ -180,6 +180,8 @@ function openPrefsColumn(pageId) {
   inset: 0;
   z-index: 90;
   display: flex;
+  /* 极窄窗口（三列最小宽之和仍超出）时横向滚动，不再挤占列宽 */
+  overflow-x: auto;
 }
 /* 全宽顶部拖拽带（菜单打开时整个上缘可拖动窗口） */
 .menu-drag-top {
@@ -237,17 +239,20 @@ function openPrefsColumn(pageId) {
   background: rgba(255, 255, 255, 0.14);
   border-left-color: #e6e8ea;
 }
-/* 右侧内容面板（主题色） */
+/* 右侧内容面板（主题色）；最小宽度保证可用，避免被第三列挤没 */
 .menu-content {
   flex: 1;
+  min-width: 320px;
   height: 100%;
   overflow-y: auto;
 }
 /* 偏好设置第三列（选中卡片后出现）：独立表单列，内容自滚动；
-   与中间列同一主题底色 + 发丝分隔线，整列统一观感 */
+   与中间列同一主题底色 + 发丝分隔线，整列统一观感；
+   空间不足时优先收缩本列（640 → 400），而非挤占中间内容列 */
 .menu-prefs-column {
   width: 640px;
-  flex-shrink: 0;
+  flex: 0 1 640px;
+  min-width: 400px;
   height: 100%;
   overflow: hidden;
   background: var(--t-editor-background);

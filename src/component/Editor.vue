@@ -959,7 +959,48 @@ function onContextMenu(e) {
     if (!block) return;
     startEdit(block);
   }
+  // 此处仅尝试覆盖暂存：若 WKWebView 已在右键 mousedown 后塌陷选区，
+  // 本次 stash 无效，保留 mousedown 时的暂存（不得先行清空）
+  stashCtxSelection();
   ctxMenu.value = { x: e.clientX, y: e.clientY };
+}
+
+// 右键菜单选区暂存：WKWebView 中右键 mousedown 的默认行为会把选区塌陷为光标，
+// 在默认行为发生前的 mousedown/contextmenu 里暂存选区，菜单动作应用前恢复。
+// 注意：动作处理以 closeCtxMenu 开头，暂存不得随菜单关闭清理；
+// 以时间戳防陈旧（仅菜单打开后短时间内的动作才允许恢复）
+let ctxSavedRange = null;
+
+function stashCtxSelection() {
+  const el = currentEditable();
+  if (!el) return;
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const r = sel.getRangeAt(0);
+  if (!r.collapsed && el.contains(r.startContainer)) {
+    ctxSavedRange = { range: r.cloneRange(), at: Date.now() };
+  }
+}
+
+// 编辑区 mousedown：右键（button 2）按下时抢先暂存选区
+function onEditorMouseDown(e) {
+  if (e.button === 2) stashCtxSelection();
+}
+
+// 菜单动作应用前恢复暂存选区（当前选区仍在编辑区内且未塌陷则无需恢复）
+function restoreCtxSelection(el) {
+  const saved = ctxSavedRange;
+  if (!saved || !el) return;
+  if (Date.now() - saved.at > 5000) return; // 陈旧暂存不恢复
+  const r = saved.range;
+  if (!r.startContainer.isConnected || !el.contains(r.startContainer)) return;
+  const sel = window.getSelection();
+  if (sel.rangeCount) {
+    const cur = sel.getRangeAt(0);
+    if (!cur.collapsed && el.contains(cur.startContainer)) return;
+  }
+  sel.removeAllRanges();
+  sel.addRange(r);
 }
 
 function closeCtxMenu() {
@@ -1009,6 +1050,7 @@ async function onMenuAction(id, payload) {
       if (el) {
         suppressBlurCommit = true;
         try {
+          restoreCtxSelection(el);
           insertInlineWrapper(el, id);
         } finally {
           suppressBlurCommit = false;
@@ -1066,6 +1108,7 @@ function ctxApplyFontStyle(style) {
   if (!el || !style) return;
   suppressBlurCommit = true;
   try {
+    restoreCtxSelection(el);
     const span = buildFontSpan(style);
     const sel = window.getSelection();
     if (sel.rangeCount && !sel.isCollapsed && el.contains(sel.anchorNode)) {
@@ -3519,7 +3562,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
       @click="onInput"
     ></textarea>
 
-    <div v-else ref="scrollRoot" class="t-root flex-1 overflow-y-auto" :class="{ 'md-first-indent': firstLineIndent, 'sb-auto-hide': scrollbarAutoHide, 'sb-no-autohide': !scrollbarAutoHide }" @scroll.passive="onEditorScroll" @contextmenu="onContextMenu" @mousemove.passive="onEditorMouseMove" @mouseleave="onEditorMouseLeave">
+    <div v-else ref="scrollRoot" class="t-root flex-1 overflow-y-auto" :class="{ 'md-first-indent': firstLineIndent, 'sb-auto-hide': scrollbarAutoHide, 'sb-no-autohide': !scrollbarAutoHide }" @scroll.passive="onEditorScroll" @contextmenu="onContextMenu" @mousedown="onEditorMouseDown" @mousemove.passive="onEditorMouseMove" @mouseleave="onEditorMouseLeave">
       <div class="t-measure">
       <!-- 虚拟滚动 + 渐进挂载：配额内每块包一层 VRow（占位保总高），仅视口余量内挂载内容；
            配额外行由下方估计高度占位条代替（大文档首屏组件规模恒定）；
