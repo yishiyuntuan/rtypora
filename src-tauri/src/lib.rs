@@ -33,6 +33,16 @@ fn set_traffic_lights_visible(window: tauri::WebviewWindow, visible: bool) {
     let _ = (window, visible);
 }
 
+// 前端主题应用并挂载完成后调用：显示主窗口（配合 visible(false) 创建，消除启动白闪）
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) {
+    use tauri::Manager;
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -85,12 +95,15 @@ pub fn run() {
             latex::render_display_math,
             latex::render_inline_math,
             latex::set_math_unicode_font,
-            set_traffic_lights_visible
+            set_traffic_lights_visible,
+            show_main_window
         ])
         .setup(|app| {
             // 窗口按平台创建：macOS 使用原生标题栏（Overlay 样式，原生红绿灯覆盖在左上角，
             // 内容区占满整个窗口，拖拽与菜单按钮由前端标题栏接管）；
             // Windows/Linux 保持无边框，由前端自绘窗口控制按钮。
+            // 先隐藏创建（visible=false），前端主题应用并挂载后经 show_main_window 显示——
+            // 消除暗色主题下「HTML 到达前原生白底」的启动白闪
             let mut builder = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -99,7 +112,8 @@ pub fn run() {
             .title("tauri-editor")
             .inner_size(1300.0, 750.0)
             .resizable(true)
-            .fullscreen(false);
+            .fullscreen(false)
+            .visible(false);
             #[cfg(target_os = "macos")]
             {
                 builder = builder

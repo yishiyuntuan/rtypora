@@ -14,6 +14,8 @@ const props = defineProps({
 
 const observeRow = inject('observeRow');
 const unobserveRow = inject('unobserveRow');
+// 打印模式：Editor 打印时强制所有行挂载（虚拟滚动下未挂载行不会被打印）
+const printMode = inject('printMode', ref(false));
 
 const el = ref(null);
 const visible = ref(props.force);
@@ -69,6 +71,6 @@ onBeforeUnmount(() => {
     :data-block-id="block.id"
     :style="!visible ? { minHeight: `${cachedHeight}px` } : undefined"
   >
-    <slot v-if="visible || force" />
+    <slot v-if="visible || force || printMode" />
   </div>
 </template>

@@ -1113,3 +1113,44 @@ pre:hover .md-code-lang-input,
 .t-tab-active {
   border-bottom-color: var(--t-tab-indicator);
 }
+
+/* ---------- 打印：只输出文档内容 ---------- */
+@media print {
+  /* 隐藏窗口界面元素（标题栏/状态栏/侧栏/滚动条/菜单与编辑器交互件） */
+  .t-titlebar,
+  .t-statusbar,
+  .t-sidebar,
+  .md-scrollbar,
+  .menu-overlay,
+  .md-ctx-menu,
+  .md-slash-menu,
+  .md-table-panel,
+  .md-table-toolbar,
+  .md-table-edge-btn,
+  .md-code-corner,
+  .sidebar-resizer,
+  .prefs-page,
+  .md-bottom-space {
+    display: none !important;
+  }
+  /* 解除屏幕布局的高度/滚动约束，文档按正常流展开分页 */
+  html,
+  body,
+  #app,
+  .t-app,
+  .t-root,
+  .t-measure {
+    height: auto !important;
+    max-height: none !important;
+    overflow: visible !important;
+  }
+  .md-vrow {
+    min-height: 0 !important;
+  }
+  /* 保留主题背景色（浏览器默认打印丢弃背景） */
+  body,
+  .t-root {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

@@ -299,7 +299,12 @@ fn resolve_local_image(source: &str, base_dir: Option<&str>) -> Option<PathBuf> 
         let resolved: PathBuf = if p.is_absolute() {
             p.to_path_buf()
         } else {
-            PathBuf::from(base_dir?).join(p)
+            // 按组件拼接（components 会规范化 / 与 \，Windows 下返回统一反斜杠路径）
+            let mut r = PathBuf::from(base_dir?);
+            for comp in p.components() {
+                r.push(comp);
+            }
+            r
         };
         if resolved.is_file() {
             return Some(resolved);

@@ -1764,6 +1764,21 @@ function onInput(e) {
   cursorColumn.value = text.length - text.lastIndexOf('\n');
 }
 
+// 源码模式 Tab：插入制表符而非默认移焦（否则光标跳到下一控件丢失）；
+// 支持选区替换，光标落在插入内容之后
+function onSourceKeydown(e) {
+  if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
+  e.preventDefault();
+  const ta = sourceRoot.value;
+  if (!ta) return;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  content.value = content.value.slice(0, start) + '\t' + content.value.slice(end);
+  nextTick(() => {
+    if (ta.isConnected) ta.setSelectionRange(start + 1, start + 1);
+  });
+}
+
 // 编辑容器挂载时：填充渲染好的 HTML；聚焦与光标放置推迟到 nextTick——
 // ref 回调时元素可能尚未插入文档（Vue 键控列表换键场景），立即 focus 会静默失败。
 // 注意：两个编辑容器（块容器与文末 __append__ 容器）共用本 ref，Vue 打补丁时
@@ -3547,7 +3562,33 @@ onBeforeUnmount(() => {
   blockObserver = null;
 });
 
-defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () => isDirty.value, captureScrollPosition, restoreScrollPosition });
+// 打印模式：强制所有行挂载（虚拟滚动下未挂载行不会被打印），
+// 配合 @media print 样式（隐藏界面元素）实现「打印当前文档」
+const printMode = ref(false);
+provide('printMode', printMode);
+
+// 打印当前文档：提交当前编辑 → 全量挂载所有行 → 打印；结束（或超时兜底）后恢复虚拟滚动
+async function printDocument() {
+  if (editingId.value !== null) await commitEdit();
+  rowQuota.value = renderedBlocks.value.length;
+  printMode.value = true;
+  await nextTick();
+  await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+  const restore = () => {
+    window.removeEventListener('afterprint', restore);
+    clearTimeout(printRestoreTimer);
+    printMode.value = false;
+    rowQuota.value = INITIAL_ROW_QUOTA;
+  };
+  window.addEventListener('afterprint', restore);
+  clearTimeout(printRestoreTimer);
+  // afterprint 不触发时的兜底恢复
+  printRestoreTimer = setTimeout(restore, 60_000);
+  window.print();
+}
+let printRestoreTimer = null;
+
+defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () => isDirty.value, captureScrollPosition, restoreScrollPosition, printDocument });
 </script>
 
 <template>
@@ -3558,6 +3599,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
       class="t-root flex-1 resize-none border-none font-mono outline-none"
       v-model="content"
       @input="onInput"
+      @keydown="onSourceKeydown"
       @keyup="onInput"
       @click="onInput"
     ></textarea>

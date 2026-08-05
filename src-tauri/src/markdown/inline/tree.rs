@@ -3696,6 +3696,7 @@ mod tests {
                 strikethrough: false,
                 code: false,
                 script: InlineScript::Normal,
+                ..Default::default()
             }
         );
     }

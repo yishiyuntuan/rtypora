@@ -23,7 +23,7 @@ const appWindow = new Window('main');
   <div
     v-if="isMac"
     data-tauri-drag-region
-    class="relative flex h-8 items-center bg-transparent select-none"
+    class="t-titlebar relative flex h-8 items-center bg-transparent select-none"
     :class="{ 'pl-[84px]': !sidebarVisible && trafficLightsVisible }"
   >
     <div
@@ -46,7 +46,7 @@ const appWindow = new Window('main');
   <div
     v-else
     data-tauri-drag-region
-    class="relative flex h-8 items-center justify-between bg-transparent select-none"
+    class="t-titlebar relative flex h-8 items-center justify-between bg-transparent select-none"
   >
     <div
       id="titlebar-menu"

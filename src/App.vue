@@ -313,7 +313,8 @@ function onMenuAction(action) {
       doExport();
       break;
     case "print":
-      window.print();
+      // 打印当前打开的文档（Editor 内部先全量挂载行再走打印样式）
+      editorRef.value?.printDocument();
       break;
     case "prefs":
       prefsPage.value = "editor";

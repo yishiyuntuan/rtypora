@@ -321,7 +321,7 @@ const outlineItems = computed(() => {
     <div
       ref="sideRoot"
       v-show="visible"
-      class="t-app relative flex h-full flex-col border-r border-(--t-table-border) text-[13px]"
+      class="t-sidebar t-app relative flex h-full flex-col border-r border-(--t-table-border) text-[13px]"
       :class="{ 'sb-toolbar-autohide': toolbarAutoHide }"
       :style="{ width: `${width}px` }"
     >
