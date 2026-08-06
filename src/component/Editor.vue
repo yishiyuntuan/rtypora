@@ -2366,16 +2366,20 @@ async function onEditablePaste(e) {
   const items = Array.from(e.clipboardData?.items || []);
   const imageItem = items.find((item) => item.type.startsWith('image/'));
   if (!imageItem) {
-    // 文本粘贴：含 Markdown 语法时按 Markdown 解析插入（标题/列表/代码/表格等结构保留）；
-    // 纯文本走浏览器默认插入。统一规范化换行符（外部剪贴板可能带 CRLF/CR）
+    // 文本粘贴：统一规范化换行符；代码/原文块（pre 编辑）与表格编辑走浏览器默认纯文本插入
     const text = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
-    // 代码/原文块（pre 编辑）与表格编辑中：内容即纯文本，绝不做 Markdown 解析——
-    // 否则贴入的 #、```、| 等会被拆成新块，破坏代码与表格内容
+    if (!text) return;
     const el = currentEditable();
     const rawMode = !!el?.querySelector('pre') || editingBlock.value?.type === 'table';
-    if (!rawMode && text && (await looksLikeMarkdown(text))) {
-      e.preventDefault();
+    if (rawMode) return;
+    // 必须同步 preventDefault：Rust 嗅探判定是异步的，若先 await 再 preventDefault，
+    // 浏览器已执行默认粘贴插入一份，Markdown 通道再插一份，内容重复（双份粘贴 bug）。
+    // 改为统一手动插入：Markdown 走解析通道，纯文本走 insertText
+    e.preventDefault();
+    if (await looksLikeMarkdown(text)) {
       await pasteMarkdownAtCaret(text);
+    } else {
+      document.execCommand('insertText', false, text);
     }
     return;
   }
@@ -2446,6 +2450,7 @@ async function pasteMarkdownAtCaret(text) {
 
     const pasted = text.trim();
     const combined = [beforeMd, pasted, afterMd].filter((s) => s !== '').join('\n\n');
+    console.log('[paste-debug] combined =', JSON.stringify(combined));
 
     const isAppend = editingId.value === '__append__';
     let index;
