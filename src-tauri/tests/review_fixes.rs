@@ -171,3 +171,16 @@ fn 行首img标签后同行文字拆分() {
     assert_eq!(blocks3.len(), 1);
     assert!(blocks3[0].image.is_some());
 }
+
+#[test]
+fn 行首img拆分块偏移不重叠() {
+    // 拆分块共享整行区间会导致编辑图片块时整行被覆盖（文字被复制出一行）
+    let src = "<img src=\"./img/a.png\" alt=\"x\" /> **说明**";
+    let blocks = markdown::parse_blocks(src);
+    assert_eq!(blocks.len(), 2);
+    let (a, b) = (&blocks[0], &blocks[1]);
+    assert!(a.end.is_some() && a.end == b.start, "两偏移应相接不重叠: {:?} {:?}", a.end, b.start);
+    let utf16: Vec<u16> = src.encode_utf16().collect();
+    let slice_a = String::from_utf16(&utf16[a.start.unwrap()..a.end.unwrap()]).unwrap();
+    assert!(slice_a.starts_with("<img") && slice_a.ends_with("/>"), "首块区间应恰为标签: {slice_a}");
+}

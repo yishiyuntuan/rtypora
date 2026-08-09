@@ -28,7 +28,7 @@ fn parse_to_dtos(markdown: &str) -> Vec<model::BlockDto> {
     });
     let starts = line_utf16_starts(markdown);
     let total = markdown.encode_utf16().count();
-    roots
+    let mut out: Vec<model::BlockDto> = roots
         .iter()
         .map(|root| {
             let start = starts[root.start_line];
@@ -40,7 +40,25 @@ fn parse_to_dtos(markdown: &str) -> Vec<model::BlockDto> {
             };
             model::BlockDto::from_node(&root.node, Some((start, end)))
         })
-        .collect()
+        .collect();
+    // 同行拆分块（行首 <img> + 文字同行）在块解析层共享整行区间——这里按首块原文的
+    // UTF-16 长度把共享区间切分为两段，否则编辑其中一块会覆盖整行（另一块内容被复制）
+    for i in 0..out.len().saturating_sub(1) {
+        let shared = matches!(
+            (out[i].start, out[i].end, out[i + 1].start, out[i + 1].end),
+            (Some(s1), Some(e1), Some(s2), Some(e2)) if s1 == s2 && e1 == e2
+        );
+        if !shared {
+            continue;
+        }
+        let Some(first_src) = out[i].raw_fallback.clone() else {
+            continue;
+        };
+        let mid = out[i].start.unwrap() + first_src.encode_utf16().count();
+        out[i].end = Some(mid);
+        out[i + 1].start = Some(mid);
+    }
+    out
 }
 
 /// 解析 Markdown 全文，返回块树（JSON）。
