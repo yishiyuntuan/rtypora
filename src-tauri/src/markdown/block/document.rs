@@ -65,6 +65,8 @@ struct ListMarker {
     indent_columns: usize,
     content_indent_columns: usize,
     text: String,
+    /// 有序项的源标记数字（无序项为 None）
+    start: Option<usize>,
 }
 
 fn strip_fence_indent(line: &str) -> Option<&str> {
@@ -319,15 +321,18 @@ fn parse_list_marker(line: &str) -> Option<ListMarker> {
                 &line[..indent_bytes + marker.len_utf8() + separator_len],
             ),
             text,
+            start: None,
         });
     }
 
     let (digit_len, marker_len, text) = parse_ordered_list_marker(rest)?;
+    let start = rest[..digit_len].parse::<usize>().ok();
     Some(ListMarker {
         kind: BlockKind::NumberedListItem,
         indent_columns,
         content_indent_columns: display_columns(&line[..indent_bytes + digit_len + marker_len]),
         text: text.to_string(),
+        start,
     })
 }
 
@@ -835,6 +840,38 @@ fn comment_block( markdown: String) -> BlockNode {
     BlockNode::leaf(BlockRecord::comment(markdown))
 }
 
+/// 行首 <img ...> 标签后同行还有内容：拆出（标签文本, 剩余文本）。
+/// 标签内引号中的 > 不误判为结束；剩余为空或非 <img 开头返回 None。
+fn split_leading_img_line(line: &str) -> Option<(String, String)> {
+    let trimmed = line.trim_start();
+    if !trimmed.get(..4).is_some_and(|s| s.eq_ignore_ascii_case("<img")) {
+        return None;
+    }
+    let bytes = trimmed.as_bytes();
+    if !bytes.get(4).is_some_and(|b| !b.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let mut quote: Option<u8> = None;
+    for i in 4..bytes.len() {
+        let ch = bytes[i];
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => {}
+            None if ch == b'"' || ch == b'\'' => quote = Some(ch),
+            None if ch == b'>' => {
+                let tag = &trimmed[..=i];
+                let rest = trimmed[i + 1..].trim();
+                if rest.is_empty() {
+                    return None;
+                }
+                return Some((tag.to_string(), rest.to_string()));
+            }
+            None => {}
+        }
+    }
+    None
+}
+
 fn html_or_raw_block( markdown: String) -> BlockNode {
     // 偏好「HTML 标签转换为 Markdown 语法」：单一容器标签按原生块解析
     if crate::markdown::html_to_md_enabled()
@@ -1131,6 +1168,20 @@ fn build_blocks_from_lines_internal(
 
             if is_block_html_start(line) {
                 let end = collect_block_html_region(lines, index);
+                // 行首 <img> 标签后同行还有内容：拆分为 图片块 + 段落（Typora 式行内混排，
+                // 否则整行按原文显示为代码样式——img 不被渲染）
+                if end == index + 1
+                    && let Some((img_tag, rest)) = split_leading_img_line(line)
+                {
+                    roots.push(RootBlock::spanned(html_or_raw_block(img_tag), index, end));
+                    roots.push(RootBlock::spanned(
+                        native_block(BlockKind::Paragraph, rest),
+                        index,
+                        end,
+                    ));
+                    index = end;
+                    continue;
+                }
                 roots.push(RootBlock::spanned(
                     html_or_raw_block(lines[index..end].join("\n")),
                     index,
@@ -1882,6 +1933,8 @@ fn build_blocks_from_lines_internal(
             // 围栏开在列表标记行（如 `1. ```html`）时，围栏行文本需要保留以构造原文
             let marker_fence = parse_opening_fence(&marker.text).map(|fence| (fence, marker.text.clone()));
             let mut block = native_block(marker.kind.clone(), marker.text);
+            // 有序项的源标记数字存入模型（序列化/渲染的组起始序号——源即所见）
+            block.record.list_start = marker.start;
             let mut body_index = index + 1;
             let mut pending_blank_lines = 0usize;
             let mut fallback_raw = false;

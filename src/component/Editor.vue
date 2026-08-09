@@ -1946,12 +1946,31 @@ function startAppend() {
   editingId.value = '__append__';
 }
 
+// 有序列表提交：把正在编辑块的显示序号写入首个有序项 DTO
+//（序列化后源标记与渲染一致——源即所见；组内后续项由序列化器按组起点递增）
+function applyListStartToDtos(dtos) {
+  const ordinal = rootOrdinals.value.get(editingId.value);
+  if (ordinal == null) return;
+  const findFirstNumbered = (list) => {
+    for (const d of list) {
+      if (d.type === 'numberedListItem') return d;
+      const hit = d.children?.length ? findFirstNumbered(d.children) : null;
+      if (hit) return hit;
+    }
+    return null;
+  };
+  const first = findFirstNumbered(dtos);
+  if (first) first.listStart = ordinal;
+}
+
 async function commitEdit() {
   if (editingId.value === null || !currentEditable()) return;
   syncing.value = true;
   try {
     // 前端只提取 DOM 结构，Markdown 序列化由 Rust 完成
-    const md = await invoke('serialize_markdown', { blocks: domToBlockDtos(editableEl) });
+    const dtos = domToBlockDtos(editableEl);
+    applyListStartToDtos(dtos);
+    const md = await invoke('serialize_markdown', { blocks: dtos });
     editableEl = null;
     suppressBlurCommit = false;    if (editingId.value === '__append__') {
       const text = md.trim();
@@ -2450,7 +2469,6 @@ async function pasteMarkdownAtCaret(text) {
 
     const pasted = text.trim();
     const combined = [beforeMd, pasted, afterMd].filter((s) => s !== '').join('\n\n');
-    console.log('[paste-debug] combined =', JSON.stringify(combined));
 
     const isAppend = editingId.value === '__append__';
     let index;

@@ -47,19 +47,25 @@ function linkHref(link) {
 }
 
 // 连续 numberedListItem 兄弟块的序号表（id -> 1 基序号），用于有序列表渲染。
-// 块模型会把列表项之间的空行保留为空段落块（velotype 编辑模型），空段落不打断
-// 编号（对应 CommonMark 松散列表）；实质内容块（含独立图片段落）才重置序号。
+// 块模型会把列表项之间的空行保留为空段落块（velotype 编辑模型）。编号规则
+//（与 Rust 序列化器逐字一致，源即所见）：组首项采用源标记数字（缺省 1），组内递增；
+// 空段落记为组间间隔，空行后遇源标记 1. 视为新列表重启；实质内容块（含独立图片段落）重置。
 export function numberedOrdinals(blocks) {
   const map = new Map();
   let n = 0;
+  let gap = false;
   for (const b of blocks || []) {
     if (b.type === 'numberedListItem') {
-      n += 1;
+      if (n === 0) n = b.listStart ?? 1;
+      else if (gap && b.listStart === 1) n = 1;
+      else n += 1;
       map.set(b.id, n);
+      gap = false;
     } else if (b.type === 'paragraph' && !plainText(b.title).trim() && !b.image) {
-      continue;
+      gap = true;
     } else {
       n = 0;
+      gap = false;
     }
   }
   return map;

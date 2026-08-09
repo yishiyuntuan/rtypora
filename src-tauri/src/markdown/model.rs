@@ -161,6 +161,9 @@ pub struct BlockDto {
     /// alignat/eqnarray 的非星号变体）。前端按偏好（math_numbering）决定编号显示。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub math_numbered: Option<bool>,
+    /// 有序列表项的源标记数字（组起始序号；仅 NumberedListItem 有值）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub list_start: Option<usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<BlockDto>,
 }
@@ -221,6 +224,7 @@ impl BlockDto {
             raw_fallback: node.record.raw_fallback.clone(),
             math_numbered: (node.record.kind == BlockKind::MathBlock)
                 .then(|| uses_ams_numbered_environment(&node.record.title.visible_text())),
+            list_start: node.record.list_start,
             children: node
                 .children
                 .iter()
@@ -240,6 +244,7 @@ impl BlockDto {
                 table: self.table,
                 html: None,
                 raw_fallback: self.raw_fallback,
+                list_start: self.list_start,
             },
             children: self
                 .children

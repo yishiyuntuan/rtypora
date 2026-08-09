@@ -299,9 +299,13 @@ fn resolve_local_image(source: &str, base_dir: Option<&str>) -> Option<PathBuf> 
         let resolved: PathBuf = if p.is_absolute() {
             p.to_path_buf()
         } else {
-            // 按组件拼接（components 会规范化 / 与 \，Windows 下返回统一反斜杠路径）
+            // 按组件拼接（components 会规范化 / 与 \，Windows 下返回统一反斜杠路径；
+            // 跳过 CurDir 组件，避免 asset URL 中出现 \. 段）
             let mut r = PathBuf::from(base_dir?);
             for comp in p.components() {
+                if matches!(comp, std::path::Component::CurDir) {
+                    continue;
+                }
                 r.push(comp);
             }
             r

@@ -125,3 +125,49 @@ fn 渐进打开cjk接缝偏移正确() {
     assert!(!tail.is_empty(), "尾部重解析应有块");
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn 有序列表序列化按位置递增序号() {
+    // 源序号规范化后按兄弟位置递增（而非全部 1.），与渲染层 numberedOrdinals 同规则
+    let src = "1. aaaaaaa\n\n2. bbbbbb\n\n3. cccccc\n\n4. ddddd";
+    let ser = markdown::serialize_markdown(markdown::parse_blocks(src));
+    assert!(ser.contains("1. aaaaaaa") && ser.contains("2. bbbbbb") && ser.contains("3. cccccc") && ser.contains("4. ddddd"), "序号应按位置递增: {ser}");
+    // 空段落（松散列表）不打断编号；内容块打断后重新从 1 计
+    let ser2 = markdown::serialize_markdown(markdown::parse_blocks("1. a\n\n2. b\n\n段落\n\n1. c"));
+    assert!(ser2.contains("2. b"), "{ser2}");
+    assert!(ser2.contains("1. c"), "打断后重新计数: {ser2}");
+}
+
+#[test]
+fn 有序列表源序号与渲染一致() {
+    // 自定义起始序号保留（源即所见）：3 起始的列表序列化仍为 3 起始
+    let ser = markdown::serialize_markdown(markdown::parse_blocks("3. a\n\n4. b"));
+    assert!(ser.contains("3. a") && ser.contains("4. b"), "自定义起始保留: {ser}");
+    // 空行后遇源标记 1. 视为新列表重启（两块列表各自从 1 开始）
+    let ser2 = markdown::serialize_markdown(markdown::parse_blocks("1. a\n\n1. b\n\n1. c"));
+    assert!(ser2.matches("1. ").count() == 3, "空行+1. 重启编号: {ser2}");
+    // 空行后源标记递增则延续编号
+    let ser3 = markdown::serialize_markdown(markdown::parse_blocks("1. a\n\n2. b"));
+    assert!(ser3.contains("2. b"), "延续编号: {ser3}");
+    // 内容块打断后新组采用其源标记起始
+    let ser4 = markdown::serialize_markdown(markdown::parse_blocks("1. a\n\n段落\n\n5. b"));
+    assert!(ser4.contains("5. b"), "新组采用源标记 5: {ser4}");
+}
+
+#[test]
+fn 行首img标签后同行文字拆分() {
+    // <img ... /> **文字** 同行：拆分为图片块 + 段落（文字保持行内格式），而非整行原文显示
+    let blocks = markdown::parse_blocks("<img src=\"./img/a.png\" alt=\"x\" style=\"zoom:50%;\" /> **说明文字**");
+    assert_eq!(blocks.len(), 2, "应拆为两块: {:?}", blocks.iter().map(|b| format!("{:?}", b.kind)).collect::<Vec<_>>());
+    assert!(blocks[0].image.is_some(), "首块应携带图片信息");
+    assert_eq!(blocks[0].image.as_ref().unwrap().zoom, Some(0.5), "缩放保留");
+    let para_json = serde_json::to_string(&blocks[1]).unwrap();
+    assert!(para_json.contains("说明文字"), "剩余文字成段落: {para_json}");
+    // 属性引号内的 > 不误判为标签结束
+    let blocks2 = markdown::parse_blocks("<img src=\"./img/a.png\" alt=\"a>b\" /> **说明**");
+    assert_eq!(blocks2.len(), 2);
+    // 独立标签行行为不变
+    let blocks3 = markdown::parse_blocks("<img src=\"./img/a.png\" alt=\"x\" />");
+    assert_eq!(blocks3.len(), 1);
+    assert!(blocks3[0].image.is_some());
+}

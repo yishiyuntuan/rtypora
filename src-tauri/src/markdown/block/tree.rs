@@ -22,10 +22,42 @@ fn is_empty_root_paragraph(node: &BlockNode) -> bool {
         && node.children.is_empty()
 }
 
+/// 序号推进用的「空段落」判定（与前端 numberedOrdinals 同规则：空段落不打断编号，
+/// 独立图片段落等内容块打断）
+fn is_empty_paragraph_like(node: &BlockNode) -> bool {
+    node.record.kind == BlockKind::Paragraph
+        && node.record.title.visible_text().trim().is_empty()
+        && node.children.is_empty()
+        && parse_standalone_image(&node.record.title_markdown()).is_none()
+}
+
+/// 有序列表序号推进：NumberedListItem 返回序号（Some(n)）；
+/// 空段落记为组间间隔（gap，不立即重置）；其余块重置并返回 None。
+/// 规则（与前端 numberedOrdinals 逐字一致，源即所见）：
+/// 组首项采用源标记数字（缺省 1）；组内递增；**空行后遇源标记 1. 视为新列表重启为 1**
+fn next_numbered_ordinal(node: &BlockNode, ordinal: &mut usize, gap: bool) -> Option<usize> {
+    if node.record.kind == BlockKind::NumberedListItem {
+        *ordinal = if *ordinal == 0 {
+            node.record.list_start.unwrap_or(1)
+        } else if gap && node.record.list_start == Some(1) {
+            1
+        } else {
+            *ordinal + 1
+        };
+        Some(*ordinal)
+    } else if is_empty_paragraph_like(node) {
+        None
+    } else {
+        *ordinal = 0;
+        None
+    }
+}
+
 fn collect_root_markdown_lines(blocks: &[BlockNode], lines: &mut Vec<String>) {
     let mut pending_empty_roots = 0usize;
     let mut wrote_non_empty_root = false;
     let mut previous_was_list_item = false;
+    let mut numbered_ordinal = 0usize;
 
     for node in blocks {
         if is_empty_root_paragraph(node) {
@@ -45,7 +77,8 @@ fn collect_root_markdown_lines(blocks: &[BlockNode], lines: &mut Vec<String>) {
             lines.extend(std::iter::repeat_n(String::new(), pending_empty_roots));
         }
 
-        collect_single_block_markdown_lines(node, 0, lines);
+        let list_ordinal = next_numbered_ordinal(node, &mut numbered_ordinal, pending_empty_roots > 0);
+        collect_single_block_markdown_lines(node, 0, lines, list_ordinal);
         wrote_non_empty_root = true;
         pending_empty_roots = 0;
         previous_was_list_item = current_is_list_item;
@@ -60,7 +93,7 @@ fn collect_root_markdown_lines(blocks: &[BlockNode], lines: &mut Vec<String>) {
     }
 }
 
-fn collect_single_block_markdown_lines(node: &BlockNode, list_depth: usize, lines: &mut Vec<String>) {
+fn collect_single_block_markdown_lines(node: &BlockNode, list_depth: usize, lines: &mut Vec<String>, list_ordinal: Option<usize>) {
     match &node.record.kind {
         BlockKind::Table => {
             if let Some(table) = node.record.table.as_ref() {
@@ -178,11 +211,12 @@ fn collect_single_block_markdown_lines(node: &BlockNode, list_depth: usize, line
         BlockKind::BulletedListItem
         | BlockKind::TaskListItem { .. }
         | BlockKind::NumberedListItem => {
-            // list_ordinal 是 velotype 编辑引擎的运行时重编号状态；
-            // 解析树序列化统一传 None（规范化为 1. 起始）。
-            lines.push(node.record.markdown_line(list_depth, None));
+            // 有序列表序号按兄弟位置序列化（1. 2. 3. ...），与渲染层同规则
+            lines.push(node.record.markdown_line(list_depth, list_ordinal));
             let child_list_depth = list_depth + 1;
             let mut previous_child_was_table = false;
+            let mut child_ordinal = 0usize;
+            let mut previous_child_was_gap = false;
             for child in &node.children {
                 // 相邻两个表格子块之间必须有空行（否则重解析合并为一张表）
                 if previous_child_was_table && child.record.kind == BlockKind::Table {
@@ -191,8 +225,11 @@ fn collect_single_block_markdown_lines(node: &BlockNode, list_depth: usize, line
                 if list_child_requires_leading_blank_line(child) {
                     lines.push(String::new());
                 }
-                collect_single_block_markdown_lines(child, child_list_depth, lines);
+                let child_list_ordinal =
+                    next_numbered_ordinal(child, &mut child_ordinal, previous_child_was_gap);
+                collect_single_block_markdown_lines(child, child_list_depth, lines, child_list_ordinal);
                 previous_child_was_table = child.record.kind == BlockKind::Table;
+                previous_child_was_gap = is_empty_paragraph_like(child);
             }
         }
         _ => {
@@ -221,6 +258,8 @@ fn collect_markdown_lines(
     let mut first = true;
     let mut previous_was_list_item = false;
     let mut previous_was_table = false;
+    let mut previous_was_gap = false;
+    let mut numbered_ordinal = 0usize;
     for node in blocks {
         let current_is_list_item = node.record.kind.is_list_item();
         let current_is_table = node.record.kind == BlockKind::Table;
@@ -233,9 +272,11 @@ fn collect_markdown_lines(
         }
         first = false;
 
-        collect_single_block_markdown_lines(node, depth, lines);
+        let list_ordinal = next_numbered_ordinal(node, &mut numbered_ordinal, previous_was_gap);
+        collect_single_block_markdown_lines(node, depth, lines, list_ordinal);
         previous_was_list_item = current_is_list_item;
         previous_was_table = current_is_table;
+        previous_was_gap = is_empty_paragraph_like(node);
     }
 }
 

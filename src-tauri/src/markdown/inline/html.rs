@@ -98,6 +98,9 @@ pub struct HtmlInlineStyle {
     pub(crate) color: Option<HtmlCssColor>,
     pub(crate) background_color: Option<HtmlCssColor>,
     pub(crate) font_size: Option<HtmlCssFontSize>,
+    /// 原始标签名（font/span）：序列化时按原样回写，不做 font↔span 改写
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) tag: Option<String>,
 }
 
 impl Eq for HtmlInlineStyle {}
@@ -182,13 +185,16 @@ impl HtmlCssColor {
     pub(crate) fn to_css(&self) -> String {
         match self {
             Self::CurrentColor => "currentColor".to_string(),
-            Self::Rgba(color) => format!(
-                "rgba({},{},{},{:.3})",
-                color.red,
-                color.green,
-                color.blue,
-                color.alpha.clamp(0.0, 1.0)
-            ),
+            Self::Rgba(color) => {
+                // 不透明时用紧凑 hex（#rrggbb），半透明用 rgba 且 alpha 去掉多余零
+                if (color.alpha - 1.0).abs() < f32::EPSILON {
+                    format!("#{:02x}{:02x}{:02x}", color.red, color.green, color.blue)
+                } else {
+                    let alpha = format!("{:.3}", color.alpha.clamp(0.0, 1.0));
+                    let alpha = alpha.trim_end_matches('0').trim_end_matches('.');
+                    format!("rgba({},{},{},{})", color.red, color.green, color.blue, alpha)
+                }
+            }
             Self::Var(var) => var.clone(),
         }
     }
@@ -1475,7 +1481,7 @@ mod tests {
         );
 
         assert!(html.contains(
-            "style=\"color: rgba(0,0,255,1.000); background-color: rgba(255,255,0,1.000); font-size: 120%;\""
+            "style=\"color: #0000ff; background-color: #ffff00; font-size: 120%;\""
         ));
         assert!(!html.contains("background-image"));
     }

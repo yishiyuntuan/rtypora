@@ -537,6 +537,10 @@ pub struct BlockRecord {
     pub table: Option<TableData>,
     pub html: Option<HtmlDocument>,
     pub raw_fallback: Option<String>,
+    /// 有序列表项的源标记数字（仅 NumberedListItem）：作为连续组的起始序号，
+    /// 序列化/渲染均以其为组起点递增——源序号与渲染序号保持一致（源即所见）
+    #[serde(default)]
+    pub list_start: Option<usize>,
 }
 
 impl BlockRecord {
@@ -548,6 +552,7 @@ impl BlockRecord {
             table: None,
             html: None,
             raw_fallback: None,
+            list_start: None,
         };
         record.sync_raw_fallback();
         record
@@ -592,6 +597,7 @@ impl BlockRecord {
             table: None,
             html: Some(document),
             raw_fallback: Some(markdown),
+            list_start: None,
         }
     }
 
@@ -665,7 +671,8 @@ impl BlockRecord {
                 &format!("{indentation}      "),
             ),
             BlockKind::NumberedListItem => {
-                let ordinal = list_ordinal.unwrap_or(1);
+                // 序号：调用方计算值 > 源标记数字（list_start）> 1
+                let ordinal = list_ordinal.or(self.list_start).unwrap_or(1);
                 prefixed_multiline(
                     &title_markdown,
                     &format!("{indentation}{ordinal}. "),

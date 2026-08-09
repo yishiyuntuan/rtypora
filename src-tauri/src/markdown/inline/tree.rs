@@ -833,7 +833,7 @@ fn serialize_fragment_run_markdown_with_offset_map(
                     &mut output,
                     &mut markdown_to_visible,
                     visible_cursor,
-                    "</font>",
+                    &html_style_close_marker(&current_html_style),
                 );
             }
             if let Some(style) = fragment.html_style.clone() {
@@ -891,7 +891,7 @@ fn serialize_fragment_run_markdown_with_offset_map(
             &mut output,
             &mut markdown_to_visible,
             visible_cursor,
-            "</font>",
+            &html_style_close_marker(&current_html_style),
         );
     }
 
@@ -927,12 +927,13 @@ fn identity_text_with_offset_map(text: &str) -> InlineMarkdownOffsetMap {
     }
 }
 
-// 行内 HTML 样式序列化为 <font> 标签（保持用户源码中的 font 形态，不改为 span）：
+// 行内 HTML 样式序列化：标签名按用户源码原样回写（font 保持 font、span 保持 span）；
 // 文字颜色 → color 属性（不透明用 hex），背景色/字号 → style 属性
 fn html_style_open_marker(style: HtmlInlineStyle) -> Option<String> {
     if style.is_empty() {
         return None;
     }
+    let tag = style.tag.clone().unwrap_or_else(|| "font".to_string());
     let mut attrs = Vec::new();
     if let Some(color) = style.color {
         attrs.push(format!("color=\"{}\"", escape_html_attr(&color.to_font_attr())));
@@ -947,7 +948,16 @@ fn html_style_open_marker(style: HtmlInlineStyle) -> Option<String> {
     if !css.is_empty() {
         attrs.push(format!("style=\"{};\"", escape_html_attr(&css.join("; "))));
     }
-    Some(format!("<font {}>", attrs.join(" ")))
+    Some(format!("<{tag} {}>", attrs.join(" ")))
+}
+
+/// 当前样式对应的闭合标签（与开启标签同名）
+fn html_style_close_marker(style: &Option<HtmlInlineStyle>) -> String {
+    let tag = style
+        .as_ref()
+        .and_then(|s| s.tag.clone())
+        .unwrap_or_else(|| "font".to_string());
+    format!("</{tag}>")
 }
 
 fn escape_html_attr(value: &str) -> String {
@@ -2291,7 +2301,9 @@ fn inline_html_style(tag: &InlineHtmlTag) -> Option<HtmlInlineStyle> {
         raw_source: String::new(),
         source_range: 0..0,
     };
-    let style = style_for_node(&node);
+    let mut style = style_for_node(&node);
+    // 保留原始标签名（font/span 原样往返，不做改写）
+    style.tag = Some(tag.name.clone());
     (!style.is_empty()).then_some(style)
 }
 
@@ -2309,6 +2321,9 @@ fn merge_html_styles(
         }
         if child.font_size.is_some() {
             merged.font_size = child.font_size;
+        }
+        if child.tag.is_some() {
+            merged.tag = child.tag;
         }
     }
 
@@ -3955,7 +3970,7 @@ mod tests {
         assert_eq!(cache.html_style_at(0), None);
         assert_eq!(
             tree.serialize_markdown(),
-            "留意<span style=\"color: rgba(0,0,255,1.000);\">磁盘预留空间、系统环境变量</span>等问题"
+            "留意<span style=\"color: #0000ff;\">磁盘预留空间、系统环境变量</span>等问题"
         );
     }
 
