@@ -99,14 +99,22 @@ function openPrefsColumn(pageId) {
         <!-- 左侧深色菜单列 -->
         <div class="menu-sidebar">
           <div class="menu-header">
-            <span class="menu-title" data-tauri-drag-region>菜单</span>
-            <span class="menu-back" title="返回" @click="emit('close')">❮ 返回</span>
+            <span class="menu-title" data-tauri-drag-region>
+              <span class="hb-icon" aria-hidden="true"><span></span><span></span><span></span></span>
+              菜单
+            </span>
+            <span class="menu-back" title="返回" @click="emit('close')">
+              <svg viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 8H4M8.5 3.5L4 8l4.5 4.5" />
+              </svg>
+              返回
+            </span>
           </div>
           <div
             v-for="item in menuItems"
             :key="item.action"
             class="menu-item"
-            :class="{ active: item.kind === 'content' && selected === item.action }"
+            :class="[{ active: item.kind === 'content' && selected === item.action }, `mi-${item.action}`]"
             @click="onItem(item)"
           >
             <span class="menu-item-icon" :style="{ color: item.iconColor }" v-html="item.icon"></span>
@@ -228,41 +236,95 @@ function openPrefsColumn(pageId) {
   gap: 12px;
   padding: 18px 20px 10px;
 }
-/* 默认显示「菜单」标题；悬停左上角区域时淡出标题、淡入「❮ 返回」（原位交叉切换，无布局跳动） */
+/* 默认显示 汉堡图标+「菜单」标题；悬停左上角区域时：
+   标题左滑淡出（汉堡条逐根收拢）→「← 返回」错峰右滑淡入（箭头描边自绘），
+   两组动画首尾衔接（0.16s 退场 / 0.22s+60ms 延迟进场），原位交叉无布局跳动 */
 .menu-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   font-size: 17px;
   font-weight: 600;
   color: var(--t-text-default);
   letter-spacing: 0.5px;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.16s ease-in, transform 0.16s ease-in;
+}
+.menu-title .hb-icon {
+  color: #3e69d7;
+}
+/* 汉堡条：悬停收拢（逐根错峰），移出还原 */
+.menu-title .hb-icon > span {
+  transition: transform 0.16s ease-in, opacity 0.16s ease-in;
+}
+.menu-header:hover .menu-title .hb-icon > span:nth-child(1),
+.menu-drag-top:hover ~ .menu-sidebar .menu-title .hb-icon > span:nth-child(1) {
+  transform: scaleX(0.25);
+  opacity: 0.4;
+}
+.menu-header:hover .menu-title .hb-icon > span:nth-child(2),
+.menu-drag-top:hover ~ .menu-sidebar .menu-title .hb-icon > span:nth-child(2) {
+  transform: scaleX(0.25);
+  opacity: 0.4;
+  transition-delay: 0.03s;
+}
+.menu-header:hover .menu-title .hb-icon > span:nth-child(3),
+.menu-drag-top:hover ~ .menu-sidebar .menu-title .hb-icon > span:nth-child(3) {
+  transform: scaleX(0.25);
+  opacity: 0.4;
+  transition-delay: 0.06s;
 }
 .menu-back {
   position: absolute;
+  /* 起点与菜单标题同一左缘；下移 4px 使箭头与标题（汉堡+菜单）垂直中线对齐 */
   left: 20px;
-  top: 50%;
-  transform: translateY(-50%);
+  top: calc(50% + 4px);
+  transform: translateY(-50%) translateX(12px);
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   cursor: pointer;
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 600;
-  padding: 4px 10px;
+  padding: 4px 10px 4px 6px;
   border-radius: 5px;
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition:
+    opacity 0.22s ease-out 0.06s,
+    transform 0.24s cubic-bezier(0.2, 0.9, 0.3, 1.15) 0.06s,
+    background 0.12s ease;
+}
+.menu-back svg {
+  width: 15px;
+  height: 15px;
+  display: block;
+  color: #3e69d7;
+}
+/* 返回箭头：进场时描边自绘（画出来的感觉）；路径全长 ≈22.7，dasharray 取 24 */
+.menu-back svg path {
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  transition: stroke-dashoffset 0.26s ease-out 0.1s;
+}
+.menu-header:hover .menu-back svg path,
+.menu-drag-top:hover ~ .menu-sidebar .menu-back svg path {
+  stroke-dashoffset: 0;
 }
 .menu-header:hover .menu-title,
 .menu-drag-top:hover ~ .menu-sidebar .menu-title {
   opacity: 0;
+  transform: translateX(-10px) scale(0.95);
 }
 .menu-header:hover .menu-back,
 .menu-drag-top:hover ~ .menu-sidebar .menu-back,
 .menu-back:focus-visible {
   opacity: 1;
+  transform: translateY(-50%) translateX(0);
 }
-.menu-back:hover {
+/* 返回键：滑过箭头向左一探（transform 须保留垂直居中分量；
+   选择器优先级与上方显现规则持平且位置靠后，悬停时胜出） */
+.menu-header .menu-back:hover {
   background: var(--t-status-bar-button-hover);
+  transform: translateY(-50%) translateX(-3px);
 }
 .menu-item {
   display: flex;
@@ -290,6 +352,38 @@ function openPrefsColumn(pageId) {
 .menu-item.active {
   background: var(--t-status-bar-button-hover);
   border-left-color: var(--t-tab-indicator);
+}
+/* 菜单导航项滑过动画：整行缩进右移（指示条仍钉在左缘）+ 图标弹跳；
+   逐图标细节见下方 mi-* 规则 */
+.menu-item {
+  transition: background 0.15s ease, padding-left 0.2s cubic-bezier(0.25, 0.8, 0.3, 1.15);
+}
+.menu-item-icon {
+  transition: transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.45);
+}
+.menu-item:hover {
+  padding-left: 27px;
+}
+.menu-item:hover .menu-item-icon {
+  transform: scale(1.22) rotate(-7deg);
+}
+/* 逐图标细节：齿轮旋转、关闭旋成 ×、保存下沉、打开上挑 */
+.menu-item.mi-prefs:hover .menu-item-icon {
+  transform: rotate(55deg) scale(1.15);
+}
+.menu-item.mi-close:hover .menu-item-icon {
+  transform: rotate(90deg) scale(1.15);
+}
+.menu-item.mi-save:hover .menu-item-icon,
+.menu-item.mi-save-as:hover .menu-item-icon {
+  transform: translateY(1.5px) scale(1.15);
+}
+.menu-item.mi-open:hover .menu-item-icon,
+.menu-item.mi-new:hover .menu-item-icon,
+.menu-item.mi-export:hover .menu-item-icon,
+.menu-item.mi-print:hover .menu-item-icon,
+.menu-item.mi-about:hover .menu-item-icon {
+  transform: translateY(-1.5px) scale(1.18);
 }
 /* 右侧内容面板（主题色）；最小宽度保证可用，避免被第三列挤没 */
 .menu-content {
@@ -353,13 +447,27 @@ function openPrefsColumn(pageId) {
   font-size: 14px;
   cursor: pointer;
   text-align: left;
-  transition: background 0.1s;
+  transition: background 0.12s ease, transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
 }
+/* 卡片按钮：滑过浮起 + 投影 + 边框点亮 + 图标弹跳 */
 .menu-btn:hover {
   background: var(--t-status-bar-button-hover);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgb(0 0 0 / 0.18);
+  border-color: color-mix(in srgb, var(--t-tab-indicator) 40%, transparent);
+}
+.menu-btn:active {
+  transform: translateY(0);
+  box-shadow: none;
+  transition-duration: 0.06s;
 }
 .menu-btn-icon {
   font-size: 15px;
+  display: inline-block;
+  transition: transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.5);
+}
+.menu-btn:hover .menu-btn-icon {
+  transform: scale(1.3) rotate(-10deg);
 }
 .menu-filter-row {
   margin-bottom: 10px;

@@ -36,6 +36,7 @@ import {
   paragraphDtoFromTree,
   demoteEditableToParagraph,
   insertInlineWrapper,
+  convertCalloutToRawEdit,
   plainText,
 } from '../utils/wysiwyg.js';
 import { formatShortcut } from '../utils/platform.js';
@@ -737,6 +738,7 @@ async function deleteCurrentTableBlock() {
     content.value = content.value.slice(0, removeStart) + content.value.slice(removeEnd);
     blocks.value.splice(index, 1);
     shiftBlockOffsets(index, -removedLen);
+    renumberOrderedMarkers(index);
     publishBlocks();
     const prev = blocks.value[index - 1];
     suppressBlurCommit = true;
@@ -957,7 +959,10 @@ function onContextMenu(e) {
     const blockEl = e.target.closest?.('[data-block-id]');
     const block = blocks.value.find((b) => b.id === blockEl?.getAttribute('data-block-id'));
     if (!block) return;
-    startEdit(block);
+    // 有非空选区时 startEdit 会拒入编辑（避免替换 DOM 销毁选区）；此处选区已按
+    // 纯文本偏移暂存（mousedown/contextmenu 时），直接进入编辑，动作应用时按偏移重建选区
+    if (editingId.value === null) editingId.value = block.id;
+    else startEdit(block);
   }
   // 此处仅尝试覆盖暂存：若 WKWebView 已在右键 mousedown 后塌陷选区，
   // 本次 stash 无效，保留 mousedown 时的暂存（不得先行清空）
@@ -971,15 +976,66 @@ function onContextMenu(e) {
 // 以时间戳防陈旧（仅菜单打开后短时间内的动作才允许恢复）
 let ctxSavedRange = null;
 
+// 暂存/重建选区时要跳过的非内容文本（渲染态列表标记、代码块语言角标、callout 标签等；
+// 可编辑容器内无这些元素或为 contenteditable=false 的非内容标签，两侧按同一规则跳过保证偏移一致）
+const CTX_SKIP_SEL = '.md-marker, .md-code-lang-badge, .md-callout-label';
+
+// 子树内 (node, offset) 的纯文本偏移（Range 探针 - 被跳过子树的文本长度）
+function domTextOffset(root, node, offset) {
+  const probe = document.createRange();
+  probe.selectNodeContents(root);
+  probe.setEnd(node, offset);
+  let len = probe.toString().length;
+  for (const skip of root.querySelectorAll(CTX_SKIP_SEL)) {
+    if (probe.intersectsNode(skip)) len -= skip.textContent.length;
+  }
+  return len;
+}
+
+// 纯文本偏移 → DOM Range（在可编辑容器内按同一跳过规则逐文本节点累计）
+function rangeFromTextOffsets(root, start, end) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (n) =>
+    n.parentElement?.closest(CTX_SKIP_SEL) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT);
+  let acc = 0;
+  let s = null;
+  let e = null;
+  let cur;
+  while ((cur = walker.nextNode())) {
+    const len = cur.textContent.length;
+    if (!s && start <= acc + len) s = { node: cur, offset: start - acc };
+    if (!e && end <= acc + len) {
+      e = { node: cur, offset: end - acc };
+      break;
+    }
+    acc += len;
+  }
+  if (!s || !e) return null;
+  const r = document.createRange();
+  r.setStart(s.node, s.offset);
+  r.setEnd(e.node, e.offset);
+  return r;
+}
+
 function stashCtxSelection() {
   const el = currentEditable();
-  if (!el) return;
   const sel = window.getSelection();
   if (!sel.rangeCount) return;
   const r = sel.getRangeAt(0);
-  if (!r.collapsed && el.contains(r.startContainer)) {
+  if (r.collapsed) return;
+  // 编辑态：DOM 结构在提交前保持稳定，直接暂存 Range
+  if (el && el.contains(r.startContainer)) {
     ctxSavedRange = { range: r.cloneRange(), at: Date.now() };
+    return;
   }
+  // 非编辑态（无光标直接框选渲染态文字）：渲染 DOM 将随进入编辑被替换，
+  // 选区按「块内纯文本偏移」暂存（渲染态与编辑态行内文本一致——同一 InlineTextTree 数据源）
+  const anchorEl = r.startContainer.nodeType === Node.ELEMENT_NODE ? r.startContainer : r.startContainer.parentElement;
+  const row = anchorEl?.closest('[data-block-id]');
+  if (!row || !row.contains(r.endContainer)) return; // 跨块选区不在此转移
+  const start = domTextOffset(row, r.startContainer, r.startOffset);
+  const end = domTextOffset(row, r.endContainer, r.endOffset);
+  if (end <= start) return;
+  ctxSavedRange = { blockId: row.getAttribute('data-block-id'), start, end, at: Date.now() };
 }
 
 // 编辑区 mousedown：右键（button 2）按下时抢先暂存选区
@@ -992,19 +1048,44 @@ function restoreCtxSelection(el) {
   const saved = ctxSavedRange;
   if (!saved || !el) return;
   if (Date.now() - saved.at > 5000) return; // 陈旧暂存不恢复
-  const r = saved.range;
-  if (!r.startContainer.isConnected || !el.contains(r.startContainer)) return;
   const sel = window.getSelection();
   if (sel.rangeCount) {
     const cur = sel.getRangeAt(0);
     if (!cur.collapsed && el.contains(cur.startContainer)) return;
   }
+  // 编辑态暂存：DOM Range 直接恢复
+  if (saved.range) {
+    const r = saved.range;
+    if (!r.startContainer.isConnected || !el.contains(r.startContainer)) return;
+    sel.removeAllRanges();
+    sel.addRange(r);
+    return;
+  }
+  // 渲染态暂存（纯文本偏移）：块须与当前编辑块一致，在可编辑容器内重建 Range
+  if (saved.blockId && saved.blockId !== editingId.value) return;
+  const r = rangeFromTextOffsets(el, saved.start, saved.end);
+  if (!r) return;
   sel.removeAllRanges();
   sel.addRange(r);
 }
 
 function closeCtxMenu() {
   ctxMenu.value = null;
+}
+
+// 右键进入编辑携带的渲染态框选：可编辑容器挂载后立即按暂存的纯文本偏移重建选区，
+// 保持高亮视觉连续（否则第一次右键时选区高亮随 DOM 替换消失）
+function restoreCtxSelectionOnMount(el) {
+  const saved = ctxSavedRange;
+  if (!saved || saved.range || !saved.blockId) return false;
+  if (saved.blockId !== editingId.value) return false;
+  if (Date.now() - saved.at > 5000) return false;
+  const r = rangeFromTextOffsets(el, saved.start, saved.end);
+  if (!r) return false;
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+  return true;
 }
 
 // 段落子菜单勾选态（heading 块映射为 h1-h6）
@@ -1721,6 +1802,75 @@ function shiftBlockOffsets(fromIndex, delta) {
   }
 }
 
+// 有序列表中间插入/删除项后：把后续同组项的源标记序号改写为与显示序号一致（源即所见），
+// 否则保存/源码模式下后续项仍是旧序号。编号规则与 numberedOrdinals / Rust 序列化器逐字一致：
+// 组首项用源标记数字（缺省 1），组内递增；空行后遇源标记 1. 视为新列表重启。
+// 只改写 fromIndex 起序号与标记不符的项；加载/全量重解析路径不要调用（原文须原样往返）。
+function renumberOrderedMarkers(fromIndex) {
+  const bs = blocks.value;
+  if (!bs.length) return;
+  const isNum = (b) => b?.type === 'numberedListItem';
+  const isGap = (b) => b?.type === 'paragraph' && !plainText(b.title).trim() && !b.image;
+  // 回退到组首（允许跨空段落；遇实质内容块停止）
+  let head = -1;
+  for (let k = Math.min(fromIndex, bs.length - 1); k >= 0; k--) {
+    if (isNum(bs[k])) head = k;
+    else if (!isGap(bs[k])) break;
+  }
+  if (head < 0) return;
+  // 前推整组，收集 fromIndex 起序号与源标记不符的项（标记位置基于当前原文偏移）
+  const sites = []; // { index, pos, oldLen, delta, expect, newText }
+  let n = 0;
+  let gap = false;
+  for (let k = head; k < bs.length; k++) {
+    const b = bs[k];
+    if (isNum(b)) {
+      const expect = n === 0 ? (b.listStart ?? 1) : gap && b.listStart === 1 ? 1 : n + 1;
+      if (k >= fromIndex && (b.listStart ?? 1) !== expect && b.start != null) {
+        const m = /^[ \t]{0,3}(\d+)(?=[.)])/.exec(content.value.slice(b.start, b.end));
+        if (!m) return; // 标记定位失败：保守放弃本次改写
+        const newText = String(expect);
+        sites.push({
+          index: k,
+          pos: b.start + (m[0].length - m[1].length),
+          oldLen: m[1].length,
+          delta: newText.length - m[1].length,
+          expect,
+          newText,
+        });
+      }
+      n = expect;
+      gap = false;
+    } else if (isGap(b)) {
+      gap = true;
+    } else {
+      break;
+    }
+  }
+  if (!sites.length) return;
+  // 从后往前改文本（高位改动不影响未处理的低位偏移），再单趟平移后续块偏移
+  for (let s = sites.length - 1; s >= 0; s--) {
+    const { pos, oldLen, newText } = sites[s];
+    content.value = content.value.slice(0, pos) + newText + content.value.slice(pos + oldLen);
+  }
+  let si = 0;
+  let acc = 0;
+  for (const b of blocks.value) {
+    if (b.start == null) continue;
+    while (si < sites.length && sites[si].pos < b.start) {
+      acc += sites[si].delta;
+      si++;
+    }
+    b.start += acc;
+    b.end += acc;
+  }
+  for (const s of sites) {
+    const b = blocks.value[s.index];
+    b.end += s.delta; // 自身标记在块区间内，上一趟未计入
+    b.listStart = s.expect;
+  }
+}
+
 // 解析片段并把相对偏移换算为锚点后的绝对偏移
 async function parseAnchoredBlocks(md, anchor) {
   const parsed = await invoke('parse_blocks_async', { markdown: md });
@@ -1750,6 +1900,7 @@ async function reparseRegion(index, oldBlock, md) {
     const delta = md.length - (oldBlock.end - oldBlock.start);
     blocks.value.splice(index, 1, ...replacements);
     shiftBlockOffsets(index + replacements.length, delta);
+    renumberOrderedMarkers(index);
     publishBlocks();
   } catch (e) {
     console.error('parse_blocks 调用失败，回退全文重解析:', e);
@@ -1840,6 +1991,8 @@ function setEditableEl(el) {
       const offset = pendingCaretOffset;
       pendingCaretOffset = null;
       placeCaretAtTextOffset(el, offset);
+    } else if (restoreCtxSelectionOnMount(el)) {
+      // 右键菜单带入的渲染态框选：选区已按暂存的纯文本偏移重建，高亮保持连续
     } else if (cursorAtStart) {
       cursorAtStart = false;
       placeCursorAtStart(el);
@@ -1906,11 +2059,22 @@ let pendingCaretOffset = null;
 // 下一次挂载把源码偏移经序列化对齐精确换算为 DOM 位置（源码 → WYSIWYG 切换）
 let pendingPreciseRawOffset = null;
 
+// 选区是否横跨多个块行（跨块拖选）。同块内的选区随点击自然塌陷，不在此列
+function selectionSpansMultipleBlocks() {
+  const sel = window.getSelection();
+  if (!sel || sel.isCollapsed) return false;
+  const rowOf = (n) =>
+    (n?.nodeType === Node.ELEMENT_NODE ? n : n?.parentElement)?.closest?.('[data-block-id]');
+  const a = rowOf(sel.anchorNode);
+  const f = rowOf(sel.focusNode);
+  return !!(a && f && a !== f);
+}
+
 function startEdit(block) {
   if (syncing.value) return;
-  // 拖动形成的跨块选区非空时：不进入编辑（避免替换 DOM 销毁选区；再点一次即可编辑）
-  const sel = window.getSelection();
-  if (sel && !sel.isCollapsed) return;
+  // 拖动形成的跨块选区：不进入编辑（避免替换 DOM 销毁选区；再点一次即可编辑）。
+  // 同块选区不拦截——点击即塌陷选区并进入编辑（Typora 行为）
+  if (selectionSpansMultipleBlocks()) return;
   if (editingId.value !== null) {
     // 编辑态残留（无活动容器）时自愈，避免点不出光标
     if (!editableEl) editingId.value = null;
@@ -1930,8 +2094,7 @@ function startEdit(block) {
 
 function startAppend() {
   if (syncing.value) return;
-  const sel = window.getSelection();
-  if (sel && !sel.isCollapsed) return;
+  if (selectionSpansMultipleBlocks()) return;
   if (editingId.value !== null) {
     if (!editableEl) editingId.value = null;
     else {
@@ -1981,6 +2144,7 @@ async function commitEdit() {
         // 增量：只解析追加的片段并挂到块树末尾
         const parsed = await parseAnchoredBlocks(text, anchor);
         blocks.value.push(...parsed);
+        renumberOrderedMarkers(blocks.value.length - parsed.length);
         publishBlocks();
       }
     } else {
@@ -2077,6 +2241,7 @@ async function splitAndCommit() {
     const delta = combined.length - (oldBlock.end - oldBlock.start);
     blocks.value.splice(index, isAppend ? 0 : 1, ...replacements);
     shiftBlockOffsets(index + replacements.length, delta);
+    renumberOrderedMarkers(index);
     publishBlocks();
 
     // 进入拆分出的新块编辑，光标在内容开头；抑制换块卸载触发的 blur 误提交
@@ -2164,6 +2329,7 @@ function removePrevSeparator(prevIndex) {
   content.value = content.value.slice(0, removeStart) + content.value.slice(removeEnd);
   blocks.value.splice(prevIndex, 1);
   shiftBlockOffsets(prevIndex, -removedLen);
+  renumberOrderedMarkers(prevIndex);
   publishBlocks();
 }
 
@@ -2191,6 +2357,7 @@ async function mergeIntoPrevBlock(dto, index, isAppend) {
         b.end += delta;
       }
     }
+    renumberOrderedMarkers(index - 1);
     publishBlocks();
     const merged = replacements[0];
     suppressBlurCommit = true;
@@ -2242,6 +2409,7 @@ async function deleteEmptyBlockAndFocusPrev() {
         content.value = content.value.slice(0, removeStart) + content.value.slice(removeEnd);
         blocks.value.splice(index, 1);
         shiftBlockOffsets(index, -removedLen);
+        renumberOrderedMarkers(index);
         publishBlocks();
         const prev = blocks.value[index - 1];
         if (prev) focusId = prev.id;
@@ -2299,6 +2467,7 @@ async function commitCodeAndNewBlock() {
     const delta = combined.length - (oldBlock.end - oldBlock.start);
     blocks.value.splice(index, isAppend ? 0 : 1, ...replacements);
     shiftBlockOffsets(index + replacements.length, delta);
+    renumberOrderedMarkers(index);
     publishBlocks();
 
     // 最后一个替换块即尾部空段落，进入编辑；抑制换块 blur 误提交
@@ -2498,6 +2667,7 @@ async function pasteMarkdownAtCaret(text) {
     const delta = combined.length - (oldBlock.end - oldBlock.start);
     blocks.value.splice(index, isAppend ? 0 : 1, ...replacements);
     shiftBlockOffsets(index + replacements.length, delta);
+    renumberOrderedMarkers(index);
     publishBlocks();
 
     // 光标定位：粘贴内容之后（after 块开头；无 after 则末块末尾）。
@@ -2516,6 +2686,21 @@ async function pasteMarkdownAtCaret(text) {
   } finally {
     syncing.value = false;
   }
+}
+
+// 编辑容器双击：callout 变体标签双击 → 转原始 Markdown 编辑（可改 [!TYPE] 切换变体）
+async function onEditableDblclick(e) {
+  if (!e.target.closest?.('.md-callout-label')) return;
+  const el = currentEditable();
+  if (!el) return;
+  e.preventDefault();
+  suppressBlurCommit = true;
+  try {
+    await convertCalloutToRawEdit(el);
+  } finally {
+    suppressBlurCommit = false;
+  }
+  el.focus({ preventScroll: true });
 }
 
 function onEditableKeydown(e) {
@@ -2825,9 +3010,17 @@ function onEditableKeydown(e) {
       return;
     }
     // 光标在块开头：样式块降级为段落，段落并入上一块（Typora 式退格）；
-    // 其余位置交给浏览器原生删除
+    // 容器块（callout/quote）首行是空占位段且其后还有内容时，仅删除该空行（不做块级降级/合并）
     if (isCaretAtStart(editableEl)) {
       e.preventDefault();
+      const firstBlock = editableEl.querySelector('p,h1,h2,h3,h4,h5,h6,li,pre,table,blockquote,ul,ol');
+      if (firstBlock?.tagName === 'P' && firstBlock.textContent.trim() === '' && firstBlock.nextElementSibling) {
+        const parent = firstBlock.parentElement;
+        firstBlock.remove();
+        const next = parent?.querySelector('p,h1,h2,h3,h4,h5,h6,li,pre,table,blockquote,ul,ol');
+        if (next) placeCursorAtStart(next);
+        return;
+      }
       backspaceAtBlockStart();
     }
   } else if (e.key === 'Tab') {
@@ -3749,6 +3942,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
             @input="onEditableInput"
             @paste="onEditablePaste"
             @keydown="onEditableKeydown"
+            @dblclick="onEditableDblclick"
             @blur="onEditableBlur"
           ></div>
         </template>

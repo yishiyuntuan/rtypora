@@ -366,7 +366,7 @@ function alignStyle(alignments, index) {
   </blockquote>
 
   <div v-else-if="block.type === 'callout'" class="my-2 border-l-4 p-3" :class="calloutClass">
-    <div class="mb-1 text-[12px] font-semibold uppercase tracking-wide" :style="calloutLabelStyle">
+    <div class="md-callout-label mb-1 text-[12px] font-semibold uppercase tracking-wide" :style="calloutLabelStyle">
       {{ calloutLabels[block.variant] || 'Note' }}
     </div>
     <p v-if="plainText(block.title)" class="my-1 whitespace-pre-wrap">

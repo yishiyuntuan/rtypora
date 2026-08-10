@@ -471,9 +471,9 @@ const outlineItems = computed(() => {
         <!-- 底部工具栏（与状态栏同高 h-7，图标文字垂直居中；偏好开启时自动隐藏，悬停侧栏显现） -->
         <div class="side-toolbar relative flex h-7 items-center justify-between border-t border-(--t-table-border) px-2">
           <template v-if="workspaceDir">
-            <div class="t-btn flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1 text-[14px] leading-none" style="color: #03b736" title="在当前文件夹新建文件" @click="startNaming">+</div>
+            <div class="t-btn sb-new flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1 text-[14px] leading-none" style="color: #03b736" title="在当前文件夹新建文件" @click="startNaming">+</div>
             <!-- 刷新：软刷新（保留目录展开状态；窗口聚焦也会自动刷新） -->
-            <div class="t-btn flex shrink-0 cursor-pointer items-center rounded px-1 py-1" title="刷新目录" @click="softRefreshTree">
+            <div class="t-btn sb-refresh flex shrink-0 cursor-pointer items-center rounded px-1 py-1" title="刷新目录" @click="softRefreshTree">
               <svg viewBox="0 0 16 16" class="size-[13px]" aria-hidden="true" style="color: #2f9dbb">
                 <path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7M13.3 2.4v3h-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
               </svg>

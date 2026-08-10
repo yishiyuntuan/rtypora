@@ -158,7 +158,8 @@ export function blockToHtml(block, rawSource, depth = 0, ordinal = 1) {
   const lstClass = `lst-d${Math.min(depth + 1, 3)}`;
   switch (block.type) {
     case 'paragraph':
-      return `<p class="blk-paragraph ${P_CLASS}">${inlineToHtml(block.title)}</p>`;
+      // 空段落补 <br> 占位行高（容器内的空行因此可见、可点入、可删除）
+      return `<p class="blk-paragraph ${P_CLASS}">${inlineToHtml(block.title) || '<br>'}</p>`;
     case 'heading':
       return `<h${block.level} class="blk-heading whitespace-pre-wrap ${headingClasses[block.level] || 'my-2'}">${inlineToHtml(block.title)}</h${block.level}>`;
     case 'bulletedListItem':
@@ -179,6 +180,18 @@ export function blockToHtml(block, rawSource, depth = 0, ordinal = 1) {
         : '';
       const ords = numberedOrdinals(block.children);
       return `<blockquote class="blk-quote ${QUOTE_CLASS}">${title}${(block.children || []).map((c) => blockToHtml(c, undefined, depth, ords.get(c.id) || 1)).join('')}</blockquote>`;
+    }
+    case 'callout': {
+      // 富文本编辑（与 quote 同构）：标签不可编辑且提交时不计入内容（按类名剔除）；
+      // variant 写回元素 data-variant，提交时据此还原 callout DTO
+      const variant = block.variant || 'note';
+      const title = plainText(block.title)
+        ? `<p class="${P_CLASS}">${inlineToHtml(block.title)}</p>`
+        : `<p class="${P_CLASS}"><br></p>`;
+      const ords = numberedOrdinals(block.children);
+      const body = (block.children || []).map((c) => blockToHtml(c, undefined, depth, ords.get(c.id) || 1)).join('');
+      const label = `<div class="md-callout-label" contenteditable="false">${escapeHtml(variant.toUpperCase())}</div>`;
+      return `<div class="blk-callout callout-${escapeHtml(variant)} my-2 border-l-4 p-3" data-variant="${escapeHtml(variant)}">${label}${title}${body}</div>`;
     }
     case 'table': {
       // 表格富编辑：thead/tbody 单元格就地编辑（对齐信息写在单元格 textAlign，
@@ -203,7 +216,6 @@ export function blockToHtml(block, rawSource, depth = 0, ordinal = 1) {
       return `<pre class="${PRE_CLASS} blk-code-block relative" data-language="${escapeHtml(block.language || '')}"><input class="md-code-lang-input" data-lang-input contenteditable="false" value="${escapeHtml(block.language || '')}" placeholder="text" spellcheck="false" /><code>${escapeHtml(plainText(block.title))}</code></pre>`;
     // 原子/保留类块：编辑原始 Markdown 切片，保证不丢内容
     case 'separator':
-    case 'callout':
     case 'footnoteDefinition':
     case 'mathBlock':
     case 'mermaidBlock':
@@ -387,6 +399,24 @@ function trimEdgeNewlines(fragments) {
 
 function elementToBlocks(el) {
   const tag = el.tagName;
+  // 警告框（callout）富文本提交：标签行剔除（非内容），variant 从元素属性还原；
+  // 首段为 title、其余为嵌套子块（与 quote 同构）
+  if (tag === 'DIV' && el.classList.contains('blk-callout')) {
+    const variant = el.getAttribute('data-variant') || 'note';
+    const holder = document.createElement('div');
+    for (const n of el.childNodes) {
+      if (n.nodeType === Node.ELEMENT_NODE && n.classList.contains('md-callout-label')) continue;
+      holder.append(n.cloneNode(true));
+    }
+    const blocks = domChildrenToBlocks(holder);
+    let title = makeTree([]);
+    let children = blocks;
+    if (blocks[0]?.type === 'paragraph') {
+      title = blocks[0].title;
+      children = blocks.slice(1);
+    }
+    return [makeBlock({ type: 'callout', variant }, { title, children })];
+  }
   if (/^H[1-6]$/.test(tag)) {
     const fragments = trimEdgeNewlines(domToInlines(el));
     // 标题删空后降级为段落（与 Typora 行为一致，不再保留空标题渲染）
@@ -543,6 +573,23 @@ export async function convertSectionToHtmlBlock(container) {
   container.innerHTML = '';
   container.append(pre);
   placeCaretAtTextOffset(pre, tpl.caretOffset);
+  return true;
+}
+
+// 双击 callout 变体标签：当前富文本编辑内容序列化回 Markdown（含未提交修改），
+// 切换为原文编辑（可改 [!TYPE] 标记切换变体等；提交按 rawMarkdown 原文落源，
+// 重解析仍还原为 callout 块）。光标落在 [! 标记处便于直接改类型。
+export async function convertCalloutToRawEdit(container) {
+  const md = await invoke('serialize_markdown', { blocks: domToBlockDtos(container) }).catch(() => null);
+  if (md == null) return false;
+  const pre = document.createElement('pre');
+  pre.className = PRE_CLASS;
+  pre.setAttribute('data-raw', '');
+  pre.textContent = md.trim();
+  container.innerHTML = '';
+  container.append(pre);
+  const markerAt = pre.textContent.indexOf('[!');
+  placeCaretAtTextOffset(pre, markerAt >= 0 ? markerAt + 2 : 0);
   return true;
 }
 

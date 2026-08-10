@@ -147,6 +147,15 @@ export default {
         borderRadius: '8px',
         'tbody tr:nth-child(even) td': { background: 'var(--t-table-zebra-bg)' },
       },
+      // 图表块（Mermaid/PlantUML）：鼠标滑过浮起动画；亮色主题复用本 blocks 表
+      mermaidBlock: {
+        transition: 'transform 0.25s ease, box-shadow 0.25s ease',
+        ':hover': { transform: 'translateY(-2px)', boxShadow: '0 8px 24px #00000059' },
+      },
+      plantumlBlock: {
+        transition: 'transform 0.25s ease, box-shadow 0.25s ease',
+        ':hover': { transform: 'translateY(-2px)', boxShadow: '0 8px 24px #00000059' },
+      },
       link: {
         textDecoration: 'none',
         fontWeight: 500,

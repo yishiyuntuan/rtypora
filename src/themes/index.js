@@ -102,11 +102,12 @@ function kebab(name) {
 //   "blocks": {
 //     "heading": { "h1": { "borderBottom": "2px solid" }, "letterSpacing": "0.02em" },
 //     "codeBlock": { "borderRadius": "8px", "padding": "16px" },
-//     "quote": { "background": "#00000008" }
+//     "quote": { "background": "#00000008" },
+//     "mermaidBlock": { ":hover": { "transform": "translateY(-2px)" } }
 //   }
 // 键为块类型（paragraph/heading/separator/bulletedListItem/taskListItem/numberedListItem/
 // quote/callout/footnoteDefinition/table/codeBlock/comment/htmlBlock/mathBlock/mermaidBlock/
-// rawMarkdown）；heading 的值里可再嵌 h1~h6 分级覆盖。属性名 camelCase 或 kebab 均可，
+// plantumlBlock/rawMarkdown）；heading 的值里可再嵌 h1~h6 分级覆盖。属性名 camelCase 或 kebab 均可，
 // 数值自动补 px（fontWeight/lineHeight/opacity 等无单位属性除外）。
 
 const BLOCK_SELECTORS = {
@@ -126,6 +127,7 @@ const BLOCK_SELECTORS = {
   sectionBlock: '.blk-section-block',
   mathBlock: '.blk-math-block',
   mermaidBlock: '.blk-mermaid-block',
+  plantumlBlock: '.blk-plantuml-block',
   rawMarkdown: '.blk-raw-markdown',
   // 行内选择器：定制链接/行内代码/粗斜体等行内表现
   link: 'a',

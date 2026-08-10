@@ -78,7 +78,7 @@ async function onThemeImport() {
   >
     <div class="flex h-full items-center gap-0.5 px-1">
       <div
-        class="t-btn inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
+        class="t-btn sb-toggle-side inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
         :class="{ active: sidebarVisible }"
         @click="emit('toggle-sidebar')"
       >
@@ -89,7 +89,7 @@ async function onThemeImport() {
       </div>
 
       <div
-        class="t-btn inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
+        class="t-btn sb-source inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
         :class="{ active: sourceMode }"
         @click="emit('toggle-source')"
       >
@@ -97,7 +97,7 @@ async function onThemeImport() {
       </div>
 
       <div
-        class="t-btn inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
+        class="t-btn sb-lineno inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
         :class="{ active: lineNumbersOn }"
         title="代码行号显示"
         @click="setPref('render_code_line_numbers', !lineNumbersOn)"
@@ -111,7 +111,7 @@ async function onThemeImport() {
       </div>
 
       <div
-        class="t-btn inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
+        class="t-btn sb-autosave inline-flex h-[22px] cursor-pointer items-center justify-center gap-1 rounded-md px-2.5"
         :class="{ active: autoSaveOn }"
         title="自动保存（触发方式见 菜单 → 偏好设置 → 编辑器）"
         @click="setPref('auto_save_enabled', !autoSaveOn)"

@@ -364,6 +364,21 @@
   border-radius: var(--t-callout-radius);
 }
 
+/* callout 变体标签（渲染态与编辑态共用；编辑态标签 contenteditable=false 不参与提交） */
+.md-callout-label {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+  user-select: none;
+}
+.callout-note .md-callout-label { color: var(--t-callout-note-border); }
+.callout-tip .md-callout-label { color: var(--t-callout-tip-border); }
+.callout-important .md-callout-label { color: var(--t-callout-important-border); }
+.callout-warning .md-callout-label { color: var(--t-callout-warning-border); }
+.callout-caution .md-callout-label { color: var(--t-callout-caution-border); }
+
 /* 可见注释块 */
 .t-root .md-comment {
   background: var(--t-comment-bg);
@@ -1153,4 +1168,176 @@ pre:hover .md-code-lang-input,
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
+}
+
+/* ========== 图标按钮滑过动画（通用浮起 + 逐图标细节） ==========
+   transform 不影响布局，不会推挤相邻元素；背景/颜色过渡沿用各处原有规则。 */
+/* —— 通用：悬停放大 + 浮起投影，按下回弹 —— */
+.t-statusbar .t-btn,
+.side-toolbar .t-btn,
+.md-table-btn,
+.md-code-copy,
+.md-ctx-icons button,
+.md-ctx-icon-fly > button {
+  transition: transform 0.18s cubic-bezier(0.2, 0.9, 0.3, 1.3), background 0.12s ease, color 0.12s ease, border-color 0.12s ease, filter 0.18s ease;
+}
+.t-statusbar .t-btn:hover,
+.side-toolbar .t-btn:hover,
+.md-table-btn:hover,
+.md-code-copy:hover,
+.md-ctx-icons button:hover,
+.md-ctx-icon-fly > button:hover {
+  transform: scale(1.15);
+  filter: drop-shadow(0 2px 3px rgb(0 0 0 / 0.28));
+}
+.t-statusbar .t-btn:active,
+.side-toolbar .t-btn:active,
+.md-table-btn:active,
+.md-code-copy:active,
+.md-ctx-icons button:active,
+.md-ctx-icon-fly > button:active {
+  transform: scale(0.9);
+  filter: none;
+  transition-duration: 0.06s;
+}
+
+/* —— 标题栏菜单按钮：汉堡图标（span 结构）滑过三线依次变短 ——
+   悬停：1/2/3 线错峰缩短到 50%/70%/90%（左端对齐收拢）；
+   移出：按相反顺序波浪还原（基础态的 transition-delay 决定还原次序） */
+.hb-icon {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 3px;
+  width: 14px;
+  height: 14px;
+  transition: transform 0.18s ease;
+}
+.hb-icon > span {
+  display: block;
+  width: 12px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: currentColor;
+  transform-origin: left center;
+  transition: transform 0.24s cubic-bezier(0.2, 0.9, 0.3, 1.3);
+}
+#titlebar-menu .hb-icon > span {
+  transform-origin: left center; /* 变短方向：左端固定、向右收拢 */
+}
+#titlebar-menu .hb-icon > span:nth-child(1) {
+  transition-delay: 0.12s;
+}
+#titlebar-menu .hb-icon > span:nth-child(2) {
+  transition-delay: 0.06s;
+}
+#titlebar-menu:hover .hb-icon {
+  transform: scale(1.1);
+}
+#titlebar-menu:hover .hb-icon > span:nth-child(1) {
+  transform: scaleX(0.9);
+  transition-delay: 0s;
+}
+#titlebar-menu:hover .hb-icon > span:nth-child(2) {
+  transform: scaleX(0.7);
+  transition-delay: 0.06s;
+}
+#titlebar-menu:hover .hb-icon > span:nth-child(3) {
+  transform: scaleX(0.5);
+  transition-delay: 0.12s;
+}
+
+/* —— 表格单元格边缘 + 按钮：悬停旋转成 ×（可点击撤销感） —— */
+.md-table-edge-btn {
+  transition: transform 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.4), background 0.12s ease, color 0.12s ease;
+}
+.md-table-edge-btn:hover {
+  transform: scale(1.18) rotate(90deg);
+}
+.md-table-edge-btn:active {
+  transform: scale(0.95) rotate(90deg);
+}
+
+/* —— 代码复制：两片错位分离（复制意象） —— */
+.md-code-copy svg rect,
+.md-code-copy svg path {
+  transition: transform 0.18s ease;
+}
+.md-code-copy:hover svg rect {
+  transform: translate(-1.2px, 1.2px);
+}
+.md-code-copy:hover svg path {
+  transform: translate(1.2px, -1.2px);
+}
+
+/* —— 表格删除：垃圾桶摇摆警示 —— */
+.md-table-btn.tbl-delete:hover svg {
+  animation: t-btn-wiggle 0.45s ease;
+}
+@keyframes t-btn-wiggle {
+  0%, 100% { transform: rotate(0); }
+  30% { transform: rotate(9deg); }
+  65% { transform: rotate(-7deg); }
+}
+
+/* —— 侧栏工具栏：新建 + 旋转成 ×；刷新箭头反向转半圈 —— */
+.side-toolbar .t-btn.sb-new:hover {
+  transform: scale(1.15) rotate(90deg);
+}
+.side-toolbar .t-btn.sb-refresh svg {
+  transition: transform 0.35s cubic-bezier(0.3, 0.8, 0.3, 1.2);
+}
+.side-toolbar .t-btn.sb-refresh:hover svg {
+  transform: rotate(-180deg);
+}
+
+/* —— 状态栏逐图标细节 —— */
+/* 侧栏切换：实心面板呼吸 */
+.t-btn.sb-toggle-side svg rect {
+  transition: opacity 0.2s ease;
+}
+.t-btn.sb-toggle-side:hover svg rect:first-child {
+  opacity: 0.6;
+}
+/* 源码模式 </>：字距展开呼吸 */
+.t-btn.sb-source span {
+  transition: letter-spacing 0.2s ease, transform 0.2s ease;
+}
+.t-btn.sb-source:hover span {
+  letter-spacing: 2.5px;
+  transform: scale(1.05);
+}
+/* 行号列表：横条阶梯收拢 */
+.t-btn.sb-lineno svg rect {
+  transform-box: fill-box;
+  transform-origin: left center;
+  transition: transform 0.18s ease;
+}
+.t-btn.sb-lineno:hover svg rect:nth-child(2) {
+  transform: scaleX(0.72);
+}
+.t-btn.sb-lineno:hover svg rect:nth-child(3) {
+  transform: scaleX(0.5);
+  transition-delay: 0.04s;
+}
+.t-btn.sb-lineno:hover svg rect:nth-child(4) {
+  transform: scaleX(0.78);
+  transition-delay: 0.08s;
+}
+/* 自动保存：软盘轻挑 */
+.t-btn.sb-autosave svg {
+  transition: transform 0.2s cubic-bezier(0.2, 0.9, 0.3, 1.4);
+}
+.t-btn.sb-autosave:hover svg {
+  transform: translateY(-1.5px) rotate(-8deg);
+}
+
+/* 侧栏标签：悬停时只放大图标（整体保持静止，避免版面晃动） */
+.t-tab svg {
+  display: inline-block;
+  transition: transform 0.16s ease;
+}
+.t-tab:hover svg {
+  transform: scale(1.18);
 }

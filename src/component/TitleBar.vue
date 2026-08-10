@@ -31,11 +31,7 @@ const appWindow = new Window('main');
       class="inline-flex h-full w-[46px] shrink-0 items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-(--t-status-bar-button-hover)"
       @click="emit('toggle-menu')"
     >
-      <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]" style="color: #3e69d7">
-        <line x1="2" y1="4" x2="14" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-        <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-        <line x1="2" y1="12" x2="14" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-      </svg>
+      <span class="hb-icon" aria-hidden="true" style="color: #3e69d7"><span></span><span></span><span></span></span>
     </div>
     <div class="flex-1 text-center text-xs text-inherit opacity-90 pointer-events-none" data-tauri-drag-region>
       {{ fileName ? `tauri-editor - ${fileName}` : 'tauri-editor' }}
@@ -53,11 +49,7 @@ const appWindow = new Window('main');
       class="inline-flex h-full w-[46px] items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-(--t-status-bar-button-hover)"
       @click="emit('toggle-menu')"
     >
-      <svg viewBox="0 0 16 16" aria-hidden="true" class="size-[14px]" style="color: #3e69d7">
-        <line x1="2" y1="4" x2="14" y2="4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-        <line x1="2" y1="8" x2="14" y2="8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-        <line x1="2" y1="12" x2="14" y2="12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-      </svg>
+      <span class="hb-icon" aria-hidden="true" style="color: #3e69d7"><span></span><span></span><span></span></span>
     </div>
 
     <div class="flex-1 text-left text-xs text-inherit opacity-90 pointer-events-none" data-tauri-drag-region>
