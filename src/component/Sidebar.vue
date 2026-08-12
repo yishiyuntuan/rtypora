@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { plainText } from '../utils/wysiwyg.js';
 import { getPref, prefsVersion, trafficLightsVisible } from '../utils/prefs.js';
 import { useOverlayScrollbar } from '../utils/scrollbar.js';
-import { isMac } from '../utils/platform.js';
+import { isMac, pathKey, dedupPaths } from '../utils/platform.js';
 
 // 侧边栏：「目录」（文件面板）与「大纲」（标题嵌套树）两个标签页。
 // 目录页结构：中部文件列表/树 + 底部工具栏（文件夹名操作菜单、新建文件、列表/树切换）。
@@ -196,15 +196,16 @@ async function refreshTree() {
   rebuildFolderItems();
 }
 
-// 最近使用的目录（localStorage，最多 8 条）
+// 最近使用的目录（localStorage，最多 8 条；按规范化路径键去重——同一路径的
+// 反斜杠/正斜杠形式、Windows 大小写差异不会重复入列）
 const RECENT_DIR_KEY = 'tauri-editor.recent-dirs';
-const recentDirs = ref(JSON.parse(localStorage.getItem(RECENT_DIR_KEY) || '[]'));
+const recentDirs = ref(dedupPaths(JSON.parse(localStorage.getItem(RECENT_DIR_KEY) || '[]')));
 watch(
   () => props.workspaceDir,
   (dir) => {
     refreshTree();
     if (!dir) return;
-    const list = [dir, ...recentDirs.value.filter((d) => d !== dir)].slice(0, 8);
+    const list = [dir, ...recentDirs.value.filter((d) => pathKey(d) !== pathKey(dir))].slice(0, 8);
     recentDirs.value = list;
     localStorage.setItem(RECENT_DIR_KEY, JSON.stringify(list));
   },

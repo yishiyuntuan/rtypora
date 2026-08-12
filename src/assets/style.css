@@ -379,6 +379,75 @@
 .callout-warning .md-callout-label { color: var(--t-callout-warning-border); }
 .callout-caution .md-callout-label { color: var(--t-callout-caution-border); }
 
+/* 公式/Mermaid/PlantUML 编辑实时预览：浮动面板（绝对定位于编辑块下方，不推移下文）。
+   边框/背景/阴影随主题变量；主题可经 blocks.mathPreview 覆盖（见 自定义主题.md） */
+.md-math-preview {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 25;
+  margin-top: 4px;
+  padding: 10px 14px;
+  /* 一圈明显边框：主题强调色 60% 混合（可经 blocks.mathPreview 覆盖） */
+  border: 1px solid color-mix(in srgb, var(--t-tab-indicator) 60%, transparent);
+  border-radius: 8px;
+  background: var(--t-editor-background);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+  text-align: center;
+  cursor: pointer; /* 点击面板本身隐藏预览 */
+}
+.md-math-preview svg {
+  max-width: 100%;
+  height: auto;
+}
+/* 预览开关眼睛图标（编辑块右上角；复用 md-code-copy 基础样式与滑过动画） */
+.md-math-preview-toggle {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  z-index: 26;
+}
+.md-math-preview-toggle svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+/* 链接原始标记编辑态（/插入链接）：方括号/圆括号淡灰，链接文字蓝色 */
+.md-link-mark {
+  color: var(--t-text-placeholder);
+}
+.md-link-text {
+  color: var(--t-text-link);
+}
+/* 字体模板标签（<font ...> 编辑态显示）：淡灰色，仅作显示不入内容 */
+.md-font-mark {
+  color: var(--t-text-placeholder);
+  user-select: none;
+}
+
+/* 行内样式源码显现：光标进入加粗/斜体/下划线/删除线/高亮/行内代码/链接时，
+   经 ::before/::after 显示其 Markdown 源标记（Typora 式；仅编辑态视觉标记，不提交） */
+.md-editing .md-src::before,
+.md-editing .md-src::after {
+  color: var(--t-text-placeholder);
+  font-weight: normal;
+  font-style: normal;
+  text-decoration: none;
+  background: transparent;
+  font-size: 0.85em;
+}
+.md-editing strong.md-src::before, .md-editing strong.md-src::after { content: '**'; }
+.md-editing em.md-src::before, .md-editing em.md-src::after { content: '*'; }
+.md-editing s.md-src::before, .md-editing s.md-src::after { content: '~~'; }
+.md-editing mark.md-src::before, .md-editing mark.md-src::after { content: '=='; }
+.md-editing code.md-src::before, .md-editing code.md-src::after { content: '`'; }
+.md-editing u.md-src::before { content: '<u>'; }
+.md-editing u.md-src::after { content: '</u>'; }
+.md-editing a.md-src::before { content: '['; }
+.md-editing a.md-src::after { content: '](' attr(href) ')'; }
+
 /* 可见注释块 */
 .t-root .md-comment {
   background: var(--t-comment-bg);
@@ -785,6 +854,19 @@ pre:hover .md-code-lang-input,
 .md-code-lang-input::placeholder {
   color: var(--t-text-placeholder);
   opacity: 0.6;
+}
+
+/* 编辑态代码块复制按钮（语言输入框左侧；浮现规则与输入框一致） */
+.md-code-copy-edit {
+  position: absolute;
+  top: 5px;
+  right: 94px;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.1s, color 0.1s;
+}
+pre:hover .md-code-copy-edit,
+.md-code-copy-edit:focus-visible {
+  opacity: 1;
 }
 
 /* 右键菜单（Typora 式：图标行 + 文本项 + hover 子菜单；主题变量，blocks 可定制） */

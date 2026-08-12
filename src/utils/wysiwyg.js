@@ -23,6 +23,15 @@ const P_CLASS = 'my-2 whitespace-pre-wrap';
 const INLINE_CODE_CLASS = 'md-code px-1 py-0.5 font-mono';
 const LINK_CLASS = 'underline underline-offset-2';
 const PRE_CLASS = 'md-pre my-2 overflow-x-auto rounded p-3 font-mono text-[13px]';
+
+// 编辑态代码块复制按钮（contenteditable=false、无文本节点，不参与提交；
+// 点击处理在 Editor 编辑容器 @click 委派）
+const CODE_COPY_BTN =
+  '<button type="button" class="md-code-copy md-code-copy-edit" title="复制代码" contenteditable="false">' +
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">' +
+  '<rect x="5" y="5" width="8.5" height="9" rx="1.2" />' +
+  '<path d="M10.5 5V3.5A1.5 1.5 0 009 2H4.5A1.5 1.5 0 003 3.5V11a1.5 1.5 0 001.5 1.5H5" />' +
+  '</svg></button>';
 const QUOTE_CLASS = 'my-2 border-l-4 pl-3';
 const FOOTNOTE_REF_CLASS = 'md-footnote-ref align-super text-[0.75em]';
 
@@ -158,6 +167,13 @@ export function blockToHtml(block, rawSource, depth = 0, ordinal = 1) {
   const lstClass = `lst-d${Math.min(depth + 1, 3)}`;
   switch (block.type) {
     case 'paragraph':
+      // 图片段落：原始标记编辑形态（!/括号淡灰、alt 蓝色），与 /插入图片 模板同构；
+      // data-raw 提交按原文回写（剥离 \uFEFF 哨兵）重解析为图片
+      if (block.image) {
+        const alt = escapeHtml(block.image.alt || '');
+        const src = escapeHtml(block.image.src || '');
+        return `<p class="blk-paragraph ${P_CLASS}" data-raw><span class="md-link-mark">!</span><span class="md-link-mark">[</span><span class="md-link-text">${alt}</span><span class="md-link-mark">]</span><span class="md-link-mark">(</span>${src}<span class="md-link-mark">)</span></p>`;
+      }
       // 空段落补 <br> 占位行高（容器内的空行因此可见、可点入、可删除）
       return `<p class="blk-paragraph ${P_CLASS}">${inlineToHtml(block.title) || '<br>'}</p>`;
     case 'heading':
@@ -213,7 +229,7 @@ export function blockToHtml(block, rawSource, depth = 0, ordinal = 1) {
       // 编辑态不内嵌高亮（避免 contenteditable 拆分 span），渲染态经 Rust tree-sitter 高亮；
       // 右上角语言输入框（输入同步到 data-language，提交时随块序列化；
       // contenteditable="false" 必须——否则 Chromium 下键入由编辑宿主接管，不产生 input 事件）
-      return `<pre class="${PRE_CLASS} blk-code-block relative" data-language="${escapeHtml(block.language || '')}"><input class="md-code-lang-input" data-lang-input contenteditable="false" value="${escapeHtml(block.language || '')}" placeholder="text" spellcheck="false" /><code>${escapeHtml(plainText(block.title))}</code></pre>`;
+      return `<pre class="${PRE_CLASS} blk-code-block relative" data-language="${escapeHtml(block.language || '')}"><input class="md-code-lang-input" data-lang-input contenteditable="false" value="${escapeHtml(block.language || '')}" placeholder="text" spellcheck="false" />${CODE_COPY_BTN}<code>${escapeHtml(plainText(block.title))}</code></pre>`;
     // 原子/保留类块：编辑原始 Markdown 切片，保证不丢内容
     case 'separator':
     case 'footnoteDefinition':
@@ -280,14 +296,20 @@ function makeBlock(kindFields, { title, table, rawFallback, children } = {}) {
 
 // DOM 子树 → 行内 fragments（样式标志沿元素嵌套累积）
 function domToInlines(el, style = {}, out = []) {
-  for (const node of el.childNodes) {
+  const children = [...el.childNodes];
+  for (let i = 0; i < children.length; i++) {
+    const node = children[i];
     if (node.nodeType === Node.TEXT_NODE) {
-      if (node.textContent) out.push(makeFragment(node.textContent, style));
+      // \uFEFF 是光标宿主哨兵（placeCursorAfter/exitInlineWrapperAtCaret 插入），提取时剥离
+      const text = node.textContent.replace(/\uFEFF/g, '');
+      if (text) out.push(makeFragment(text, style));
       continue;
     }
     if (node.nodeType !== Node.ELEMENT_NODE) continue;
     const tag = node.tagName;
     if (tag === 'INPUT') continue; // 任务勾选框由 checked 字段表达
+    // 字体模板的标签装饰（<font ...> 淡灰标记，仅显示用）：不入内容
+    if (tag === 'SPAN' && node.classList.contains('md-font-mark')) continue;
     if (tag === 'BR') {
       out.push(makeFragment('\n', style));
       continue;
@@ -315,6 +337,31 @@ function domToInlines(el, style = {}, out = []) {
     if (tag === 'IMG') {
       out.push(makeFragment(`![${node.getAttribute('alt') || ''}](${node.getAttribute('src') || ''})`, style));
       continue;
+    }
+    // 链接源编辑形态折叠（光标进入链接时展开为 [文字](url) 标记结构，见 Editor expandLinkAtCaret）：
+    // [ 标记 + md-link-text 文字 + ] + ( 标记 + url 文本 + ) 标记 → 链接 fragment；
+    // 结构不完整（用户删改过标记）按普通文本落入后续分支
+    if (tag === 'SPAN' && node.classList.contains('md-link-mark') && node.textContent === '[') {
+      const textEl = children[i + 1];
+      const isMark = (n, t) =>
+        n?.nodeType === Node.ELEMENT_NODE && n.classList?.contains('md-link-mark') && n.textContent === t;
+      const urlNode = children[i + 4];
+      if (
+        textEl?.nodeType === Node.ELEMENT_NODE &&
+        textEl.classList.contains('md-link-text') &&
+        isMark(children[i + 2], ']') &&
+        isMark(children[i + 3], '(') &&
+        isMark(children[i + 5], ')')
+      ) {
+        const url = (urlNode?.nodeType === Node.TEXT_NODE ? urlNode.textContent : '')
+          .replace(/\uFEFF/g, '')
+          .trim();
+        const inner = domToInlines(textEl, style, []);
+        for (const f of inner) f.link = { type: 'inline', destination: url };
+        out.push(...inner);
+        i += 5; // 跳过已消费的标记/文本节点
+        continue;
+      }
     }
     // HTML 行内样式 span（<span style>/<font> 编辑态占位）：data-html-style JSON 无损往返
     if (tag === 'SPAN' && node.hasAttribute('data-html-style')) {
@@ -426,6 +473,12 @@ function elementToBlocks(el) {
     return [makeBlock({ type: 'heading', level: Number(tag[1]) }, { title: makeTree(fragments) })];
   }
   if (tag === 'P' || tag === 'DIV') {
+    // 原文段落（/链接等不经 pre 的原文编辑）：按原文回写，交由 Rust 重解析
+    //（\uFEFF 为光标哨兵，提取时剥离）
+    if (el.hasAttribute('data-raw')) {
+      const raw = el.textContent.replace(/\uFEFF/g, '').replace(/\n+$/, '');
+      return [makeBlock({ type: 'rawMarkdown' }, { title: makeTree([makeFragment(raw)]), rawFallback: raw })];
+    }
     // 包装 div（渲染态 .md-block 等）仅含单个块级子元素且无其他文本时解包递归——
     // 粘贴本应用渲染 HTML 时保留标题/引用/表格等块类型
     if (tag === 'DIV' && el.childElementCount === 1 && isBlockElement(el.firstElementChild)) {
@@ -436,9 +489,9 @@ function elementToBlocks(el) {
     return [makeBlock({ type: 'paragraph' }, { title: makeTree(trimEdgeNewlines(domToInlines(el))) })];
   }
   if (tag === 'PRE') {
-    // 原子/保留类块按原文回写
+    // 原子/保留类块按原文回写（\uFEFF 为光标哨兵，提取时剥离）
     if (el.hasAttribute('data-raw')) {
-      const raw = el.textContent.replace(/\n+$/, '');
+      const raw = el.textContent.replace(/\uFEFF/g, '').replace(/\n+$/, '');
       return [makeBlock({ type: 'rawMarkdown' }, { title: makeTree([makeFragment(raw)]), rawFallback: raw })];
     }
     const language = el.getAttribute('data-language') || '';
@@ -536,7 +589,12 @@ export function createCodePre(language) {
   input.placeholder = 'text';
   input.spellcheck = false;
   input.value = language || '';
-  pre.append(input, styled('code', ''));
+  const codeEl = styled('code', '');
+  pre.append(input, codeEl);
+  // 复制按钮插在 code 之前（与 blockToHtml 结构一致，placeCursorAtEnd 落在 code 末尾）
+  const tpl = document.createElement('template');
+  tpl.innerHTML = CODE_COPY_BTN;
+  pre.insertBefore(tpl.content.firstChild, codeEl);
   return pre;
 }
 
@@ -708,13 +766,59 @@ export function insertInlineWrapper(el, id) {
   if (conf.href != null) node.setAttribute('href', conf.href);
   const range = sel.getRangeAt(0);
   if (sel.isCollapsed) {
+    // 光标已在同种样式元素内：退出该样式（Typora 式开关行为）
+    if (exitInlineWrapperAtCaret(el, conf.tag)) return true;
+    // 插入空样式元素，光标在其中输入——输入期间文本即带样式，
+    // 两侧经 md-src 显现淡化的源标记（** 等）；Esc 退出该样式（exitInlineWrapperAtCaret）
     range.insertNode(node);
-    placeCursorAtStart(node);
+    placeCursorInEmptyWrapper(node);
   } else {
     node.append(range.extractContents());
     range.insertNode(node);
     placeCursorAtEnd(node);
   }
+  return true;
+}
+
+// 光标处于行内样式元素（加粗/斜体/下划线/删除线/高亮/行内代码/链接/字体颜色字号 span·font）内时，
+// 退出最内层样式；不在样式内返回 false。onlyTag 限定只退出指定标签（insertInlineWrapper 的开关用）。
+// 退出方式：在样式元素之后插入空文本节点并把光标放入——边界位置直接 setStartAfter 时
+// Chromium 会继续沿用左侧样式（或锚点识别失败），空文本节点保证后续输入落在样式之外。
+// Esc 退出行内输入状态用（不退出整块编辑）；代码块 pre 内的 code 不算行内样式
+const WRAP_SEL = 'strong, em, u, s, mark, code, a, span[data-html-style], font';
+export function exitInlineWrapperAtCaret(el, onlyTag = null) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const anchor = sel.anchorNode;
+  if (!el.contains(anchor)) return false;
+  const selector = onlyTag || WRAP_SEL;
+  let host = null;
+  if (anchor.nodeType === Node.TEXT_NODE) {
+    host = anchor.parentElement?.closest(selector);
+  } else if (anchor.nodeType === Node.ELEMENT_NODE) {
+    // 元素锚点：自身/祖先匹配（光标在空样式元素内），或光标左侧紧邻的样式元素（样式末尾边界）
+    if (anchor !== el && anchor.matches?.(selector)) host = anchor;
+    else host = anchor.closest?.(selector);
+    if (!host) {
+      const before = anchor.childNodes[sel.anchorOffset - 1];
+      if (before?.nodeType === Node.ELEMENT_NODE && before.matches?.(selector)) host = before;
+    }
+  }
+  if (!host || host === el || !el.contains(host) || host.closest('pre')) return false;
+  // 零宽不中断空格（\uFEFF）哨兵 + 光标放哨兵之后（offset 1）：
+  // 空文本节点/边界位置会被 Chromium 归并回样式元素，见 placeCursorAfter。
+  // 字体模板场景：哨兵落在闭合标签（md-font-mark）之后，光标整体移出模板
+  const afterHost =
+    host.nextSibling?.nodeType === Node.ELEMENT_NODE && host.nextSibling.classList.contains('md-font-mark')
+      ? host.nextSibling
+      : host;
+  const textNode = document.createTextNode('\uFEFF');
+  afterHost.parentNode.insertBefore(textNode, afterHost.nextSibling);
+  const range = document.createRange();
+  range.setStart(textNode, 1);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
   return true;
 }
 
@@ -844,9 +948,40 @@ async function transformBlockShortcut() {
 
 // 在一次 input 后尝试即时转换（先行内后块级；判定在 Rust 端异步完成）
 export function applyMarkdownShortcuts() {
+  // 输入 ** 自动补全：换成空 <strong> 并光标入内（输入即加粗，两侧显现淡化 ** 标记）；
+  // 已处理则不再走其他快捷转换
+  if (autoCloseBoldMarker()) return;
   transformInlineShortcut().then((done) => {
     if (!done) transformBlockShortcut();
   });
+}
+
+// 输入 ** 自动补全为加粗编辑态：把刚输入的两个 * 换成空 <strong>，光标在其中。
+// 仅在样式/代码元素之外、且刚输入的是「开」标记时触发（** 计数为奇数为开、偶数为闭——
+// 闭合对交给 inline_shortcut 转换既有文本）
+export function autoCloseBoldMarker() {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const node = sel.anchorNode;
+  if (node.nodeType !== Node.TEXT_NODE) return false;
+  const parent = node.parentElement;
+  if (parent?.closest('pre, code, strong, em, u, s, mark, a')) return false;
+  const offset = sel.anchorOffset;
+  const before = node.textContent.slice(0, offset);
+  if (!before.endsWith('**') || before.slice(0, -2).endsWith('*')) return false;
+  if (((before.match(/\*\*/g) || []).length & 1) === 0) return false;
+  const after = node.textContent.slice(offset);
+  const strong = styled('strong', '', 'font-semibold');
+  if (!before.slice(0, -2) && !after) {
+    // 文本节点整体即 **：直接替换
+    node.parentNode.replaceChild(strong, node);
+  } else {
+    node.textContent = before.slice(0, -2);
+    if (after) node.parentNode.insertBefore(document.createTextNode(after), node.nextSibling);
+    node.parentNode.insertBefore(strong, node.nextSibling);
+  }
+  placeCursorInEmptyWrapper(strong);
+  return true;
 }
 
 // ---------- 光标操作 ----------
@@ -1028,9 +1163,8 @@ export async function applySlashCommand(el, id, opts) {
     return true;
   };
   // 原子类模板统一走 Rust block_template（Markdown 生成规则在 Rust 维护）；
-  // 链接插入原始 Markdown 文本编辑（渲染态 <a> 不便就地编辑），与图片同一交互；
   // opts.variant 仅警告框使用（NOTE/TIP/IMPORTANT/WARNING/CAUTION）
-  if (['table', 'mathBlock', 'inlineMath', 'mermaidBlock', 'callout', 'sectionBlock', 'image', 'link', 'footnoteDef', 'linkRef', 'toc'].includes(id)) {
+  if (['table', 'mathBlock', 'inlineMath', 'mermaidBlock', 'callout', 'sectionBlock', 'footnoteDef', 'linkRef', 'toc'].includes(id)) {
     const tpl = await invoke('block_template', {
       kind: id,
       rows: opts?.rows,
@@ -1039,6 +1173,46 @@ export async function applySlashCommand(el, id, opts) {
     }).catch(() => null);
     if (tpl) return rawPre(tpl.markdown, tpl.caretOffset);
     return false;
+  }
+  // 链接：显示原始 Markdown 标记 []()——方括号/圆括号淡灰 span、链接文字蓝色 span，
+  // 光标在 [] 中间的蓝色文字位（\uFEFF 哨兵防边界归并）；data-raw 段落提交按原文回写
+  //（提取时剥离哨兵）重解析为链接；() 内输入 ./ 触发路径补全（见 Editor linkPathContext）
+  if (id === 'link') {
+    const p = styled('p', '', P_CLASS);
+    p.setAttribute('data-raw', '');
+    const mark = (t) => styled('span', t, 'md-link-mark');
+    const linkText = styled('span', '', 'md-link-text');
+    const textNode = document.createTextNode('\uFEFF');
+    linkText.append(textNode);
+    p.append(mark('['), linkText, mark(']'), mark('('), document.createTextNode('\uFEFF'), mark(')'));
+    el.append(p);
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.setStart(textNode, 1);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
+  }
+  // 图片：与链接同一编辑形态——原始标记 ![]()（!/方括号/圆括号淡灰、alt 文字蓝色），
+  // 光标在 [] 中间（\uFEFF 哨兵）；data-raw 段落提交按原文回写重解析为图片；
+  // () 内输入 ./ 触发图片路径补全（见 Editor imagePathContext）
+  if (id === 'image') {
+    const p = styled('p', '', P_CLASS);
+    p.setAttribute('data-raw', '');
+    const mark = (t) => styled('span', t, 'md-link-mark');
+    const altText = styled('span', '', 'md-link-text');
+    const textNode = document.createTextNode('\uFEFF');
+    altText.append(textNode);
+    p.append(mark('!'), mark('['), altText, mark(']'), mark('('), document.createTextNode('\uFEFF'), mark(')'));
+    el.append(p);
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.setStart(textNode, 1);
+    range.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(range);
+    return true;
   }
   if (/^h[1-6]$/.test(id)) {
     const level = Number(id[1]);
@@ -1106,30 +1280,20 @@ export async function applySlashCommand(el, id, opts) {
       placeCursorAtEnd(next);
       return true;
     }
-    case 'inlineCode': {
-      // 行内代码：插入空 code 元素并补 <br> 占位，光标放在占位 br 之前——
-      // 若放在 br 之后，浏览器会把输入插到元素外（样式丢失、渲染成普通文本）；
-      // 尾部占位 br 产生的换行 fragment 在提交时由 trimEdgeNewlines 修剪。
-      const p = styled('p', '', P_CLASS);
-      const code = styled('code', '', INLINE_CODE_CLASS);
-      p.append(code);
-      el.append(p);
-      placeCursorAtStart(code);
-      return true;
-    }
-    // 行内格式（加粗/斜体/下划线/删除线/高亮）：插入空样式元素，光标在其中输入
+    // 行内格式（加粗/斜体/下划线/删除线/高亮/行内代码）：插入空样式元素，光标在其中输入——
+    // 输入期间文本即带样式，两侧经 md-src 显现淡化的源标记；Esc 退出该样式
     case 'bold':
     case 'italic':
     case 'underline':
     case 'strikethrough':
-    case 'highlight': {
-      const tag = { bold: 'strong', italic: 'em', underline: 'u', strikethrough: 's', highlight: 'mark' }[id];
-      const cls = id === 'bold' ? 'font-semibold' : '';
+    case 'highlight':
+    case 'inlineCode': {
+      const conf = INLINE_WRAPPERS[id];
       const p = styled('p', '', P_CLASS);
-      const inner = styled(tag, '', cls);
+      const inner = styled(conf.tag, '', conf.cls || '');
       p.append(inner);
       el.append(p);
-      placeCursorAtStart(inner);
+      placeCursorInEmptyWrapper(inner);
       return true;
     }
     default:
@@ -1464,10 +1628,30 @@ export function placeCursorAtStart(el) {
   sel.addRange(range);
 }
 
-function placeCursorAfter(el) {
+// 空行内样式元素（strong/em/u/s/mark/code/字体 span）的光标放置：用 \uFEFF 哨兵作内容——
+// 不能用 <br>（会把 md-src 显现的闭合标记 ** 挤到下一行），光标放哨兵之后；
+// 哨兵不可见，提交提取时统一剥离（见 domToInlines）
+export function placeCursorInEmptyWrapper(el) {
+  const zwsp = document.createTextNode('\uFEFF');
+  el.append(zwsp);
   const sel = window.getSelection();
   const range = document.createRange();
-  range.setStartAfter(el);
+  range.setStart(zwsp, 1);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+function placeCursorAfter(el) {
+  const sel = window.getSelection();
+  // 元素边界的光标会被 Chromium 归并回左侧样式元素（空文本节点宿主被"吃掉"）；
+  // 且 IME 组合输入在文本节点起始边界（offset 0）也会并回左侧 strong——
+  // 故插入零宽不中断空格（\uFEFF）哨兵节点并把光标放在哨兵字符之后（offset 1），
+  // 左侧隔着真实字符，普通输入与 IME 组合都落在样式之外。提交提取时统一剥离（见 domToInlines）
+  const host = document.createTextNode('\uFEFF');
+  el.parentNode.insertBefore(host, el.nextSibling);
+  const range = document.createRange();
+  range.setStart(host, 1);
   range.collapse(true);
   sel.removeAllRanges();
   sel.addRange(range);

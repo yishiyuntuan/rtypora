@@ -148,6 +148,8 @@ const BLOCK_SELECTORS = {
   // 斜杠命令菜单（/ 召唤）与选中项
   slashMenu: '.md-slash-menu',
   slashMenuItemActive: '.md-slash-item-active',
+  // 公式块编辑实时预览浮动面板
+  mathPreview: '.md-math-preview',
 };
 
 const UNITLESS_PROPS = new Set([

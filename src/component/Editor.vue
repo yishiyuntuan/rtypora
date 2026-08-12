@@ -25,6 +25,7 @@ import {
   applySlashCommand,
   placeCursorAtEnd,
   placeCursorAtStart,
+  placeCursorInEmptyWrapper,
   placeCaretAtTextOffset,
   insertTextAtCursor,
   insertLineBreakAtCursor,
@@ -36,9 +37,13 @@ import {
   paragraphDtoFromTree,
   demoteEditableToParagraph,
   insertInlineWrapper,
+  exitInlineWrapperAtCaret,
   convertCalloutToRawEdit,
   plainText,
 } from '../utils/wysiwyg.js';
+import { highlightCodeHtml } from '../utils/highlight.js';
+import { renderMermaid } from '../utils/mermaid.js';
+import { renderPlantumlLocal } from '../utils/plantuml.js';
 import { formatShortcut } from '../utils/platform.js';
 import { getPref, prefsVersion, structureVersion } from '../utils/prefs.js';
 import { themeVersion } from '../themes/index.js';
@@ -806,6 +811,7 @@ function mergeStyleIntoSpan(span, style) {
 function applyFontStyle(style) {
   const el = currentEditable();
   if (!el) return;
+  let midBlockSlash = false; // / 在块中触发（触发段前有正文）：仅插入模板，不整段套用
   suppressBlurCommit = true;
   try {
     if (fontMenuSession) {
@@ -813,20 +819,32 @@ function applyFontStyle(style) {
       const existing = caretFontSpan(el);
       if (existing) {
         mergeStyleIntoSpan(existing, style);
+        // 同步模板的开标签显示文本（颜色/字号变化后标签内容与样式一致）
+        const openMark = existing.previousSibling;
+        if (openMark?.nodeType === Node.ELEMENT_NODE && openMark.classList.contains('md-font-mark')) {
+          openMark.textContent = `<font style="${existing.getAttribute('style')}">`;
+        }
         slashOpen.value = true; // 菜单保持打开，可继续选择
         return;
       }
       // 光标不在样式 span 内（如整段套用后移出）：按新样式插入
     } else {
-      // 首次：删除触发文本——光标在编辑器内时按光标定位删除；
+      // 首次：删除触发文本——光标在编辑器内时只删 /query 触发段（块中触发保留前文）；
       // 焦点在菜单输入框（RGB）时按块首的 /query 删除
       const sel = window.getSelection();
       if (sel.rangeCount && el.contains(sel.anchorNode)) {
         const caret = sel.getRangeAt(0);
+        const probe = document.createRange();
+        probe.selectNodeContents(el);
+        probe.setEnd(caret.startContainer, caret.startOffset);
+        const slashIdx = probe.toString().lastIndexOf('/');
+        const point = slashIdx > 0 ? textOffsetPoint(el, slashIdx) : null;
         const trigger = document.createRange();
-        trigger.selectNodeContents(el);
+        if (point) trigger.setStart(point.node, point.offset);
+        else trigger.selectNodeContents(el);
         trigger.setEnd(caret.startContainer, caret.startOffset);
         trigger.deleteContents();
+        midBlockSlash = slashIdx > 0;
       } else {
         const query = '/' + slashQuery.value;
         const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
@@ -849,16 +867,25 @@ function applyFontStyle(style) {
       span.append(range.extractContents());
       range.insertNode(span);
       placeCursorAtEnd(span);
+    } else if (midBlockSlash) {
+      // 块中触发：光标处插入字体模板（前文保留，不整段套用）
+      const { frag, zwsp } = buildFontTemplate(style);
+      const r = sel2.rangeCount && el.contains(sel2.anchorNode) ? sel2.getRangeAt(0) : null;
+      if (r) r.insertNode(frag);
+      else target.append(frag);
+      placeCaretInFontTemplate(zwsp);
     } else if (target.textContent.trim()) {
       // 块内已有文字：整段套用
       while (target.firstChild) span.append(target.firstChild);
       target.append(span);
       placeCursorAtEnd(span);
     } else {
-      // 空块：插入样式 span，光标入内，输入即带样式文字
+      // 空块：插入字体模板（淡灰 <font> 标签 + 样式 span），光标在标签内文字位，
+      // 输入即带选择的颜色/字号；Esc 退出该样式（光标移到模板之后）
       target.innerHTML = '';
-      target.append(span);
-      placeCursorAtStart(span);
+      const { frag, zwsp } = buildFontTemplate(style);
+      target.append(frag);
+      placeCaretInFontTemplate(zwsp);
     }
     fontMenuSession = true;
     slashOpen.value = true; // 菜单保持打开，颜色与字号可叠加选择
@@ -967,6 +994,8 @@ function onContextMenu(e) {
   // 此处仅尝试覆盖暂存：若 WKWebView 已在右键 mousedown 后塌陷选区，
   // 本次 stash 无效，保留 mousedown 时的暂存（不得先行清空）
   stashCtxSelection();
+  // 编辑态下平台默认行为可能已塌陷选区：立即恢复，保持菜单打开期间高亮连续
+  if (el) restoreCtxSelection(el);
   ctxMenu.value = { x: e.clientX, y: e.clientY };
 }
 
@@ -1016,6 +1045,22 @@ function rangeFromTextOffsets(root, start, end) {
   return r;
 }
 
+// 渲染态暂存 → 可编辑容器 Range：先按偏移换算并用暂存原文校验
+//（公式 SVG/脚注引用等载体两侧文本可能不一致），不一致时退化为在容器纯文本中
+// 搜索暂存原文定位；都找不到则尽力返回偏移结果
+function reifyCtxRange(root, saved) {
+  const byOffset = rangeFromTextOffsets(root, saved.start, saved.end);
+  if (!saved.text || (byOffset && byOffset.toString() === saved.text)) return byOffset;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (n) =>
+    n.parentElement?.closest(CTX_SKIP_SEL) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT);
+  const parts = [];
+  let cur;
+  while ((cur = walker.nextNode())) parts.push(cur.textContent);
+  const idx = parts.join('').indexOf(saved.text);
+  if (idx < 0) return byOffset;
+  return rangeFromTextOffsets(root, idx, idx + saved.text.length) || byOffset;
+}
+
 function stashCtxSelection() {
   const el = currentEditable();
   const sel = window.getSelection();
@@ -1028,14 +1073,15 @@ function stashCtxSelection() {
     return;
   }
   // 非编辑态（无光标直接框选渲染态文字）：渲染 DOM 将随进入编辑被替换，
-  // 选区按「块内纯文本偏移」暂存（渲染态与编辑态行内文本一致——同一 InlineTextTree 数据源）
+  // 选区按「块内纯文本偏移」暂存（渲染态与编辑态行内文本一致——同一 InlineTextTree 数据源）；
+  // 同时暂存选区原文，重建时校验/搜索回退（公式 SVG 等载体两侧文本可能不一致）
   const anchorEl = r.startContainer.nodeType === Node.ELEMENT_NODE ? r.startContainer : r.startContainer.parentElement;
   const row = anchorEl?.closest('[data-block-id]');
   if (!row || !row.contains(r.endContainer)) return; // 跨块选区不在此转移
   const start = domTextOffset(row, r.startContainer, r.startOffset);
   const end = domTextOffset(row, r.endContainer, r.endOffset);
   if (end <= start) return;
-  ctxSavedRange = { blockId: row.getAttribute('data-block-id'), start, end, at: Date.now() };
+  ctxSavedRange = { blockId: row.getAttribute('data-block-id'), start, end, text: r.toString(), at: Date.now() };
 }
 
 // 编辑区 mousedown：右键（button 2）按下时抢先暂存选区
@@ -1061,9 +1107,9 @@ function restoreCtxSelection(el) {
     sel.addRange(r);
     return;
   }
-  // 渲染态暂存（纯文本偏移）：块须与当前编辑块一致，在可编辑容器内重建 Range
+  // 渲染态暂存（纯文本偏移 + 原文校验/搜索回退）：块须与当前编辑块一致
   if (saved.blockId && saved.blockId !== editingId.value) return;
-  const r = rangeFromTextOffsets(el, saved.start, saved.end);
+  const r = reifyCtxRange(el, saved);
   if (!r) return;
   sel.removeAllRanges();
   sel.addRange(r);
@@ -1080,7 +1126,7 @@ function restoreCtxSelectionOnMount(el) {
   if (!saved || saved.range || !saved.blockId) return false;
   if (saved.blockId !== editingId.value) return false;
   if (Date.now() - saved.at > 5000) return false;
-  const r = rangeFromTextOffsets(el, saved.start, saved.end);
+  const r = reifyCtxRange(el, saved);
   if (!r) return false;
   const sel = window.getSelection();
   sel.removeAllRanges();
@@ -1183,29 +1229,70 @@ function buildFontSpan(style) {
   return span;
 }
 
-// 右键菜单字体样式：有选区包选区，无选区插空 span 光标入内
+// 字体样式模板：淡灰 <font> 标签 + 中间样式 span（\uFEFF 哨兵光标位）——源码形态编辑，
+// 标签仅作显示（提交提取时剔除，见 domToInlines 跳过 .md-font-mark）
+function buildFontTemplate(style) {
+  const open = document.createElement('span');
+  open.className = 'md-font-mark';
+  open.textContent = `<font style="${htmlStyleCss(style)}">`;
+  const inner = buildFontSpan(style);
+  const zwsp = document.createTextNode('\uFEFF');
+  inner.append(zwsp);
+  const close = document.createElement('span');
+  close.className = 'md-font-mark';
+  close.textContent = '</font>';
+  const frag = document.createDocumentFragment();
+  frag.append(open, inner, close);
+  return { frag, zwsp };
+}
+
+// 光标放入字体模板的文字位（哨兵之后）
+function placeCaretInFontTemplate(zwsp) {
+  const sel = window.getSelection();
+  const range = document.createRange();
+  range.setStart(zwsp, 1);
+  range.collapse(true);
+  sel.removeAllRanges();
+  sel.addRange(range);
+}
+
+// 右键菜单字体样式：有选区包选区；光标在既有字体 span 内则叠加更新（换色/换号）；
+// 否则插入空 span 光标入内（\uFEFF 哨兵占位），输入即带样式文字，Esc 退出该样式
 function ctxApplyFontStyle(style) {
   const el = currentEditable();
   if (!el || !style) return;
   suppressBlurCommit = true;
   try {
     restoreCtxSelection(el);
-    const span = buildFontSpan(style);
     const sel = window.getSelection();
     if (sel.rangeCount && !sel.isCollapsed && el.contains(sel.anchorNode)) {
+      // 有选区：选区内容套用样式
+      const span = buildFontSpan(style);
       const range = sel.getRangeAt(0);
       span.append(range.extractContents());
       range.insertNode(span);
       placeCursorAtEnd(span);
+    } else if (sel.rangeCount && el.contains(sel.anchorNode) && caretFontSpan(el)) {
+      // 光标在既有字体 span 内：叠加更新该 span（color/fontSize 独立覆盖），不嵌套新 span
+      const existing = caretFontSpan(el);
+      mergeStyleIntoSpan(existing, style);
+      // 同步模板的开标签显示文本
+      const openMark = existing.previousSibling;
+      if (openMark?.nodeType === Node.ELEMENT_NODE && openMark.classList.contains('md-font-mark')) {
+        openMark.textContent = `<font style="${existing.getAttribute('style')}">`;
+      }
     } else {
+      // 无选区：插入字体模板（淡灰 <font> 标签 + 样式 span），光标在标签内文字位，
+      // 输入即带选择的颜色/字号；Esc 退出该样式（光标移到模板之后）
+      const { frag, zwsp } = buildFontTemplate(style);
       const range = sel.rangeCount && el.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
       if (range) {
-        range.insertNode(span);
+        range.insertNode(frag);
       } else {
-        // 无光标：放入块的首个块级子元素内（span 不能包块级元素）
-        (el.firstElementChild || el).append(span);
+        // 无光标：放入块的首个块级子元素内（模板不能包块级元素）
+        (el.firstElementChild || el).append(frag);
       }
-      placeCursorAtStart(span);
+      placeCaretInFontTemplate(zwsp);
     }
   } finally {
     suppressBlurCommit = false;
@@ -1392,8 +1479,8 @@ const slashItems = computed(() => {
   );
 });
 
-// 光标处的斜杠上下文：块内文本（光标前）以 / 开头时返回查询串与菜单位置；
-// 代码/原文 pre 编辑内不触发
+// 光标处的斜杠上下文：光标前文本中最后一个 / 位于块首或空白/换行/哨兵字符之后时，
+// 返回查询串与菜单位置（避免路径、URL、分数等误触发）；代码/原文 pre 编辑内不触发
 function slashContext() {
   const el = currentEditable();
   if (!el || editingId.value === null) return null;
@@ -1407,7 +1494,9 @@ function slashContext() {
   before.selectNodeContents(el);
   before.setEnd(caret.startContainer, caret.startOffset);
   const text = before.toString();
-  if (!text.startsWith('/')) return null;
+  const idx = text.lastIndexOf('/');
+  if (idx < 0) return null;
+  if (idx > 0 && !/[\s\u00A0\uFEFF]/.test(text[idx - 1])) return null;
   const rect = caret.getBoundingClientRect();
   // 视口底部空间不足时向上翻（菜单最大高度 264 + 间隙）；文本行徽章较宽，左侧防溢出
   const estimatedHeight = 270;
@@ -1415,7 +1504,7 @@ function slashContext() {
     ? Math.max(8, rect.top - estimatedHeight)
     : rect.bottom + 6;
   const left = Math.max(8, Math.min(rect.left, window.innerWidth - 380));
-  return { query: text.slice(1), pos: { left, top } };
+  return { query: text.slice(idx + 1), pos: { left, top } };
 }
 
 // 输入后刷新菜单：触发文本被删改（不再是 / 开头、含空格/换行）则关闭
@@ -1468,6 +1557,9 @@ async function applySlashItem(item, option) {
     await applyTableTemplate(el, opts);
     return;
   }
+  // 任意位置 / 触发：先把 /query 触发段前后的内容摘出（应用时容器会被清空重建），
+  // 应用完成后放回原处——前文不丢
+  const frags = extractSlashFrags(el);
   // 替换 DOM 期间抑制 blur 误提交：清空聚焦中的容器可能触发同步 blur，
   // 不抑制则 onEditableBlur 抢先提交空内容（块被删，新内容插到已卸载节点上）
   suppressBlurCommit = true;
@@ -1476,10 +1568,81 @@ async function applySlashItem(item, option) {
   } finally {
     suppressBlurCommit = false;
   }
+  if (frags) spliceSlashFrags(el, frags, id);
   // 替换导致失焦时恢复焦点（光标已由构建函数放置）
   if (document.activeElement !== el) el.focus({ preventScroll: true });
   // 代码块：围栏已插入（```），立即弹出语言补全，先编辑语言
   if (id === 'codeBlock') updateLangMenu();
+}
+
+// 摘出 /query 触发段的前后内容（任意位置 / 触发时调用；/ 在块首返回 null——无前文需保留）。
+// 返回 DocumentFragment 对（before/after），触发段本身被移除
+// 容器内纯文本偏移 → DOM 点（{node, offset}）
+function textOffsetPoint(root, target) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let acc = 0;
+  let cur;
+  while ((cur = walker.nextNode())) {
+    const len = cur.textContent.length;
+    if (target <= acc + len) return { node: cur, offset: target - acc };
+    acc += len;
+  }
+  return null;
+}
+
+function extractSlashFrags(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return null;
+  const caret = sel.getRangeAt(0);
+  if (!el.contains(caret.startContainer)) return null;
+  const probe = document.createRange();
+  probe.selectNodeContents(el);
+  probe.setEnd(caret.startContainer, caret.startOffset);
+  const text = probe.toString();
+  const slashIdx = text.lastIndexOf('/');
+  if (slashIdx <= 0) return null;
+  // 文本偏移 → DOM 点
+  const point = textOffsetPoint(el, slashIdx);
+  if (!point) return null;
+  const before = document.createRange();
+  before.selectNodeContents(el);
+  before.setEnd(point.node, point.offset);
+  const beforeFrag = before.extractContents();
+  const after = document.createRange();
+  after.selectNodeContents(el);
+  after.setStart(caret.startContainer, caret.startOffset);
+  const afterFrag = after.extractContents();
+  return { before: beforeFrag, after: afterFrag };
+}
+
+// 应用完成后把摘除的前后内容放回：模板类（data-raw pre/p）放回容器首尾（不混入模板原文），
+// 行内格式放回样式元素两侧，块级转换放回新结构文本宿主的首尾（光标落末尾）
+function spliceSlashFrags(el, frags, id) {
+  const TEMPLATE_IDS = new Set([
+    'link', 'image', 'inlineMath', 'mathBlock', 'mermaidBlock', 'callout', 'sectionBlock',
+    'codeBlock', 'footnoteDef', 'linkRef', 'toc',
+  ]);
+  if (TEMPLATE_IDS.has(id)) {
+    el.prepend(frags.before);
+    el.append(frags.after);
+    return;
+  }
+  const INLINE_IDS = new Set(['bold', 'italic', 'underline', 'strikethrough', 'highlight', 'inlineCode']);
+  if (INLINE_IDS.has(id)) {
+    const wrap = el.querySelector('strong, em, u, s, mark, code');
+    if (wrap) {
+      wrap.parentNode.insertBefore(frags.before, wrap);
+      wrap.parentNode.insertBefore(frags.after, wrap.nextSibling);
+    }
+    return;
+  }
+  const host = el.querySelector('p, h1, h2, h3, h4, h5, h6, li');
+  if (!host) return;
+  // 空结构占位 br 先移除（避免夹在前后文之间产生换行）
+  if (host.childNodes.length === 1 && host.firstChild.tagName === 'BR') host.innerHTML = '';
+  host.prepend(frags.before);
+  host.append(frags.after);
+  placeCursorAtEnd(host);
 }
 
 // 斜杠表格：取 Rust block_template 模板后立即提交渲染为表格块，并进入首个数据单元格编辑
@@ -1621,6 +1784,7 @@ function applyLangItem(lang) {
     input.value = lang;
     const pre = input.closest('pre');
     pre?.setAttribute('data-language', lang);
+    scheduleCodeHighlight(); // 语言补全应用后重排高亮
     const code = pre?.querySelector('code');
     if (code) placeCursorAtStart(code);
     pre?.closest('[contenteditable]')?.focus({ preventScroll: true });
@@ -1634,6 +1798,101 @@ function applyLangItem(lang) {
   const p = el.querySelector('p') || el;
   p.textContent = ctx.fence + lang + after;
   placeCaretAtTextOffset(p, (ctx.fence + lang).length);
+}
+
+// ---------- 图片 () 内 ./ 路径补全（与语言补全共用 SlashMenu 面板） ----------
+const pathOpen = ref(false);
+const pathIndex = ref(0);
+const pathPos = ref({ left: 0, top: 0 });
+const pathCandidates = ref([]);
+let pathCtx = null; // { node, offset, prefix }：应用时据此替换前缀文本
+
+// 光标位于图片 () 内的 ./ 路径中时返回补全上下文；否则 null。
+// 按「段落整体文本 + 光标偏移」判定（图片模板/图片段落再编辑均为 data-raw 单段），
+// 与光标落在哪个节点（标记 span / 文本节点）无关
+function imagePathContext() {
+  const el = currentEditable();
+  if (!el || editingId.value === null) return null;
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return null;
+  const anchor = sel.anchorNode;
+  const anchorEl = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
+  const p = anchorEl?.closest?.('p');
+  if (!p || !el.contains(p) || !p.hasAttribute('data-raw')) return null;
+  // 光标在段落内的纯文本偏移（探针 range；\uFEFF 哨兵不计入）
+  const probe = document.createRange();
+  probe.selectNodeContents(p);
+  probe.setEnd(anchor, sel.anchorOffset);
+  const before = probe.toString().replace(/\uFEFF/g, '');
+  const m = /^!\[[^\]]*\]\((\.\/[^)\s]*)$/.exec(before);
+  if (!m) return null;
+  const rect = sel.getRangeAt(0).getBoundingClientRect();
+  const estimatedHeight = 240;
+  const top = rect.bottom + estimatedHeight > window.innerHeight
+    ? Math.max(8, rect.top - estimatedHeight)
+    : rect.bottom + 6;
+  return { p, prefix: m[1], pos: { left: Math.max(8, rect.left), top } };
+}
+
+async function updatePathMenu() {
+  const ctx = imagePathContext();
+  if (!ctx || !documentDir.value) {
+    pathOpen.value = false;
+    pathCtx = null;
+    return;
+  }
+  const list = await invoke('complete_path', { baseDir: documentDir.value, prefix: ctx.prefix }).catch(() => []);
+  // 等待期间光标/文本变化则放弃（下次输入再触发）
+  const cur = imagePathContext();
+  if (!cur || cur.p !== ctx.p || cur.prefix !== ctx.prefix) return;
+  if (!list.length) {
+    pathOpen.value = false;
+    pathCtx = null;
+    return;
+  }
+  pathCtx = ctx;
+  pathCandidates.value = list;
+  if (pathIndex.value >= list.length) pathIndex.value = 0;
+  pathPos.value = ctx.pos;
+  pathOpen.value = true;
+}
+
+// 菜单展示项：目录带 📁、图片带 🖼
+const pathMenuItems = computed(() =>
+  pathCandidates.value.map((p) => ({
+    id: p,
+    label: p,
+    icon: p.endsWith('/') ? '<span>📁</span>' : '<span>🖼</span>',
+  })),
+);
+
+// 应用路径补全：重建图片模板段落为所选路径（保留 alt 与标记结构），光标落在路径之后；
+// 选中目录（尾随 /）时下次输入会自动重新触发补全（列出该目录内容）
+function applyPathItem(path) {
+  const ctx = pathCtx;
+  pathCtx = null;
+  pathOpen.value = false;
+  if (!ctx || !path || !ctx.p.isConnected) return;
+  const p = ctx.p;
+  const text = p.textContent.replace(/\uFEFF/g, '');
+  const alt = /^!\[([^\]]*)\]/.exec(text)?.[1] ?? '';
+  const mark = (t) => {
+    const s = document.createElement('span');
+    s.className = 'md-link-mark';
+    s.textContent = t;
+    return s;
+  };
+  const altSpan = document.createElement('span');
+  altSpan.className = 'md-link-text';
+  altSpan.textContent = alt;
+  const pathNode = document.createTextNode(path);
+  p.innerHTML = '';
+  p.append(mark('!'), mark('['), altSpan, mark(']'), mark('('), pathNode, mark(')'));
+  const sel = window.getSelection();
+  sel.collapse(pathNode, pathNode.textContent.length);
+  currentEditable()?.focus({ preventScroll: true });
+  // 选中目录（尾随 /）：立即列出其内容继续补全，直至选中图片（无需再敲字符）
+  if (path.endsWith('/')) updatePathMenu();
 }
 // 滚动定位闪烁的块 id / 当前滚动位置对应的标题 id（供大纲高亮）
 const flashId = ref(null);
@@ -1964,6 +2223,12 @@ function setEditableEl(el) {
     el.innerHTML = editingId.value === '__append__' || !block ? emptyParagraphHtml() : blockToHtml(block, rawSource, 0, rootOrdinals.value.get(block.id) || 1);
   }
   stashedEdit = null;
+  // 公式/图表块进入编辑：立即渲染一次编辑预览（后续输入经 onEditableInput 防抖更新）
+  editPreviewSvg.value = '';
+  editPreviewHidden.value = false;
+  if (editPreviewKind(editingBlock.value)) renderEditPreview();
+  // 代码块进入编辑：立即高亮一次（后续输入防抖重排）
+  if (editingBlock.value?.type === 'codeBlock') applyCodeHighlight();
   nextTick(() => {
     // 换块 blur 抑制到此为止（无论是否成功聚焦）
     suppressBlurCommit = false;
@@ -2516,14 +2781,107 @@ function onEditableInput(e) {
   if (langInput) {
     langInput.closest('pre')?.setAttribute('data-language', langInput.value.trim());
     updateLangInputMenu(langInput);
+    scheduleCodeHighlight(); // 语言变化后重排高亮
     return;
   }
   applyMarkdownShortcuts();
   applyHtmlAutoclose();
   updateSlashMenu();
   updateLangMenu();
+  updatePathMenu();
+  scheduleEditPreview();
+  scheduleCodeHighlight();
   // 输入到底部时：光标若被压到窗口底部（状态栏上方不可见），滚到窗口首行
   nextTick(keepCaretAboveStatusBar);
+}
+
+// 编辑实时预览（公式/Mermaid/PlantUML）：编辑这些块时在编辑区下方浮动面板渲染预览。
+// 输入防抖（公式 180ms，图表较重 400ms）；语法未完成渲染失败时保持上一帧不清空，
+// 清空内容才清预览。面板可经右上角眼睛图标/点击面板本身隐藏（editPreviewHidden）
+const editPreviewSvg = ref('');
+const editPreviewHidden = ref(false);
+let editPreviewTimer = null;
+// 支持编辑预览的块类型：mathBlock / mermaidBlock / plantuml(puml) 代码块
+function editPreviewKind(block) {
+  if (!block) return null;
+  if (block.type === 'mathBlock') return 'math';
+  if (block.type === 'mermaidBlock') return 'mermaid';
+  if (block.type === 'codeBlock' && ['plantuml', 'puml'].includes((block.language || '').toLowerCase())) {
+    return 'plantuml';
+  }
+  return null;
+}
+function scheduleEditPreview() {
+  const kind = editPreviewKind(editingBlock.value);
+  if (!kind) return;
+  clearTimeout(editPreviewTimer);
+  editPreviewTimer = setTimeout(renderEditPreview, kind === 'math' ? 180 : 400);
+}
+async function renderEditPreview() {
+  const el = currentEditable();
+  const block = editingBlock.value;
+  const kind = editPreviewKind(block);
+  if (!el || !kind) {
+    editPreviewSvg.value = '';
+    return;
+  }
+  const raw = (el.querySelector('pre')?.textContent ?? el.textContent).trim();
+  if (!raw) {
+    editPreviewSvg.value = '';
+    return;
+  }
+  let svg = null;
+  if (kind === 'math') {
+    const style = getComputedStyle(document.documentElement);
+    const color = style.getPropertyValue('--t-text-default').trim() || '#000000';
+    const baseFontSize = parseFloat(style.getPropertyValue('--t-text-size')) || 16;
+    svg = await invoke('render_display_math', { raw, color, baseFontSize }).catch(() => null);
+  } else if (kind === 'mermaid') {
+    svg = await renderMermaid(raw).catch(() => null);
+  } else {
+    // plantuml：语言以编辑态 pre[data-language] 为准（编辑中可能改语言；改走则本次不更新）
+    const lang = (el.querySelector('pre')?.getAttribute('data-language') || '').toLowerCase();
+    if (!['plantuml', 'puml'].includes(lang)) return;
+    svg = await renderPlantumlLocal(raw).catch(() => null);
+  }
+  if (svg && editingBlock.value === block) editPreviewSvg.value = svg;
+}
+
+// 代码块编辑态语法高亮：进入编辑即高亮一次，输入防抖 350ms 重排。
+// span 包裹不影响提交（代码块按 textContent 提取）；重排后按纯文本偏移还原光标。
+let codeHlTimer = null;
+function scheduleCodeHighlight() {
+  if (editingBlock.value?.type !== 'codeBlock') return;
+  clearTimeout(codeHlTimer);
+  codeHlTimer = setTimeout(applyCodeHighlight, 350);
+}
+// 光标在元素内的纯文本偏移（仅折叠光标；有选区时返回 null 由调用方跳过）
+function caretOffsetWithin(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return null;
+  const r = sel.getRangeAt(0);
+  if (!el.contains(r.startContainer)) return null;
+  const probe = document.createRange();
+  probe.selectNodeContents(el);
+  probe.setEnd(r.startContainer, r.startOffset);
+  return probe.toString().length;
+}
+async function applyCodeHighlight() {
+  const el = currentEditable();
+  if (!el || editingBlock.value?.type !== 'codeBlock') return;
+  const pre = el.querySelector('pre[data-language]');
+  const codeEl = pre?.querySelector('code');
+  if (!codeEl) return;
+  // 有非空选区时跳过（重排会拆选区），待选区收敛后的下次输入再触发
+  const sel = window.getSelection();
+  if (sel.rangeCount && !sel.isCollapsed && el.contains(sel.anchorNode)) return;
+  const caretOffset = caretOffsetWithin(codeEl);
+  const code = codeEl.textContent;
+  const html = await highlightCodeHtml(code, pre.getAttribute('data-language') || '');
+  // 等待期间已退出编辑/换块或内容又变了：放弃本次重排（下次输入再触发）
+  if (currentEditable() !== el || !codeEl.isConnected || codeEl.textContent !== code) return;
+  codeEl.innerHTML = html;
+  if (caretOffset != null) placeCaretAtTextOffset(codeEl, caretOffset);
 }
 
 // 光标下缘贴近/越过可见下沿（容器底部内边距 + 半行缓冲）时：
@@ -2555,8 +2913,8 @@ async function onEditablePaste(e) {
   const imageItem = items.find((item) => item.type.startsWith('image/'));
   if (!imageItem) {
     // 文本粘贴：统一规范化换行符；代码/原文块（pre 编辑）与表格编辑走浏览器默认纯文本插入
+    const html = e.clipboardData?.getData('text/html') || '';
     const text = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
-    if (!text) return;
     const el = currentEditable();
     const rawMode = !!el?.querySelector('pre') || editingBlock.value?.type === 'table';
     if (rawMode) return;
@@ -2564,6 +2922,18 @@ async function onEditablePaste(e) {
     // 浏览器已执行默认粘贴插入一份，Markdown 通道再插一份，内容重复（双份粘贴 bug）。
     // 改为统一手动插入：Markdown 走解析通道，纯文本走 insertText
     e.preventDefault();
+    // 应用内复制的渲染 HTML（data-md-fragment 标记）：DOM→DTO→序列化，格式保真往返
+    if (el && html.includes('data-md-fragment')) {
+      const holder = document.createElement('div');
+      holder.innerHTML = html;
+      const fragRoot = holder.querySelector('[data-md-fragment]') || holder;
+      const md = await invoke('serialize_markdown', { blocks: domToBlockDtos(fragRoot) }).catch(() => null);
+      if (md && md.trim()) {
+        await pasteMarkdownAtCaret(md);
+        return;
+      }
+    }
+    if (!text) return;
     if (await looksLikeMarkdown(text)) {
       await pasteMarkdownAtCaret(text);
     } else {
@@ -2701,6 +3071,27 @@ async function onEditableDblclick(e) {
     suppressBlurCommit = false;
   }
   el.focus({ preventScroll: true });
+}
+
+// 编辑态代码块复制按钮：mousedown 阻止默认行为（光标/焦点不转移），click 复制代码文本
+const CODE_COPY_SVG =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="8.5" height="9" rx="1.2" /><path d="M10.5 5V3.5A1.5 1.5 0 009 2H4.5A1.5 1.5 0 003 3.5V11a1.5 1.5 0 001.5 1.5H5" /></svg>';
+const CODE_CHECK_SVG =
+  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 4.5" /></svg>';
+function onEditingMousedown(e) {
+  if (e.target.closest?.('.md-code-copy-edit')) e.preventDefault();
+}
+function onEditingClick(e) {
+  const btn = e.target.closest?.('.md-code-copy-edit');
+  if (!btn) return;
+  e.preventDefault();
+  const code = btn.closest('pre')?.querySelector('code')?.textContent ?? '';
+  navigator.clipboard.writeText(code).catch(() => {});
+  // 复制反馈：短暂切换为对勾图标
+  btn.innerHTML = CODE_CHECK_SVG;
+  setTimeout(() => {
+    if (btn.isConnected) btn.innerHTML = CODE_COPY_SVG;
+  }, 1000);
 }
 
 function onEditableKeydown(e) {
@@ -2855,6 +3246,30 @@ function onEditableKeydown(e) {
       return;
     }
   }
+  // 图片路径补全打开时：↑/↓ 选择（循环回绕）、Enter/Tab 补全、Esc 关闭（与语言补全同交互）
+  if (pathOpen.value) {
+    const list = pathCandidates.value;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (list.length) {
+        pathIndex.value =
+          e.key === 'ArrowDown'
+            ? (pathIndex.value + 1) % list.length
+            : (pathIndex.value - 1 + list.length) % list.length;
+      }
+      return;
+    }
+    if (e.key === 'Enter' || e.key === 'Tab') {
+      e.preventDefault();
+      if (list.length) applyPathItem(list[pathIndex.value]);
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      pathOpen.value = false;
+      return;
+    }
+  }
   // 代码块语言输入框：Enter/Tab/Esc 回到代码区（语言补全打开时上面的菜单路由已拦截），
   // 其余按键原生（编辑语言；输入经 onEditableInput 触发补全菜单）
   if (e.target?.closest?.('[data-lang-input]')) {
@@ -2866,6 +3281,22 @@ function onEditableKeydown(e) {
       if (code) placeCursorAtStart(code);
       pre?.closest('[contenteditable]')?.focus({ preventScroll: true });
     }
+    return;
+  }
+  // Ctrl/Cmd+B/I/U：加粗/斜体/下划线开关——有选区包选区；光标在同种样式内再按即退出该样式
+  //（toggle 逻辑在 insertInlineWrapper，与 /菜单、右键菜单同一入口）
+  if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && ['b', 'i', 'u'].includes(e.key.toLowerCase())) {
+    const el = currentEditable();
+    if (!el) return;
+    e.preventDefault();
+    const id = e.key.toLowerCase() === 'b' ? 'bold' : e.key.toLowerCase() === 'i' ? 'italic' : 'underline';
+    suppressBlurCommit = true;
+    try {
+      insertInlineWrapper(el, id);
+    } finally {
+      suppressBlurCommit = false;
+    }
+    if (document.activeElement !== el) el.focus({ preventScroll: true });
     return;
   }
   // Ctrl+A 两段式：首次交给浏览器原生（选中当前块内容）；
@@ -3047,6 +3478,28 @@ function onEditableKeydown(e) {
     handleListTab(editable, e.shiftKey);
   } else if (e.key === 'Escape') {
     e.preventDefault();
+    const el = currentEditable();
+    if (el) {
+      // 图片/链接模板段落（p[data-raw]）：Esc 把光标移到模板之后继续编辑（不退出整块）；
+      // 哨兵文本节点作光标宿主（提交提取时剥离），输入为普通文本
+      const anchor = window.getSelection().anchorNode;
+      const anchorEl = anchor?.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
+      const rawP = anchorEl?.closest?.('p[data-raw]');
+      if (rawP && el.contains(rawP)) {
+        const zwsp = document.createTextNode('\uFEFF');
+        rawP.append(zwsp);
+        const r = document.createRange();
+        r.setStart(zwsp, 1);
+        r.collapse(true);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+        return;
+      }
+      // 光标在行内样式（加粗/斜体/下划线等）内：Esc 仅退出该样式输入状态；
+      // 不在样式内：维持原行为（取消整块编辑）
+      if (exitInlineWrapperAtCaret(el)) return;
+    }
     cancelEdit();
   }
 }
@@ -3623,12 +4076,28 @@ async function selectionToMarkdown(range) {
 
 async function writeSelectionToClipboard(e, sel) {
   e.preventDefault();
-  const md = await selectionToMarkdown(sel.getRangeAt(0)).catch(() => null);
-  if (md != null && md !== '') {
-    await navigator.clipboard.writeText(md).catch(() => {});
-  } else {
-    // 序列化失败时回退纯文本
-    await navigator.clipboard.writeText(sel.toString()).catch(() => {});
+  const range = sel.getRangeAt(0);
+  // 多格式剪贴板：
+  // text/plain = 纯净可见文本（粘贴到外部应用不带 Markdown 语法/转义符）；
+  // text/html  = 渲染富文本（Word/浏览器富粘贴；应用内粘贴经此通道还原格式——
+  //              data-md-fragment 标记包裹，onEditablePaste 识别后走 DOM→DTO→Markdown 通道）
+  const div = document.createElement('div');
+  div.append(range.cloneContents());
+  const html = `<div data-md-fragment>${div.innerHTML}</div>`;
+  const plain = sel.toString();
+  const ok = await navigator.clipboard
+    .write([
+      new ClipboardItem({
+        'text/plain': new Blob([plain], { type: 'text/plain' }),
+        'text/html': new Blob([html], { type: 'text/html' }),
+      }),
+    ])
+    .then(() => true)
+    .catch(() => false);
+  if (!ok) {
+    // 回退（旧 WebView 等）：Markdown 源（应用内粘贴可保真），再退纯文本
+    const md = await selectionToMarkdown(range).catch(() => null);
+    await navigator.clipboard.writeText(md && md !== '' ? md : plain).catch(() => {});
   }
 }
 
@@ -3744,7 +4213,136 @@ function rafKeepCaret() {
 }
 function onDocumentSelectionChange() {
   if (editingBlock.value?.type === 'table') updateTableCaretAlign();
-  if (editingId.value !== null) rafKeepCaret();
+  if (editingId.value !== null) {
+    rafKeepCaret();
+    updateInlineSourceReveal();
+  }
+}
+
+// 光标进入已渲染的行内样式（加粗/斜体/下划线/删除线/高亮/行内代码）时，
+// 给该元素挂 md-src 类显示其 Markdown 源标记（Typora 式源码显现）；
+// 纯 CSS 视觉标记（::before/::after），不改 DOM 结构、不参与提交。光标离开即移除。
+// 链接/字体样式不走 md-src：光标进入即展开为可编辑的源标记结构（expandLinkAtCaret/expandFontAtCaret）
+let srcRevealEl = null;
+// 光标移出字体模板（Esc 退出/方向键/点击到标记之外）：剔除淡灰标签装饰，只留样式文字
+//（渲染态）。焦点在编辑器外（菜单/RGB 输入框）或光标仍在模板内时不动作
+function collapseFontTemplateOutside(el) {
+  const marks = el.querySelectorAll('.md-font-mark');
+  if (!marks.length) return;
+  const sel = window.getSelection();
+  const anchor = sel.rangeCount ? sel.anchorNode : null;
+  const anchorEl = anchor ? (anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor) : null;
+  if (anchorEl && !el.contains(anchorEl)) return; // 焦点在编辑器外（菜单等）：保持现状
+  if (anchorEl?.closest?.('.md-font-mark, span[data-html-style], font')) return; // 光标仍在模板内
+  marks.forEach((m) => m.remove());
+}
+
+function updateInlineSourceReveal() {
+  const el = currentEditable();
+  if (el) collapseFontTemplateOutside(el);
+  let host = null;
+  if (el) {
+    const sel = window.getSelection();
+    if (sel.rangeCount && sel.isCollapsed) {
+      const anchor = sel.anchorNode;
+      const anchorEl = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
+      // 链接：光标进入时展开为源标记编辑形态（文字/地址都可编辑），不打 md-src
+      const a = anchorEl?.closest?.('a');
+      // 字体样式（颜色/字号 span、font 标签）：光标进入时展开 <font …> 原始标签编辑
+      const fontEl = anchorEl?.closest?.('span[data-html-style], font');
+      if (a && el.contains(a) && !a.closest('pre')) {
+        expandLinkAtCaret(a);
+      } else if (fontEl && el.contains(fontEl) && !fontEl.closest('pre')) {
+        expandFontAtCaret(fontEl);
+      } else {
+        host = anchorEl?.closest?.('strong, em, u, s, mark, code') || null;
+        // pre 内的 code（代码块）不算行内样式
+        if (host && (!el.contains(host) || host.closest('pre'))) host = null;
+      }
+    }
+  }
+  if (host === srcRevealEl) return;
+  srcRevealEl?.classList?.remove('md-src');
+  srcRevealEl = host;
+  srcRevealEl?.classList?.add('md-src');
+}
+
+// 光标进入字体样式（颜色/字号 span、font 标签）：展开为原始标签编辑形态
+//（<font …>文字</font>，标签淡灰），文字可编辑；提交时标签装饰不入内容
+//（domToInlines 跳过 .md-font-mark），样式 span 照常回写
+function expandFontAtCaret(fontEl) {
+  // 已有标签结构（刚插入的模板/已展开）不重复展开
+  const prev = fontEl.previousSibling;
+  if (prev?.nodeType === Node.ELEMENT_NODE && prev.classList?.contains('md-font-mark')) return;
+  const sel = window.getSelection();
+  const raw = fontEl.textContent;
+  // 光标在文字内的偏移（展开后恢复）；非文本锚点（元素边界）落到文字末尾
+  let caretOffset = raw.length;
+  if (sel.rangeCount && sel.isCollapsed) {
+    const anchor = sel.anchorNode;
+    if (anchor.nodeType === Node.TEXT_NODE && fontEl.contains(anchor)) {
+      const probe = document.createRange();
+      probe.selectNodeContents(fontEl);
+      probe.setEnd(anchor, sel.anchorOffset);
+      caretOffset = probe.toString().length;
+    }
+  }
+  const tag = fontEl.tagName.toLowerCase() === 'font' ? 'font' : 'span';
+  const attrs = [];
+  const color = fontEl.getAttribute('color');
+  if (color) attrs.push(`color="${color}"`);
+  const styleText = fontEl.getAttribute('style');
+  if (styleText) attrs.push(`style="${styleText}"`);
+  const mark = (t) => {
+    const s = document.createElement('span');
+    s.className = 'md-font-mark';
+    s.textContent = t;
+    return s;
+  };
+  fontEl.parentNode.insertBefore(mark(`<${tag}${attrs.length ? ' ' + attrs.join(' ') : ''}>`), fontEl);
+  fontEl.parentNode.insertBefore(mark(`</${tag}>`), fontEl.nextSibling);
+  // 恢复光标到文字内同一偏移
+  placeCaretAtTextOffset(fontEl, caretOffset);
+}
+
+// 光标进入链接：展开为原始标记编辑形态（[文字](url)，括号淡灰/文字蓝色），
+// 文字与地址都可编辑；提交时按标记结构折叠回链接（domToInlines 的 md-link-mark 分支）
+function expandLinkAtCaret(a) {
+  const sel = window.getSelection();
+  // 光标在链接文字内的偏移（展开后恢复）；非文本锚点（元素边界）落到文字末尾
+  const raw = a.textContent;
+  let caretOffset = raw.length;
+  if (sel.rangeCount && sel.isCollapsed) {
+    const anchor = sel.anchorNode;
+    if (anchor.nodeType === Node.TEXT_NODE && a.contains(anchor)) {
+      const probe = document.createRange();
+      probe.selectNodeContents(a);
+      probe.setEnd(anchor, sel.anchorOffset);
+      caretOffset = probe.toString().length;
+    }
+  }
+  const href = a.getAttribute('href') || '';
+  const mark = (t) => {
+    const s = document.createElement('span');
+    s.className = 'md-link-mark';
+    s.textContent = t;
+    return s;
+  };
+  const textSpan = document.createElement('span');
+  textSpan.className = 'md-link-text';
+  textSpan.textContent = raw;
+  const urlNode = document.createTextNode(href);
+  const frag = document.createDocumentFragment();
+  frag.append(mark('['), textSpan, mark(']'), mark('('), urlNode, mark(')'));
+  a.parentNode.replaceChild(frag, a);
+  const t = textSpan.firstChild;
+  if (t) {
+    const r = document.createRange();
+    r.setStart(t, Math.min(caretOffset, t.textContent.length));
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
 }
 function onDocumentMouseDown(e) {
   if (ctxMenu.value && !e.target.closest?.('.md-ctx-menu')) {
@@ -3943,7 +4541,35 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
             @paste="onEditablePaste"
             @keydown="onEditableKeydown"
             @dblclick="onEditableDblclick"
+            @click="onEditingClick"
+            @mousedown="onEditingMousedown"
             @blur="onEditableBlur"
+          ></div>
+          <!-- 公式/Mermaid/PlantUML 编辑实时预览（编辑区下方浮动面板；输入防抖更新，
+               语法未完成时保持上一帧）。右上角眼睛图标开关预览；点击预览框本身也可关闭 -->
+          <button
+            v-if="editPreviewKind(block)"
+            type="button"
+            class="md-code-copy md-math-preview-toggle"
+            :title="editPreviewHidden ? '显示预览' : '隐藏预览'"
+            @mousedown.prevent
+            @click.stop="editPreviewHidden = !editPreviewHidden"
+          >
+            <svg v-if="!editPreviewHidden" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M1.8 8s2.4-4.3 6.2-4.3S14.2 8 14.2 8 11.8 12.3 8 12.3 1.8 8 1.8 8z" />
+              <circle cx="8" cy="8" r="1.8" />
+            </svg>
+            <svg v-else viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 3l10 10" />
+              <path d="M6.2 4.2A6.7 6.7 0 018 3.7c3.8 0 6.2 4.3 6.2 4.3a11.6 11.6 0 01-2.1 2.6M9.8 11.8A6.7 6.7 0 018 12.3C4.2 12.3 1.8 8 1.8 8a11.6 11.6 0 012.1-2.6" />
+            </svg>
+          </button>
+          <div
+            v-if="editPreviewKind(block) && editPreviewSvg && !editPreviewHidden"
+            class="md-math-preview"
+            title="点击隐藏预览"
+            @click="editPreviewHidden = true"
+            v-html="editPreviewSvg"
           ></div>
         </template>
         <div
@@ -3968,6 +4594,8 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         @input="onEditableInput"
           @paste="onEditablePaste"
         @keydown="onEditableKeydown"
+        @click="onEditingClick"
+        @mousedown="onEditingMousedown"
         @blur="onEditableBlur"
       ></div>
       <div v-else class="min-h-24 cursor-text p-4" @click="startAppend"></div>
@@ -3997,10 +4625,10 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
   <!-- 斜杠命令菜单 / 围栏语言补全菜单（同一面板，互斥触发）：Teleport 移出根布局（多根片段），其挂载/卸载不再引起
        布局子节点重建；.t-app 包装使主题 blocks 规则（.t-app 作用域）同样生效 -->
   <Teleport to="body">
-    <div v-if="slashOpen || langOpen" class="t-app">
+    <div v-if="slashOpen || langOpen || pathOpen" class="t-app">
       <SlashMenu
-        :items="langOpen ? langMenuItems : slashItems"
-        :index="langOpen ? langIndex : slashIndex"
+        :items="langOpen ? langMenuItems : pathOpen ? pathMenuItems : slashItems"
+        :index="langOpen ? langIndex : pathOpen ? pathIndex : slashIndex"
         :text-row="slashTextRow"
         :text-col="slashTextCol"
         :table-rows="slashTableRows"
@@ -4011,10 +4639,10 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         :font-color-index="slashFontColorIndex"
         :font-size-index="slashFontSizeIndex"
         :rgb-error="rgbError"
-        :left="langOpen ? langPos.left : slashPos.left"
-        :top="langOpen ? langPos.top : slashPos.top"
-        @pick="(item, option) => (langOpen ? applyLangItem(item.id) : applySlashItem(item, option))"
-        @hover="(i) => (langOpen ? (langIndex = i) : (slashIndex = i))"
+        :left="langOpen ? langPos.left : pathOpen ? pathPos.left : slashPos.left"
+        :top="langOpen ? langPos.top : pathOpen ? pathPos.top : slashPos.top"
+        @pick="(item, option) => (langOpen ? applyLangItem(item.id) : pathOpen ? applyPathItem(item.id) : applySlashItem(item, option))"
+        @hover="(i) => (langOpen ? (langIndex = i) : pathOpen ? (pathIndex = i) : (slashIndex = i))"
         @text-cell="(c) => ((slashTextRow = c.row), (slashTextCol = c.col))"
         @table-field="(f) => (slashTableField = f)"
         @callout-type="(i) => (slashCalloutType = i)"

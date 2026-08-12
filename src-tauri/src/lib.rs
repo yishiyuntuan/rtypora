@@ -73,6 +73,7 @@ pub fn run() {
             files::open_markdown_parsed,
             files::read_markdown_parsed,
             files::list_dir,
+            files::complete_path,
             files::read_image_data_url,
             files::resolve_image_path,
             files::save_file,

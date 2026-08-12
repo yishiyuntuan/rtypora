@@ -255,6 +255,51 @@ pub fn list_dir(path: &str, sort: Option<&str>) -> Vec<DirEntry> {
     dirs
 }
 
+/// 图片路径补全：给定基准目录与 `./` 前缀输入，返回匹配的相对路径候选。
+/// 仅含目录（尾随 /，用于逐层钻取）与图片文件（png/jpg/jpeg/gif/webp/svg/bmp/ico/avif），
+/// 按最后一个 / 拆目录与名称前缀（大小写不敏感前缀匹配），隐藏文件跳过，上限 50 条。
+#[tauri::command]
+pub fn complete_path(base_dir: &str, prefix: &str) -> Vec<String> {
+    const IMAGE_EXTS: [&str; 9] = ["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico", "avif"];
+    let rel = prefix.strip_prefix("./").unwrap_or(prefix);
+    let (dir_part, name_prefix) = match rel.rfind('/') {
+        Some(i) => (&rel[..i], &rel[i + 1..]),
+        None => ("", rel),
+    };
+    let dir = std::path::Path::new(base_dir).join(dir_part);
+    let needle = name_prefix.to_lowercase();
+    let mut dirs = Vec::new();
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || !name.to_lowercase().starts_with(&needle) {
+                continue;
+            }
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+            if !is_dir && !IMAGE_EXTS.contains(&ext.as_str()) {
+                continue;
+            }
+            let base = if dir_part.is_empty() {
+                String::new()
+            } else {
+                format!("{dir_part}/")
+            };
+            if is_dir {
+                dirs.push(format!("./{base}{name}/"));
+            } else {
+                files.push(format!("./{base}{name}"));
+            }
+        }
+    }
+    dirs.sort();
+    files.sort();
+    dirs.extend(files);
+    dirs.truncate(50);
+    dirs
+}
+
 // ---------- 图片加载 ----------
 
 use base64::Engine;
