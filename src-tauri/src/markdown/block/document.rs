@@ -1024,7 +1024,13 @@ fn append_quote_separator_children(
 
 fn build_native_footnote_definition_block(
     lines: &[String],
+    depth: usize,
 ) -> Option<BlockNode> {
+    // 嵌套深度上限（防栈溢出）：脚注正文以整树重解析接入（quote/list 深度计数
+    // 会在此穿透——quote → footnote → quote 的循环嵌套必须累计深度）
+    if depth >= MAX_NESTING_DEPTH {
+        return None;
+    }
     let (id, first_line) = parse_footnote_definition_head(lines.first()?)?;
     let mut body_lines = Vec::new();
     if !first_line.is_empty() {
@@ -1043,7 +1049,7 @@ fn build_native_footnote_definition_block(
         }
     }
 
-    let children = build_blocks_from_lines_internal(&body_lines, false)
+    let children = build_blocks_from_lines_internal(&body_lines, false, depth + 1)
             .into_iter()
             .map(|root| root.node)
             .collect::<Vec<_>>();
@@ -1078,7 +1084,7 @@ pub fn parse_root_blocks(markdown: &str) -> Vec<RootBlock> {
         .split('\n')
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
-    build_blocks_from_lines_internal(&lines, true)
+    build_blocks_from_lines_internal(&lines, true, 0)
 }
 
 /// 从 Markdown 行序列构建块。
@@ -1086,12 +1092,13 @@ pub fn parse_root_blocks(markdown: &str) -> Vec<RootBlock> {
 /// 仅为运行时编辑器可安全编辑的语法创建原生块；更复杂的合法 Markdown
 /// 区域回退为 [`BlockKind::RawMarkdown`]，保存时原样保留。
 pub fn build_blocks_from_lines(lines: &[String]) -> Vec<RootBlock> {
-    build_blocks_from_lines_internal(lines, true)
+    build_blocks_from_lines_internal(lines, true, 0)
 }
 
 fn build_blocks_from_lines_internal(
     lines: &[String],
     allow_root_footnote_definitions: bool,
+    depth: usize,
 ) -> Vec<RootBlock> {
         let mut roots: Vec<RootBlock> = Vec::new();
         let mut index = 0;
@@ -1195,7 +1202,7 @@ fn build_blocks_from_lines_internal(
                 let end = collect_footnote_definition_region(lines, index);
                 if allow_root_footnote_definitions {
                     if let Some(block) =
-                        build_native_footnote_definition_block(&lines[index..end])
+                        build_native_footnote_definition_block(&lines[index..end], depth)
                     {
                         roots.push(RootBlock::spanned(block, index, end));
                     } else {
@@ -1269,7 +1276,7 @@ fn build_blocks_from_lines_internal(
             }
 
             if parse_list_marker(line).is_some() {
-                let (blocks, next_index) = collect_list_blocks(lines, index);
+                let (blocks, next_index) = collect_list_blocks_with_depth(lines, index, depth);
                 roots.extend(blocks);
                 index = next_index;
                 continue;
@@ -1277,7 +1284,7 @@ fn build_blocks_from_lines_internal(
 
             // 警告框容器语法（Docusaurus `:::type` / MkDocs `!!! type`；统一转换开启时识别）
             if crate::markdown::callout_unify_enabled()
-                && let Some((block, next_index)) = collect_fenced_callout_block(lines, index)
+                && let Some((block, next_index)) = collect_fenced_callout_block(lines, index, depth)
             {
                 roots.push(RootBlock::spanned(block, index, next_index));
                 index = next_index;
@@ -1285,7 +1292,7 @@ fn build_blocks_from_lines_internal(
             }
 
             if is_quote_start(line) {
-                let (block, next_index) = collect_quote_block(lines, index);
+                let (block, next_index) = collect_quote_block_with_depth(lines, index, depth);
                 roots.push(RootBlock::spanned(block, index, next_index));
                 index = next_index;
                 continue;
@@ -1398,6 +1405,7 @@ fn build_blocks_from_lines_internal(
     fn collect_fenced_callout_block(
         lines: &[String],
         start: usize,
+        depth: usize,
     ) -> Option<(BlockNode, usize)> {
         let opener = lines[start].trim_end();
         // Docusaurus: :::type[标题]
@@ -1422,7 +1430,7 @@ fn build_blocks_from_lines_internal(
             if index >= lines.len() {
                 return None; // 未闭合：按普通文本处理
             }
-            let block = build_native_callout_block(&inner, variant, title, 1)
+            let block = build_native_callout_block(&inner, variant, title, depth + 1)
                 .unwrap_or_else(|| raw_block(lines[start..=index].join("\n")));
             return Some((block, index + 1));
         }
@@ -1459,18 +1467,11 @@ fn build_blocks_from_lines_internal(
             if inner.is_empty() {
                 return None;
             }
-            let block = build_native_callout_block(&inner, variant, title, 1)
+            let block = build_native_callout_block(&inner, variant, title, depth + 1)
                 .unwrap_or_else(|| raw_block(lines[start..index].join("\n")));
             return Some((block, index));
         }
         None
-    }
-
-    fn collect_quote_block(
-        lines: &[String],
-        start: usize,
-    ) -> (BlockNode, usize) {
-        collect_quote_block_with_depth(lines, start, 0)
     }
 
     fn collect_quote_block_with_depth(
@@ -1568,7 +1569,7 @@ fn build_blocks_from_lines_internal(
                 }
                 let footnote_end = collect_footnote_definition_region(lines, index);
                 if let Some(footnote) =
-                    build_native_footnote_definition_block(&lines[index..footnote_end])
+                    build_native_footnote_definition_block(&lines[index..footnote_end], depth + 1)
                 {
                     children.push(footnote);
                     saw_child = true;
@@ -1794,7 +1795,7 @@ fn build_blocks_from_lines_internal(
             if is_footnote_definition_start(line) {
                 let footnote_end = collect_footnote_definition_region(lines, index);
                 if let Some(footnote) =
-                    build_native_footnote_definition_block(&lines[index..footnote_end])
+                    build_native_footnote_definition_block(&lines[index..footnote_end], depth + 1)
                 {
                     children.push(footnote);
                     index = footnote_end;
@@ -1907,13 +1908,6 @@ fn build_blocks_from_lines_internal(
         );
         block.children.extend(children);
         Some(block)
-    }
-
-    fn collect_list_blocks(
-        lines: &[String],
-        start: usize,
-    ) -> (Vec<RootBlock>, usize) {
-        collect_list_blocks_with_depth(lines, start, 0)
     }
 
     fn collect_list_blocks_with_depth(

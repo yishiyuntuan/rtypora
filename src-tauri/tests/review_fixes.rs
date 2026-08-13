@@ -184,3 +184,90 @@ fn 行首img拆分块偏移不重叠() {
     let slice_a = String::from_utf16(&utf16[a.start.unwrap()..a.end.unwrap()]).unwrap();
     assert!(slice_a.starts_with("<img") && slice_a.ends_with("/>"), "首块区间应恰为标签: {slice_a}");
 }
+
+// ---------- 二轮审查：递归深度与病态输入防护 ----------
+
+#[test]
+fn 超深链接嵌套不栈溢出() {
+    // 链接标签经子串全新解析（相互递归）：[[[..](u)](u)](u) 数千层曾栈溢出崩溃
+    let n = 5000;
+    let src = format!("{}a{}", "[".repeat(n), "](u)".repeat(n));
+    let blocks = markdown::parse_blocks(&src);
+    let rt = markdown::serialize_markdown(blocks);
+    assert!(rt.contains('a'), "内容不丢: 长度 {}", rt.len());
+}
+
+#[test]
+fn 超深行内a标签嵌套不栈溢出() {
+    let n = 3000;
+    let src = format!("{}x{}", "<a>".repeat(n), "</a>".repeat(n));
+    let blocks = markdown::parse_blocks(&src);
+    let rt = markdown::serialize_markdown(blocks);
+    assert!(rt.contains('x'), "内容不丢");
+}
+
+#[test]
+fn 超深html块嵌套不栈溢出() {
+    // html 文档解析器按标签嵌套递归：数万层 <div> 曾栈溢出
+    let n = 20000;
+    let src = format!("{}x{}", "<div>".repeat(n), "</div>".repeat(n));
+    let blocks = markdown::parse_blocks(&src);
+    let rt = markdown::serialize_markdown(blocks);
+    assert!(rt.contains('x'), "内容不丢");
+}
+
+#[test]
+fn 脚注引用交替嵌套不栈溢出() {
+    // 脚注正文整树重解析曾以深度 0 重启：quote → footnote → quote 循环穿透 128 层上限
+    let n = 800;
+    let mut src = String::from("[^0]:\n");
+    for i in 1..n {
+        src.push_str(&"    > ".repeat(i));
+        src.push_str(&format!("[^{i}]:\n"));
+    }
+    let blocks = markdown::parse_blocks(&src);
+    let rt = markdown::serialize_markdown(blocks);
+    assert!(rt.contains("[^0]:"), "内容不丢");
+}
+
+#[test]
+fn 病态未闭合起始符不二次方卡死() {
+    // 数万个未闭合 `[` 曾让每个位置各前扫一遍全文（O(n²)）；
+    // 扫描预算耗尽后按字面量保留（内容不丢，仅不再识别更多格式）
+    let src = "[a ".repeat(50000);
+    let blocks = markdown::parse_blocks(&src);
+    let rt = markdown::serialize_markdown(blocks);
+    assert!(rt.contains("[a"), "内容不丢: 长度 {}", rt.len());
+    // 未闭合 `<u>` / `$` 同理
+    let src2 = "<u>x ".repeat(20000);
+    let rt2 = markdown::serialize_markdown(markdown::parse_blocks(&src2));
+    assert!(rt2.contains("<u>"), "内容不丢");
+    let src3 = "$y$ ".repeat(20000) + &"$z".repeat(20000);
+    let rt3 = markdown::serialize_markdown(markdown::parse_blocks(&src3));
+    assert!(rt3.contains("$y$"), "正常公式识别不受预算影响: 长度 {}", rt3.len());
+}
+
+#[test]
+fn 危险协议实体拆分仍判原文() {
+    // 浏览器先解码属性值中的字符引用再解释协议：`javas&#99;ript:` 曾绕过 javascript: 检测
+    for src in [
+        "<a href=\"javascript:alert(1)\">x</a>",
+        "<a href=\"javas&#99;ript:alert(1)\">x</a>",
+        "<a href=\"javas&#x63;ript:alert(1)\">x</a>",
+        "<a href=\"Java\tScript:alert(1)\">x</a>",
+        "<a href=\"javascript&colon;alert(1)\">x</a>",
+        "<a href=\"vbscript:msgbox(1)\">x</a>",
+    ] {
+        let blocks = markdown::parse_blocks(src);
+        let json = serde_json::to_string(&blocks[0]).unwrap();
+        assert!(!json.contains("\"link\":{"), "{src} 不得解析为链接: {json}");
+    }
+    // on* 事件属性（块级路径）
+    let blocks = markdown::parse_blocks("<img src=\"./a.png\" onerror=\"alert(1)\">");
+    let json = serde_json::to_string(&blocks[0]).unwrap();
+    assert!(!json.contains("\"image\""), "onerror 图片不得按图片块渲染: {json}");
+    // 正常链接不受影响（行内 <a> 照常解析为链接）
+    let ok = markdown::parse_blocks("<a href=\"https://example.com\">x</a>");
+    let json = serde_json::to_string(&ok[0]).unwrap();
+    assert!(json.contains("example.com"), "正常链接应解析: {json}");
+}

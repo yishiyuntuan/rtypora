@@ -307,7 +307,7 @@ pub(crate) fn parse_html_document(raw_source: &str) -> HtmlDocument {
         return HtmlDocument::raw(raw_source);
     }
 
-    let (nodes, index, ok) = parse_nodes(raw_source, 0, None);
+    let (nodes, index, ok) = parse_nodes(raw_source, 0, None, 0);
     if !ok || index < raw_source.len() || nodes.is_empty() {
         return HtmlDocument::raw(raw_source);
     }
@@ -479,10 +479,15 @@ fn escape_html(value: &str) -> String {
     escaped
 }
 
+/// HTML 标签嵌套深度上限（防栈溢出）：parse_nodes 按标签嵌套递归，
+/// 超深嵌套（如数万层 `<div>`）的剩余内容按原文（raw）保留，不丢文本。
+const MAX_HTML_NESTING_DEPTH: usize = 128;
+
 fn parse_nodes(
     raw: &str,
     mut index: usize,
     closing_tag: Option<&str>,
+    depth: usize,
 ) -> (Vec<HtmlNode>, usize, bool) {
     let mut nodes = Vec::new();
     while index < raw.len() {
@@ -519,6 +524,11 @@ fn parse_nodes(
                 index = token.source_range.end;
             }
             TagKind::Open => {
+                // 嵌套深度上限（防栈溢出）：超深开标签起到文档结束按原文保留
+                if depth >= MAX_HTML_NESTING_DEPTH {
+                    nodes.push(raw_node(raw, token.source_range.start..raw.len()));
+                    return (nodes, raw.len(), closing_tag.is_none());
+                }
                 let class = classify_open_tag(&token);
                 if class == HtmlSafetyClass::RawTextBlock {
                     let raw_end = raw_region_end(raw, &token).unwrap_or(token.source_range.end);
@@ -537,7 +547,7 @@ fn parse_nodes(
                 }
 
                 let (children, child_end, closed) =
-                    parse_nodes(raw, token.source_range.end, Some(&token.name));
+                    parse_nodes(raw, token.source_range.end, Some(&token.name), depth + 1);
                 if !closed {
                     nodes.push(raw_node(raw, token.source_range.start..raw.len()));
                     return (nodes, raw.len(), closing_tag.is_none());
@@ -805,19 +815,79 @@ fn raw_region_end(raw: &str, token: &TagToken) -> Option<usize> {
         .or(Some(raw.len()))
 }
 
+/// 字符引用解码（仅危险协议判定）：`&#99;` / `&#x63;` 数值引用与少量协议相关命名引用。
+/// 浏览器先解码属性值中的字符引用再解释协议，不解码直接匹配会被 `javas&#99;ript:` 绕过。
+fn decode_char_reference(entity: &str) -> Option<char> {
+    if let Some(hex) = entity.strip_prefix("#x").or_else(|| entity.strip_prefix("#X")) {
+        return u32::from_str_radix(hex, 16).ok().and_then(char::from_u32);
+    }
+    if let Some(dec) = entity.strip_prefix('#') {
+        return dec.parse::<u32>().ok().and_then(char::from_u32);
+    }
+    match entity {
+        "Tab" => Some('\t'),
+        "NewLine" => Some('\n'),
+        "colon" => Some(':'),
+        _ => None,
+    }
+}
+
+/// URL 属性值规范化（仅危险协议判定）：解码字符引用、剥离空白/控制字符并小写化。
+fn normalize_url_for_danger_check(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '&' {
+            // 收集候选实体（上限 12 字符，仅字母数字与 #，防长串扫描）
+            let mut entity = String::new();
+            let mut closed = false;
+            for next in chars.by_ref().take(12) {
+                if next == ';' {
+                    closed = true;
+                    break;
+                }
+                if next.is_ascii_alphanumeric() || next == '#' {
+                    entity.push(next);
+                } else {
+                    break;
+                }
+            }
+            if closed {
+                if let Some(decoded) = decode_char_reference(&entity) {
+                    if !decoded.is_whitespace() && !decoded.is_control() {
+                        out.push(decoded.to_ascii_lowercase());
+                    }
+                } else {
+                    // 未识别引用：浏览器按原样保留——原样输出，不做拼合
+                    out.push('&');
+                    out.push_str(&entity);
+                    out.push(';');
+                }
+            } else {
+                out.push('&');
+                out.push_str(&entity);
+            }
+            continue;
+        }
+        if ch.is_whitespace() || ch.is_control() {
+            continue;
+        }
+        out.push(ch.to_ascii_lowercase());
+    }
+    out
+}
+
 pub(crate) fn has_dangerous_attrs(attrs: &[HtmlAttr]) -> bool {
     attrs.iter().any(|attr| {
         attr.name.starts_with("on")
             || attr.value.as_deref().is_some_and(|value| {
-                let normalized = value
-                    .chars()
-                    .filter(|ch| !ch.is_whitespace() && *ch != '\0')
-                    .collect::<String>()
-                    .to_ascii_lowercase();
                 matches!(
                     attr.name.as_str(),
                     "href" | "src" | "action" | "formaction" | "xlink:href"
-                ) && normalized.starts_with("javascript:")
+                ) && {
+                    let normalized = normalize_url_for_danger_check(value);
+                    normalized.starts_with("javascript:") || normalized.starts_with("vbscript:")
+                }
             })
     })
 }

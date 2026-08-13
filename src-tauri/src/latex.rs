@@ -102,12 +102,19 @@ pub fn render_inline_math(
     render_cached(body, color, base_font_size, INLINE_MATH_SCALE)
 }
 
+/// LaTeX 输入上限（防病态输入 DoS/栈溢出）：正常公式远低于此，
+/// 超限按语法错误处理（前端回退源码展示）。
+const MAX_LATEX_INPUT_BYTES: usize = 64 * 1024;
+
 fn render_cached(
     latex: &str,
     color: Option<&str>,
     base_font_size: Option<f32>,
     scale: f32,
 ) -> Option<String> {
+    if latex.len() > MAX_LATEX_INPUT_BYTES {
+        return None;
+    }
     let font_size = base_font_size.unwrap_or(16.0) * scale;
     let color = color.unwrap_or("#000000").to_string();
     let key = format!("{latex}|{color}|{font_size}");

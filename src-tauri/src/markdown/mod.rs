@@ -54,7 +54,9 @@ fn parse_to_dtos(markdown: &str) -> Vec<model::BlockDto> {
         let Some(first_src) = out[i].raw_fallback.clone() else {
             continue;
         };
-        let mid = out[i].start.unwrap() + first_src.encode_utf16().count();
+        // 防御性钳制：首块原文长度不应超过共享区间（解析层保证，此处兜底）
+        let mid = (out[i].start.unwrap() + first_src.encode_utf16().count())
+            .min(out[i].end.unwrap());
         out[i].end = Some(mid);
         out[i + 1].start = Some(mid);
     }

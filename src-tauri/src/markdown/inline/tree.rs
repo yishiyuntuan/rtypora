@@ -1223,9 +1223,20 @@ impl InlineTextTree {
         &self,
         reference_definitions: &LinkReferenceDefinitions,
     ) -> InlineEditResult {
+        self.normalize_inline_syntax_at_depth(reference_definitions, 0)
+    }
+
+    /// 携带递归基深度的变体：链接标签/`<a>` 内文的子串重解析从父级深度 +1 起计，
+    /// 与 parse_until 的分隔符递归共用同一上限（防相互递归栈溢出）。
+    pub(crate) fn normalize_inline_syntax_at_depth(
+        &self,
+        reference_definitions: &LinkReferenceDefinitions,
+        base_depth: usize,
+    ) -> InlineEditResult {
         let visible_text = self.visible_text();
         let tokens = flatten_tokens(&self.fragments);
         let mut builder = NormalizeBuilder::new(visible_text.len());
+        let budget = ScanBudget::new(tokens.len());
         let _ = parse_until(
             &tokens,
             0,
@@ -1235,7 +1246,8 @@ impl InlineTextTree {
             &mut builder,
             false,
             reference_definitions,
-            0,
+            base_depth,
+            &budget,
         );
         InlineEditResult {
             tree: InlineTextTree::from_fragments(builder.fragments),
@@ -1605,8 +1617,39 @@ fn flatten_tokens(fragments: &[InlineFragment]) -> Vec<CharToken> {
 /// unmatched ones are emitted as literal text.  Nested styles are handled by
 /// recursive calls that accumulate `extra_style`.
 // 行内嵌套深度上限（防栈溢出）：超深分隔符/行内 HTML 嵌套按未闭合处理
-//（开符按字面量保留，不丢文本内容）
+//（开符按字面量保留，不丢文本内容）。链接标签/`<a>` 内文的子串重解析经
+// normalize_inline_syntax_at_depth 与 parse_until 共用同一深度计数
+//（depth 参数贯穿所有路径），`[[..](x)](x)` 与 `<a><a>..</a></a>` 的
+// 相互递归同样受此上限约束；深度临界的标签/内文按字面量保留（文本不丢）。
 const MAX_INLINE_NESTING_DEPTH: usize = 128;
+
+/// 前瞻扫描预算（防 O(n²) 病态输入）：链接/脚注/行内公式/自动链接/行内 HTML 容器
+/// 与闭合分隔符的前瞻定位都是 O(n) 前扫；大量未闭合起始符（如数万个 `[`）会让每个
+/// 位置各扫一遍全文，解析退化为二次方（大段落每次按键重解析时编辑器卡死）。
+/// 每次顶层解析按 token 数给 4n+4096 步额度；耗尽后前瞻直接判未命中——
+/// 文本按字面量保留（不丢内容，只是不再识别更多格式）。
+#[derive(Debug)]
+pub(crate) struct ScanBudget {
+    remaining: std::cell::Cell<isize>,
+}
+
+impl ScanBudget {
+    fn new(token_count: usize) -> Self {
+        Self {
+            remaining: std::cell::Cell::new(
+                (token_count as isize).saturating_mul(4).saturating_add(4096),
+            ),
+        }
+    }
+
+    /// 记录一步前瞻扫描；预算耗尽返回 false（调用方按未命中/未闭合处理）。
+    #[inline]
+    fn step(&self) -> bool {
+        let left = self.remaining.get() - 1;
+        self.remaining.set(left);
+        left >= 0
+    }
+}
 
 fn parse_until(
     tokens: &[CharToken],
@@ -1618,6 +1661,7 @@ fn parse_until(
     inside_code: bool,
     reference_definitions: &LinkReferenceDefinitions,
     depth: usize,
+    budget: &ScanBudget,
 ) -> ParseResult {
     if depth >= MAX_INLINE_NESTING_DEPTH {
         return ParseResult {
@@ -1665,7 +1709,7 @@ fn parse_until(
 
         if !inside_code {
             if let Some(next_index) =
-                parse_inline_math(tokens, index, extra_style, extra_html_style.clone(), builder)
+                parse_inline_math(tokens, index, extra_style, extra_html_style.clone(), builder, budget)
             {
                 index = next_index;
                 continue;
@@ -1689,7 +1733,7 @@ fn parse_until(
         if !inside_code {
             if tokens[index].ch == '[' {
                 if let Some(next_index) =
-                    parse_footnote_reference(tokens, index, extra_style, extra_html_style.clone(), builder)
+                    parse_footnote_reference(tokens, index, extra_style, extra_html_style.clone(), builder, budget)
                 {
                     index = next_index;
                     continue;
@@ -1703,6 +1747,8 @@ fn parse_until(
                 extra_html_style.clone(),
                 builder,
                 reference_definitions,
+                depth,
+                budget,
             ) {
                 index = next_index;
                 continue;
@@ -1717,6 +1763,7 @@ fn parse_until(
                     builder,
                     reference_definitions,
                     depth,
+                    budget,
                 ) {
                     index = next_index;
                     continue;
@@ -1731,6 +1778,7 @@ fn parse_until(
                     extra_html_style.clone(),
                     builder,
                     reference_definitions,
+                    budget,
                 ) {
                     index = next_index;
                     continue;
@@ -1738,7 +1786,7 @@ fn parse_until(
             }
 
             if let Some(delimiter) = match_open_delimiter(tokens, index) {
-                if has_closing_delimiter(tokens, index, delimiter) {
+                if has_closing_delimiter(tokens, index, delimiter, budget) {
                     for token in &tokens[index..index + delimiter.token_len()] {
                         builder.drop_token(token);
                     }
@@ -1754,6 +1802,7 @@ fn parse_until(
                         is_code_delim,
                         reference_definitions,
                         depth + 1,
+                        budget,
                     );
                     if parsed.closed {
                         index = parsed.next_index;
@@ -1790,6 +1839,7 @@ fn parse_inline_math(
     extra_style: InlineStyle,
     extra_html_style: Option<HtmlInlineStyle>,
     builder: &mut NormalizeBuilder,
+    budget: &ScanBudget,
 ) -> Option<usize> {
     let (body_start, close_start, close_end, delimiter) = if tokens.get(index)?.ch == '$' {
         if token_is_backslash_escaped(tokens, index) {
@@ -1797,14 +1847,14 @@ fn parse_inline_math(
         }
         if matches_sequence(tokens, index, "$$") {
             // 行内展示公式 `$$...$$`（如 `$$ 文本 $$ $$ 公式 $$` 同行多段）
-            let close = locate_inline_double_dollar_math_close(tokens, index + 2)?;
+            let close = locate_inline_double_dollar_math_close(tokens, index + 2, budget)?;
             (index + 2, close, close + 1, InlineMathDelimiter::DollarDouble)
         } else {
-            let close = locate_inline_dollar_math_close(tokens, index + 1)?;
+            let close = locate_inline_dollar_math_close(tokens, index + 1, budget)?;
             (index + 1, close, close, InlineMathDelimiter::Dollar)
         }
     } else if matches_sequence(tokens, index, "\\(") {
-        let close = locate_inline_paren_math_close(tokens, index + 2)?;
+        let close = locate_inline_paren_math_close(tokens, index + 2, budget)?;
         (index + 2, close, close + 1, InlineMathDelimiter::Paren)
     } else {
         return None;
@@ -1861,8 +1911,11 @@ fn parse_inline_math(
     Some(close_end + 1)
 }
 
-fn locate_inline_dollar_math_close(tokens: &[CharToken], mut cursor: usize) -> Option<usize> {
+fn locate_inline_dollar_math_close(tokens: &[CharToken], mut cursor: usize, budget: &ScanBudget) -> Option<usize> {
     while cursor < tokens.len() {
+        if !budget.step() {
+            return None;
+        }
         let token = &tokens[cursor];
         if token.ch == '\n' || token.ch == '\r' {
             return None;
@@ -1878,8 +1931,11 @@ fn locate_inline_dollar_math_close(tokens: &[CharToken], mut cursor: usize) -> O
     None
 }
 
-fn locate_inline_double_dollar_math_close(tokens: &[CharToken], mut cursor: usize) -> Option<usize> {
+fn locate_inline_double_dollar_math_close(tokens: &[CharToken], mut cursor: usize, budget: &ScanBudget) -> Option<usize> {
     while cursor < tokens.len() {
+        if !budget.step() {
+            return None;
+        }
         let token = &tokens[cursor];
         if token.ch == '\n' || token.ch == '\r' {
             return None;
@@ -1892,8 +1948,11 @@ fn locate_inline_double_dollar_math_close(tokens: &[CharToken], mut cursor: usiz
     None
 }
 
-fn locate_inline_paren_math_close(tokens: &[CharToken], mut cursor: usize) -> Option<usize> {
+fn locate_inline_paren_math_close(tokens: &[CharToken], mut cursor: usize, budget: &ScanBudget) -> Option<usize> {
     while cursor + 1 < tokens.len() {
+        if !budget.step() {
+            return None;
+        }
         if tokens[cursor].ch == '\n' || tokens[cursor].ch == '\r' {
             return None;
         }
@@ -1947,6 +2006,7 @@ fn parse_footnote_reference(
     extra_style: InlineStyle,
     extra_html_style: Option<HtmlInlineStyle>,
     builder: &mut NormalizeBuilder,
+    budget: &ScanBudget,
 ) -> Option<usize> {
     if tokens.get(index)?.ch != '[' || tokens.get(index + 1)?.ch != '^' {
         return None;
@@ -1954,6 +2014,9 @@ fn parse_footnote_reference(
 
     let mut cursor = index + 2;
     let end_index = loop {
+        if !budget.step() {
+            return None;
+        }
         let token = tokens.get(cursor)?;
         if token.ch == '\\' {
             cursor += 2;
@@ -2022,13 +2085,28 @@ fn parse_inline_link(
     extra_html_style: Option<HtmlInlineStyle>,
     builder: &mut NormalizeBuilder,
     reference_definitions: &LinkReferenceDefinitions,
+    depth: usize,
+    budget: &ScanBudget,
 ) -> Option<usize> {
-    let located = locate_inline_link(tokens, index, reference_definitions)?;
+    // 标签经子串全新解析（与链接/`<a>` 相互递归）：与分隔符递归共用深度上限；
+    // 超限时标签内容按字面量保留（不再解析标记，文本不丢）
+    if depth >= MAX_INLINE_NESTING_DEPTH {
+        return None;
+    }
+    let located = locate_inline_link(tokens, index, reference_definitions, budget)?;
     let label_end = located.label_end;
     let label_tokens = &tokens[index + 1..label_end];
     let label_markdown = tokens_to_string(label_tokens);
-    let mut label_result = InlineTextTree::plain(label_markdown)
-        .normalize_inline_syntax_with_link_references(reference_definitions);
+    let mut label_result = if depth + 1 >= MAX_INLINE_NESTING_DEPTH {
+        let len = label_markdown.len();
+        InlineEditResult {
+            tree: InlineTextTree::plain(label_markdown),
+            visible_to_normalized: (0..=len).collect(),
+        }
+    } else {
+        InlineTextTree::plain(label_markdown)
+            .normalize_inline_syntax_at_depth(reference_definitions, depth + 1)
+    };
     apply_extra_style_to_fragments(
         &mut label_result.tree.fragments,
         extra_style,
@@ -2090,8 +2168,9 @@ fn parse_autolink(
     extra_html_style: Option<HtmlInlineStyle>,
     builder: &mut NormalizeBuilder,
     _reference_definitions: &LinkReferenceDefinitions,
+    budget: &ScanBudget,
 ) -> Option<usize> {
-    let end_index = locate_autolink(tokens, index)?;
+    let end_index = locate_autolink(tokens, index, budget)?;
     let target_tokens = &tokens[index + 1..end_index];
     let target = tokens_to_string(target_tokens);
     let fragments = vec![InlineFragment {
@@ -2163,14 +2242,20 @@ fn parse_inline_html_container(
     builder: &mut NormalizeBuilder,
     reference_definitions: &LinkReferenceDefinitions,
     depth: usize,
+    budget: &ScanBudget,
 ) -> Option<usize> {
-    let tag = locate_inline_html_open_tag(tokens, index)?;
+    // 行内 HTML 容器与分隔符递归共用深度上限：超限返回 None，
+    // 由调用方按字面量逐字符保留（不丢内容；不得在丢弃开闭标签后才 bail——会丢内文）
+    if depth >= MAX_INLINE_NESTING_DEPTH {
+        return None;
+    }
+    let tag = locate_inline_html_open_tag(tokens, index, budget)?;
     if tag.self_closing || !is_inline_tag(&tag.name) || has_dangerous_attrs(&tag.attrs) {
         return None;
     }
 
     let (close_start, close_end) =
-        locate_matching_inline_html_close(tokens, tag.end_index + 1, &tag.name)?;
+        locate_matching_inline_html_close(tokens, tag.end_index + 1, &tag.name, budget)?;
 
     // <a> 容器：内容 fragments 统一挂链接（href → destination、title 属性保留；
     // 无 href 为空调接——Typora 式渲染为链接样式），序列化为 markdown 链接语法
@@ -2194,8 +2279,17 @@ fn parse_inline_html_container(
 
         let inner_tokens = &tokens[tag.end_index + 1..close_start];
         let inner_markdown = tokens_to_string(inner_tokens);
-        let mut inner_result = InlineTextTree::plain(inner_markdown)
-            .normalize_inline_syntax_with_link_references(reference_definitions);
+        // 深度临界：内文按字面量保留（不再解析标记，文本不丢）
+        let mut inner_result = if depth + 1 >= MAX_INLINE_NESTING_DEPTH {
+            let len = inner_markdown.len();
+            InlineEditResult {
+                tree: InlineTextTree::plain(inner_markdown),
+                visible_to_normalized: (0..=len).collect(),
+            }
+        } else {
+            InlineTextTree::plain(inner_markdown)
+                .normalize_inline_syntax_at_depth(reference_definitions, depth + 1)
+        };
         apply_extra_style_to_fragments(
             &mut inner_result.tree.fragments,
             extra_style,
@@ -2269,6 +2363,7 @@ fn parse_inline_html_container(
         false,
         reference_definitions,
         depth + 1,
+        budget,
     );
     for token in &tokens[close_start..=close_end] {
         builder.drop_token(token);
@@ -2342,6 +2437,7 @@ fn locate_inline_link(
     tokens: &[CharToken],
     index: usize,
     reference_definitions: &LinkReferenceDefinitions,
+    budget: &ScanBudget,
 ) -> Option<LocatedInlineLink> {
     if tokens.get(index)?.ch != '[' {
         return None;
@@ -2353,6 +2449,9 @@ fn locate_inline_link(
     let mut label_depth = 0usize;
     let mut cursor = index + 1;
     let label_end = loop {
+        if !budget.step() {
+            return None;
+        }
         let token = tokens.get(cursor)?;
         if token.ch == '\\' {
             cursor += 2;
@@ -2374,6 +2473,9 @@ fn locate_inline_link(
             let mut paren_depth = 0usize;
             cursor = url_start;
             let url_end = loop {
+                if !budget.step() {
+                    return None;
+                }
                 let token = tokens.get(cursor)?;
                 if token.ch == '\\' {
                     cursor += 2;
@@ -2407,6 +2509,9 @@ fn locate_inline_link(
             let reference_start = label_end + 2;
             cursor = reference_start;
             let reference_end = loop {
+                if !budget.step() {
+                    return None;
+                }
                 let token = tokens.get(cursor)?;
                 if token.ch == '\\' {
                     cursor += 2;
@@ -2453,13 +2558,16 @@ fn locate_inline_link(
     }
 }
 
-fn locate_autolink(tokens: &[CharToken], index: usize) -> Option<usize> {
+fn locate_autolink(tokens: &[CharToken], index: usize, budget: &ScanBudget) -> Option<usize> {
     if tokens.get(index)?.ch != '<' {
         return None;
     }
 
     let mut cursor = index + 1;
     let end_index = loop {
+        if !budget.step() {
+            return None;
+        }
         let token = tokens.get(cursor)?;
         if token.ch == '\\' {
             cursor += 2;
@@ -2472,7 +2580,7 @@ fn locate_autolink(tokens: &[CharToken], index: usize) -> Option<usize> {
     };
 
     let target = tokens_to_string(&tokens[index + 1..end_index]);
-    (!target.is_empty() && !looks_like_non_autolink_html_tag(tokens, end_index, &target))
+    (!target.is_empty() && !looks_like_non_autolink_html_tag(tokens, end_index, &target, budget))
         .then_some(end_index)
 }
 
@@ -2480,7 +2588,7 @@ fn tokens_to_string(tokens: &[CharToken]) -> String {
     tokens.iter().map(|token| token.ch).collect()
 }
 
-fn locate_inline_html_open_tag(tokens: &[CharToken], index: usize) -> Option<InlineHtmlTag> {
+fn locate_inline_html_open_tag(tokens: &[CharToken], index: usize, budget: &ScanBudget) -> Option<InlineHtmlTag> {
     if tokens.get(index)?.ch != '<' {
         return None;
     }
@@ -2503,6 +2611,9 @@ fn locate_inline_html_open_tag(tokens: &[CharToken], index: usize) -> Option<Inl
     let attrs_start = cursor;
     let mut quote = None;
     while cursor < tokens.len() {
+        if !budget.step() {
+            return None;
+        }
         let ch = tokens[cursor].ch;
         if let Some(active_quote) = quote {
             if ch == active_quote {
@@ -2539,6 +2650,7 @@ fn locate_inline_html_close_tag(
     tokens: &[CharToken],
     index: usize,
     expected_name: &str,
+    budget: &ScanBudget,
 ) -> Option<usize> {
     if tokens.get(index)?.ch != '<' || tokens.get(index + 1)?.ch != '/' {
         return None;
@@ -2549,6 +2661,9 @@ fn locate_inline_html_close_tag(
         .get(cursor)
         .is_some_and(|token| token.ch.is_whitespace())
     {
+        if !budget.step() {
+            return None;
+        }
         cursor += 1;
     }
     let name_start = cursor;
@@ -2566,6 +2681,9 @@ fn locate_inline_html_close_tag(
         .get(cursor)
         .is_some_and(|token| token.ch.is_whitespace())
     {
+        if !budget.step() {
+            return None;
+        }
         cursor += 1;
     }
     (tokens.get(cursor)?.ch == '>').then_some(cursor)
@@ -2575,15 +2693,19 @@ fn locate_matching_inline_html_close(
     tokens: &[CharToken],
     mut cursor: usize,
     name: &str,
+    budget: &ScanBudget,
 ) -> Option<(usize, usize)> {
     let mut depth = 1usize;
     while cursor < tokens.len() {
+        if !budget.step() {
+            return None;
+        }
         if tokens[cursor].ch != '<' {
             cursor += 1;
             continue;
         }
 
-        if let Some(close_end) = locate_inline_html_close_tag(tokens, cursor, name) {
+        if let Some(close_end) = locate_inline_html_close_tag(tokens, cursor, name, budget) {
             depth = depth.saturating_sub(1);
             if depth == 0 {
                 return Some((cursor, close_end));
@@ -2592,7 +2714,7 @@ fn locate_matching_inline_html_close(
             continue;
         }
 
-        if let Some(open) = locate_inline_html_open_tag(tokens, cursor) {
+        if let Some(open) = locate_inline_html_open_tag(tokens, cursor, budget) {
             if open.name == name && !open.self_closing {
                 depth += 1;
             }
@@ -2606,7 +2728,12 @@ fn locate_matching_inline_html_close(
     None
 }
 
-fn looks_like_non_autolink_html_tag(tokens: &[CharToken], end_index: usize, target: &str) -> bool {
+fn looks_like_non_autolink_html_tag(
+    tokens: &[CharToken],
+    end_index: usize,
+    target: &str,
+    budget: &ScanBudget,
+) -> bool {
     let target = target.trim();
     if target.starts_with('/') {
         let rest = target.trim_start_matches('/').trim();
@@ -2622,9 +2749,36 @@ fn looks_like_non_autolink_html_tag(tokens: &[CharToken], end_index: usize, targ
     let Some((tag_name, _)) = html_tag_name_with_attrs(target) else {
         return false;
     };
-    let rest = tokens_to_string(&tokens[end_index + 1..]).to_ascii_lowercase();
-    let tag_name = tag_name.to_ascii_lowercase();
-    rest.contains(&format!("</{tag_name}>"))
+    closing_tag_ahead(tokens, end_index + 1, tag_name, budget)
+}
+
+/// 在 token 流中向前查找 `</name>`（大小写不敏感，带扫描预算；
+/// 直接在 token 流上匹配，不再把剩余全文拼成中间字符串）。
+fn closing_tag_ahead(tokens: &[CharToken], from: usize, tag_name: &str, budget: &ScanBudget) -> bool {
+    let mut pattern = Vec::with_capacity(tag_name.len() + 3);
+    pattern.push('<');
+    pattern.push('/');
+    pattern.extend(tag_name.chars().map(|ch| ch.to_ascii_lowercase()));
+    pattern.push('>');
+    let mut matched = 0usize;
+    let mut cursor = from;
+    while cursor < tokens.len() {
+        if !budget.step() {
+            return false;
+        }
+        let ch = tokens[cursor].ch.to_ascii_lowercase();
+        if ch == pattern[matched] {
+            matched += 1;
+            if matched == pattern.len() {
+                return true;
+            }
+        } else {
+            // 模式首字符 '<' 不会出现在标签名中，失配后按是否 '<' 重置即可
+            matched = usize::from(ch == '<');
+        }
+        cursor += 1;
+    }
+    false
 }
 
 fn html_tag_name_with_attrs(target: &str) -> Option<(&str, bool)> {
@@ -2744,7 +2898,7 @@ fn backtick_run_len(tokens: &[CharToken], index: usize) -> usize {
     len
 }
 
-fn has_closing_delimiter(tokens: &[CharToken], index: usize, delimiter: Delimiter) -> bool {
+fn has_closing_delimiter(tokens: &[CharToken], index: usize, delimiter: Delimiter, budget: &ScanBudget) -> bool {
     let skip = delimiter.token_len();
     let close_str = delimiter.close();
 
@@ -2753,6 +2907,9 @@ fn has_closing_delimiter(tokens: &[CharToken], index: usize, delimiter: Delimite
     if let Delimiter::CodeMarkdown { .. } = delimiter {
         let mut cursor = index + skip;
         while cursor < tokens.len() {
+            if !budget.step() {
+                return false;
+            }
             if tokens[cursor].ch == '\\' {
                 if let Some(escaped_len) = escaped_sequence_token_len(tokens, cursor) {
                     cursor += 1 + escaped_len;
@@ -2778,13 +2935,16 @@ fn has_closing_delimiter(tokens: &[CharToken], index: usize, delimiter: Delimite
             Delimiter::SubscriptMarkdown => '~',
             _ => unreachable!(),
         };
-        return locate_script_close(tokens, index + skip, marker).is_some();
+        return locate_script_close(tokens, index + skip, marker, budget).is_some();
     }
 
     let body_start = index + skip;
     let requires_body = emphasis_requires_body(delimiter);
     let mut cursor = body_start;
     while cursor < tokens.len() {
+        if !budget.step() {
+            return false;
+        }
         if tokens[cursor].ch == '\\' {
             if let Some(escaped_len) = escaped_sequence_token_len(tokens, cursor) {
                 cursor += 1 + escaped_len;
@@ -2825,9 +2985,12 @@ fn emphasis_requires_body(delimiter: Delimiter) -> bool {
     )
 }
 
-fn locate_script_close(tokens: &[CharToken], mut cursor: usize, marker: char) -> Option<usize> {
+fn locate_script_close(tokens: &[CharToken], mut cursor: usize, marker: char, budget: &ScanBudget) -> Option<usize> {
     let body_start = cursor;
     while cursor < tokens.len() {
+        if !budget.step() {
+            return None;
+        }
         if tokens[cursor].ch == '\\' {
             if let Some(escaped_len) = escaped_sequence_token_len(tokens, cursor) {
                 cursor += 1 + escaped_len;

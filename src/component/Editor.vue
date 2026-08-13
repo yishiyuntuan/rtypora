@@ -1617,6 +1617,39 @@ function extractSlashFrags(el) {
 
 // 应用完成后把摘除的前后内容放回：模板类（data-raw pre/p）放回容器首尾（不混入模板原文），
 // 行内格式放回样式元素两侧，块级转换放回新结构文本宿主的首尾（光标落末尾）
+
+// 摘录片段 → 行内内容：extractContents 从容器起点摘录会克隆部分选中的块级外壳
+//（p/h1-h6/li/ul/…），直接插进行内上下文会形成块套块——样式元素（及 md-src 源标记）
+// 被挤到下一行。递归展开块级克隆，剔除 contenteditable=false 的交互控件
+//（任务勾选框/callout 标签等），相邻块内容之间补 <br> 保住换行
+function slashFragInline(frag) {
+  const BLOCK_SHELLS = new Set([
+    'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
+    'LI', 'UL', 'OL', 'BLOCKQUOTE', 'DIV', 'PRE', 'TABLE', 'SECTION',
+  ]);
+  const out = document.createDocumentFragment();
+  const walk = (node) => {
+    for (const child of [...node.childNodes]) {
+      if (child.nodeType !== Node.ELEMENT_NODE) {
+        out.append(child);
+        continue;
+      }
+      if (child.getAttribute('contenteditable') === 'false') continue;
+      if (BLOCK_SHELLS.has(child.tagName)) {
+        // 与已有内容之间补换行（首块、或前导已是 <br> 时不补）
+        if (out.childNodes.length && out.lastChild.nodeName !== 'BR') {
+          out.append(document.createElement('br'));
+        }
+        walk(child);
+      } else {
+        out.append(child);
+      }
+    }
+  };
+  walk(frag);
+  return out;
+}
+
 function spliceSlashFrags(el, frags, id) {
   const TEMPLATE_IDS = new Set([
     'link', 'image', 'inlineMath', 'mathBlock', 'mermaidBlock', 'callout', 'sectionBlock',
@@ -1631,8 +1664,9 @@ function spliceSlashFrags(el, frags, id) {
   if (INLINE_IDS.has(id)) {
     const wrap = el.querySelector('strong, em, u, s, mark, code');
     if (wrap) {
-      wrap.parentNode.insertBefore(frags.before, wrap);
-      wrap.parentNode.insertBefore(frags.after, wrap.nextSibling);
+      // 片段含块级外壳克隆，须展开为行内内容，否则样式元素被挤到下一行
+      wrap.parentNode.insertBefore(slashFragInline(frags.before), wrap);
+      wrap.parentNode.insertBefore(slashFragInline(frags.after), wrap.nextSibling);
     }
     return;
   }
@@ -1640,8 +1674,8 @@ function spliceSlashFrags(el, frags, id) {
   if (!host) return;
   // 空结构占位 br 先移除（避免夹在前后文之间产生换行）
   if (host.childNodes.length === 1 && host.firstChild.tagName === 'BR') host.innerHTML = '';
-  host.prepend(frags.before);
-  host.append(frags.after);
+  host.prepend(slashFragInline(frags.before));
+  host.append(slashFragInline(frags.after));
   placeCursorAtEnd(host);
 }
 
@@ -2948,6 +2982,13 @@ async function onEditablePaste(e) {
   if (!baseDir) return;
   const file = imageItem.getAsFile();
   if (!file) return;
+  // 大小上限：字节经 IPC 以数字数组传输（JS 数组 + JSON 序列化放大数倍内存），
+  // 超大剪贴板图片（如整张位图截图）会撑爆渲染进程内存
+  const MAX_PASTE_IMAGE_BYTES = 32 * 1024 * 1024;
+  if (file.size > MAX_PASTE_IMAGE_BYTES) {
+    console.warn(`粘贴图片过大（${(file.size / 1024 / 1024).toFixed(1)}MB > 32MB），已忽略`);
+    return;
+  }
   const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
   const ext = imageItem.type.split('/')[1] || 'png';
   const subDir = behavior === 'assets' ? 'assets' : null;
@@ -3522,6 +3563,9 @@ async function toggleTask(block) {
   const source = content.value.slice(rootBlock.start, rootBlock.end);
   const next = await invoke('toggle_task_markdown', { source, checked: !block.checked, occurrence });
   if (next === source) return;
+  // 竞态守卫：await 期间文档可能已被编辑（输入/其他提交），偏移体系失效则放弃本次切换
+  //（重新点击时按新偏移重试），不得按旧偏移写回——否则会替换错误区间
+  if (content.value.slice(rootBlock.start, rootBlock.end) !== source) return;
   content.value = content.value.slice(0, rootBlock.start) + next + content.value.slice(rootBlock.end);
   await reparseRegion(index, rootBlock, next);
 }

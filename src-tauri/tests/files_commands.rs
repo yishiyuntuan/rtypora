@@ -177,3 +177,43 @@ fn 换行符规范化_crlf文档() {
     assert!(!opened2.content.contains('\r'));
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn 粘贴图片路径与扩展名净化() {
+    use tauri_app_lib::files::save_pasted_image;
+    let dir = std::env::temp_dir().join(format!("tauri-app-paste-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let dir_str = dir.to_str().unwrap().to_string();
+    let bytes = vec![1u8, 2, 3, 4];
+
+    // 目录穿越：.. 组件 / 绝对路径一律拒绝
+    assert!(save_pasted_image(bytes.clone(), &dir_str, Some("../escape"), None).is_none());
+    assert!(save_pasted_image(bytes.clone(), &dir_str, Some("a/../../escape"), None).is_none());
+    assert!(!dir.parent().unwrap().join("escape").exists(), "不得写出目标目录之外");
+    // 扩展名净化：非 ASCII 字母数字剔除（防 x/../y 形式的文件名穿越）
+    let ok = save_pasted_image(bytes.clone(), &dir_str, None, Some("p\"g/../x")).expect("净化后应成功");
+    assert!(ok.starts_with("./paste-") && ok.ends_with(".pgx"), "扩展名仅保留字母数字: {ok}");
+    // 正常 assets 子目录与扩展名
+    let ok2 = save_pasted_image(bytes, &dir_str, Some("assets"), Some("jpeg")).expect("assets 子目录应成功");
+    assert!(ok2.starts_with("./assets/paste-") && ok2.ends_with(".jpeg"), "{ok2}");
+    assert!(dir.join("assets").is_dir(), "子目录已创建");
+    // 空字节拒绝
+    assert!(save_pasted_image(Vec::new(), &dir_str, None, None).is_none());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn 图片dataurl大小上限() {
+    use tauri_app_lib::files::read_image_data_url;
+    let dir = std::env::temp_dir().join(format!("tauri-app-imgcap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    // 超过 64MB 上限的文件拒绝读取（防内存 DoS）；小文件正常
+    let big = dir.join("big.png");
+    std::fs::write(&big, vec![0u8; 65 * 1024 * 1024]).unwrap();
+    assert!(read_image_data_url(big.to_str().unwrap(), None).is_none(), "超限拒绝");
+    let small = dir.join("small.png");
+    std::fs::write(&small, b"\x89PNG").unwrap();
+    let url = read_image_data_url(small.to_str().unwrap(), None).expect("小文件正常读取");
+    assert!(url.starts_with("data:image/png;base64,"), "{url}");
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -13,6 +13,35 @@ const props = defineProps({
 const documentDir = inject('documentDir', { value: null });
 const html = ref('');
 
+// 渲染前净化：section 原文来自文档本身，v-html 上屏时 <script> 虽不执行，
+// 但 on* 事件属性（img onerror 等）、javascript: 链接、iframe/srcdoc 会真正生效——
+// 打开恶意文档即在 webview 上下文执行任意脚本（可经 IPC 读写任意文件），必须剔除。
+const BLOCKED_TAGS = new Set([
+  'SCRIPT', 'IFRAME', 'OBJECT', 'EMBED', 'FORM', 'INPUT', 'BUTTON', 'TEXTAREA', 'SELECT',
+  'LINK', 'META', 'BASE', 'AUDIO', 'VIDEO', 'SOURCE', 'TRACK', 'FRAME', 'FRAMESET', 'NOSCRIPT',
+]);
+const URL_ATTRS = new Set(['href', 'src', 'xlink:href', 'formaction', 'action']);
+function sanitizeSectionDom(root) {
+  for (const el of [root, ...root.querySelectorAll('*')]) {
+    if (BLOCKED_TAGS.has(el.tagName)) {
+      el.remove();
+      continue;
+    }
+    for (const attr of [...el.attributes]) {
+      const name = attr.name.toLowerCase();
+      if (name.startsWith('on') || name === 'srcdoc') {
+        el.removeAttribute(attr.name);
+        continue;
+      }
+      if (URL_ATTRS.has(name)) {
+        // DOMParser 已解码字符引用；剥离空白/控制字符后判定危险协议
+        const v = attr.value.replace(/[\s\u0000-\u001F\u007F]+/g, '').toLowerCase();
+        if (v.startsWith('javascript:') || v.startsWith('vbscript:')) el.removeAttribute(attr.name);
+      }
+    }
+  }
+}
+
 watch(
   () => [props.raw, documentDir.value, renderVersion.value],
   async () => {
@@ -37,6 +66,7 @@ watch(
         else img.removeAttribute('src');
       }),
     );
+    sanitizeSectionDom(section);
     html.value = section.outerHTML;
   },
   { immediate: true },

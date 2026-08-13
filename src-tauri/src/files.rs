@@ -63,13 +63,29 @@ pub struct OpenedFileParsed {
 /// 换行符规范化：CRLF/CR → LF（解析器与 UTF-16 偏移体系只认 \n）；
 /// 返回规范化文本与原文档主导风格（CRLF 居多记 "crlf"，否则 "lf"）。
 fn normalize_line_endings(text: &str) -> (String, &'static str) {
-    let crlf = text.matches("\r\n").count();
-    let lone_lf = text.matches('\n').count() - crlf;
-    let style = if crlf > lone_lf { "crlf" } else { "lf" };
-    if !text.contains('\r') {
-        return (text.to_string(), style);
+    // 单趟扫描：统计 CRLF/孤立 LF 并同步完成替换（原实现三次全文扫描）
+    let mut out = String::with_capacity(text.len());
+    let mut crlf = 0usize;
+    let mut lone_lf = 0usize;
+    let mut rest = text;
+    while let Some(pos) = rest.find(['\r', '\n']) {
+        out.push_str(&rest[..pos]);
+        let bytes = rest.as_bytes();
+        if bytes[pos] == b'\r' {
+            if bytes.get(pos + 1) == Some(&b'\n') {
+                crlf += 1;
+                rest = &rest[pos + 2..];
+            } else {
+                rest = &rest[pos + 1..];
+            }
+        } else {
+            lone_lf += 1;
+            rest = &rest[pos + 1..];
+        }
+        out.push('\n');
     }
-    (text.replace("\r\n", "\n").replace('\r', "\n"), style)
+    out.push_str(rest);
+    (out, if crlf > lone_lf { "crlf" } else { "lf" })
 }
 
 /// 前缀安全截断点：target 之后首个「非代码围栏内空行」的行首。
@@ -225,30 +241,33 @@ pub fn list_dir(path: &str, sort: Option<&str>) -> Vec<DirEntry> {
         }
     }
     let mode = sort.unwrap_or("asc");
-    let by_name = |a: &DirEntry, b: &DirEntry| a.name.to_lowercase().cmp(&b.name.to_lowercase());
-    // 时间戳取不到（权限/删除竞争）时按最早处理（排升序在前、降序在后）
-    let time_of = |e: &DirEntry, created: bool| {
-        std::fs::metadata(&e.path)
-            .and_then(|m| if created { m.created() } else { m.modified() })
-            .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
-    };
     match mode {
         "desc" => {
-            dirs.sort_by(|a, b| by_name(a, b).reverse());
-            files.sort_by(|a, b| by_name(a, b).reverse());
+            // cached_key：名称小写化仅每项一次（原实现每次比较都分配两次小写串）
+            dirs.sort_by_cached_key(|e| e.name.to_lowercase());
+            dirs.reverse();
+            files.sort_by_cached_key(|e| e.name.to_lowercase());
+            files.reverse();
         }
         "created_asc" | "created_desc" | "modified_asc" | "modified_desc" => {
             let created = mode.starts_with("created");
-            let by_time = |a: &DirEntry, b: &DirEntry| {
-                let ord = time_of(a, created).cmp(&time_of(b, created));
-                if mode.ends_with("_desc") { ord.reverse() } else { ord }
+            // 时间戳取不到（权限/删除竞争）时按最早处理（排升序在前、降序在后）；
+            // cached_key：metadata 系统调用每项一次（原实现每次比较两次 syscall）
+            let time_of = |e: &DirEntry| {
+                std::fs::metadata(&e.path)
+                    .and_then(|m| if created { m.created() } else { m.modified() })
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH)
             };
-            dirs.sort_by(by_time);
-            files.sort_by(by_time);
+            dirs.sort_by_cached_key(time_of);
+            files.sort_by_cached_key(time_of);
+            if mode.ends_with("_desc") {
+                dirs.reverse();
+                files.reverse();
+            }
         }
         _ => {
-            dirs.sort_by(by_name);
-            files.sort_by(by_name);
+            dirs.sort_by_cached_key(|e| e.name.to_lowercase());
+            files.sort_by_cached_key(|e| e.name.to_lowercase());
         }
     }
     dirs.extend(files);
@@ -363,6 +382,10 @@ fn resolve_local_image(source: &str, base_dir: Option<&str>) -> Option<PathBuf> 
 }
 
 
+/// 图片 data URL 的读取上限（防内存 DoS）：超大文件读入内存 + base64 4/3 膨胀，
+/// 粘贴/打开包含巨大本地图片引用的文档时会撑爆进程内存。
+const MAX_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+
 /// 读取本地图片为 data URL（相对路径基于文档目录解析，支持百分号编码路径）；
 /// 远程 http(s) URL 原样返回。读取失败返回 None（前端显示占位）。
 #[tauri::command]
@@ -371,6 +394,11 @@ pub fn read_image_data_url(source: &str, base_dir: Option<&str>) -> Option<Strin
         return Some(source.to_string());
     }
     let resolved = resolve_local_image(source, base_dir)?;
+    // 超过上限的文件直接拒绝（前端显示占位），不再读入内存
+    let size = std::fs::metadata(&resolved).ok()?.len();
+    if size > MAX_IMAGE_BYTES {
+        return None;
+    }
     let bytes = std::fs::read(&resolved).ok()?;
     let mime = match resolved
         .extension()
@@ -427,6 +455,7 @@ pub async fn save_file_as(app: tauri::AppHandle, content: String) -> Option<Resu
 
 /// 粘贴图片保存：把剪贴板图片字节写入目标目录（文档目录或 assets 子目录），
 /// 返回供 Markdown 引用的相对路径（如 `./assets/paste-1712345678.png`）。
+/// sub_dir/extension 均做净化（防目录穿越与不合法文件名）。
 #[tauri::command]
 pub fn save_pasted_image(
     bytes: Vec<u8>,
@@ -437,25 +466,60 @@ pub fn save_pasted_image(
     if bytes.is_empty() {
         return None;
     }
-    let dir = match sub_dir {
-        Some(sub) if !sub.is_empty() => {
+    // 子目录净化：仅接受相对、无 `..` 组件的路径（`../x`、绝对路径一律拒绝整个调用——
+    // 不得静默回落基准目录，否则调用方以为拒绝了实际上却写到了别处）
+    let rel_sub = match sub_dir.filter(|sub| !sub.is_empty()) {
+        Some(sub) => {
+            let mut rel = PathBuf::new();
+            for comp in std::path::Path::new(sub).components() {
+                match comp {
+                    std::path::Component::Normal(part) => rel.push(part),
+                    std::path::Component::CurDir => {}
+                    _ => return None, // RootDir/Prefix/ParentDir：拒绝
+                }
+            }
+            if rel.as_os_str().is_empty() {
+                return None;
+            }
+            Some(rel)
+        }
+        None => None,
+    };
+    let dir = match &rel_sub {
+        Some(sub) => {
             let dir = std::path::Path::new(base_dir).join(sub);
             std::fs::create_dir_all(&dir).ok()?;
             dir
         }
-        _ => std::path::PathBuf::from(base_dir),
+        None => std::path::PathBuf::from(base_dir),
     };
-    let ext = extension.unwrap_or("png");
+    // 扩展名净化：仅 ASCII 字母数字，限长 8（防 `x/../y` 形式的文件名穿越）
+    let ext = extension
+        .map(|ext| {
+            ext.chars()
+                .filter(|ch| ch.is_ascii_alphanumeric())
+                .take(8)
+                .collect::<String>()
+        })
+        .filter(|ext| !ext.is_empty())
+        .unwrap_or_else(|| "png".to_string());
     let name = format!("paste-{}.{}", std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_millis(), ext);
     let path = dir.join(&name);
     std::fs::write(&path, bytes).ok()?;
-    // 返回相对引用路径
-    Some(match sub_dir {
-        Some(sub) if !sub.is_empty() => format!("./{}/{}", sub.trim_matches('/'), name),
-        _ => format!("./{}", name),
+    // 返回相对引用路径（统一正斜杠：Markdown 图片路径惯例）
+    Some(match &rel_sub {
+        Some(sub) => {
+            let sub_str = sub
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            format!("./{sub_str}/{name}")
+        }
+        None => format!("./{name}"),
     })
 }
 
