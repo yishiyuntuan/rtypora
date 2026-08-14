@@ -28,7 +28,10 @@ const scrollbarAutoHide = computed(() => {
   return !!getPref('scrollbar_auto_hide');
 });
 
-// 侧边栏底部操作栏自动隐藏开关（偏好设置）：侧栏据此挂载 .sb-toolbar-autohide 类
+// 侧边栏底部操作栏自动隐藏开关（偏好设置）：侧栏据此挂载 .sb-toolbar-autohide 类。
+// 无工作区时不自动隐藏（模板处 && workspaceDir）：自动隐藏依赖悬停建立后才可命中，
+// 初次启动/窗外直入的快速首击会在 :hover 重算前穿透 pointer-events:none 的工具栏落空；
+// 空列表时藏起唯一可用操作也没有意义
 const toolbarAutoHide = computed(() => {
   prefsVersion.value;
   return !!getPref('sidebar_toolbar_auto_hide');
@@ -323,7 +326,7 @@ const outlineItems = computed(() => {
       ref="sideRoot"
       v-show="visible"
       class="t-sidebar t-app relative flex h-full flex-col border-r border-(--t-table-border) text-[13px]"
-      :class="{ 'sb-toolbar-autohide': toolbarAutoHide }"
+      :class="{ 'sb-toolbar-autohide': toolbarAutoHide && workspaceDir }"
       :style="{ width: `${width}px` }"
     >
       <!-- 右缘拖拽调宽手柄 -->

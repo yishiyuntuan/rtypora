@@ -199,11 +199,16 @@ export function blockToHtml(block, rawSource, depth = 0, ordinal = 1) {
     }
     case 'callout': {
       // 富文本编辑（与 quote 同构）：标签不可编辑且提交时不计入内容（按类名剔除）；
-      // variant 写回元素 data-variant，提交时据此还原 callout DTO
+      // variant 写回元素 data-variant，提交时据此还原 callout DTO。
+      // 标题段带 data-title-slot 标记：空标题不补占位空行（与渲染态 v-if 一致），
+      // 提取时只认标记段为标题——否则空标题 callout 的首段内容会被误判为标题而迁移；
+      // 仅当标题与子块都为空时保留标记占位段，保证「> [!NOTE]」仍有可输入位置
       const variant = block.variant || 'note';
       const title = plainText(block.title)
-        ? `<p class="${P_CLASS}">${inlineToHtml(block.title)}</p>`
-        : `<p class="${P_CLASS}"><br></p>`;
+        ? `<p class="${P_CLASS}" data-title-slot>${inlineToHtml(block.title)}</p>`
+        : (block.children || []).length
+          ? ''
+          : `<p class="${P_CLASS}" data-title-slot><br></p>`;
       const ords = numberedOrdinals(block.children);
       const body = (block.children || []).map((c) => blockToHtml(c, undefined, depth, ords.get(c.id) || 1)).join('');
       const label = `<div class="md-callout-label" contenteditable="false">${escapeHtml(variant.toUpperCase())}</div>`;
@@ -447,7 +452,8 @@ function trimEdgeNewlines(fragments) {
 function elementToBlocks(el) {
   const tag = el.tagName;
   // 警告框（callout）富文本提交：标签行剔除（非内容），variant 从元素属性还原；
-  // 首段为 title、其余为嵌套子块（与 quote 同构）
+  // 仅认 data-title-slot 标记的首段为标题——空标题 callout 无占位段，
+  // 首个段落属于子块而非标题（未标记时保持 title 为空，防内容迁移）
   if (tag === 'DIV' && el.classList.contains('blk-callout')) {
     const variant = el.getAttribute('data-variant') || 'note';
     const holder = document.createElement('div');
@@ -458,7 +464,8 @@ function elementToBlocks(el) {
     const blocks = domChildrenToBlocks(holder);
     let title = makeTree([]);
     let children = blocks;
-    if (blocks[0]?.type === 'paragraph') {
+    const marked = holder.firstElementChild?.hasAttribute?.('data-title-slot');
+    if (marked && blocks[0]?.type === 'paragraph') {
       title = blocks[0].title;
       children = blocks.slice(1);
     }

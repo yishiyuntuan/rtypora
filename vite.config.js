@@ -26,7 +26,9 @@ export default defineConfig(() => ({
       : undefined,
     watch: {
       // 3. tell Vite to ignore watching `src-tauri`
-      ignored: ["**/src-tauri/**"],
+      //    另忽略原子写临时目录（编辑器/工具保存文件时先写 .NAME.*.tmpdir\ 再改名，
+      //    chokidar 跟进该目录会 EBUSY 崩溃、直接杀死 dev server）
+      ignored: ["**/src-tauri/**", "**/.*.tmpdir/**"],
     },
   },
 }));
