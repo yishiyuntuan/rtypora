@@ -85,10 +85,13 @@
   height: 100%;
   z-index: 20;
   opacity: 0;
+  /* 隐藏态必须放行指针：opacity 0 仍参与命中测试，会吞掉右缘条带上的点击 */
+  pointer-events: none;
   transition: opacity 0.15s;
 }
 .md-scrollbar.show {
   opacity: 1;
+  pointer-events: auto;
 }
 .md-scrollbar-thumb {
   position: absolute;
@@ -499,7 +502,9 @@
 }
 
 /* 侧栏底部操作栏自动隐藏（偏好 sidebar_toolbar_auto_hide）：
-   平时隐藏（绝对定位脱离文档流，不占空间），悬停侧栏/聚焦时浮现 */
+   平时隐藏（绝对定位脱离文档流，不占空间），悬停侧栏/聚焦时浮现。
+   注意：揭示动画不得带位移（translateY）——失活切回窗口后的快速点击会命中
+   移动中的按钮，pointerdown/up 落到不同元素上，click 被派发到公共祖先而失效 */
 .sb-toolbar-autohide .side-toolbar {
   position: absolute;
   left: 0;
@@ -508,14 +513,12 @@
   z-index: 30;
   background: var(--t-editor-background);
   opacity: 0;
-  transform: translateY(4px);
   pointer-events: none;
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity 0.12s ease;
 }
 .sb-toolbar-autohide:hover .side-toolbar,
 .sb-toolbar-autohide .side-toolbar:focus-within {
   opacity: 1;
-  transform: none;
   pointer-events: auto;
 }
 
