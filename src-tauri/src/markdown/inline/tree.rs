@@ -928,17 +928,22 @@ fn identity_text_with_offset_map(text: &str) -> InlineMarkdownOffsetMap {
 }
 
 // 行内 HTML 样式序列化：标签名按用户源码原样回写（font 保持 font、span 保持 span）；
-// 文字颜色 → color 属性（不透明用 hex），背景色/字号 → style 属性
+// 文字颜色：font 用 color 属性（Typora 兼容的遗留写法），其余标签写进 style CSS
+//（解析侧 legacy color/size 属性只认 font——span 若序列化为 color 属性，重解析会丢颜色）
 fn html_style_open_marker(style: HtmlInlineStyle) -> Option<String> {
     if style.is_empty() {
         return None;
     }
     let tag = style.tag.clone().unwrap_or_else(|| "font".to_string());
     let mut attrs = Vec::new();
-    if let Some(color) = style.color {
-        attrs.push(format!("color=\"{}\"", escape_html_attr(&color.to_font_attr())));
-    }
     let mut css = Vec::new();
+    if let Some(color) = style.color {
+        if tag == "font" {
+            attrs.push(format!("color=\"{}\"", escape_html_attr(&color.to_font_attr())));
+        } else {
+            css.push(format!("color: {}", color.to_css()));
+        }
+    }
     if let Some(background) = style.background_color {
         css.push(format!("background-color: {}", background.to_css()));
     }

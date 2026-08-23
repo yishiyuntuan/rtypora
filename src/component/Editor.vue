@@ -1458,17 +1458,20 @@ function buildFontSpan(style) {
   return span;
 }
 
-// 字体样式模板：淡灰 <font> 标签 + 中间样式 span（\uFEFF 哨兵光标位）——源码形态编辑，
-// 标签仅作显示（提交提取时剔除，见 domToInlines 跳过 .md-font-mark）
+// 字体样式模板：淡灰 <font> 标签 + 中间样式 span（FEFF 哨兵光标位）——源码形态编辑，
+// 标签仅作显示且不可编辑（contenteditable=false：否则光标可落入标签文本内，
+// 输入被当作标签装饰、提交提取时剔除——表现为「标签后输入的文字被吞」）
 function buildFontTemplate(style) {
   const open = document.createElement('span');
   open.className = 'md-font-mark';
+  open.setAttribute('contenteditable', 'false');
   open.textContent = `<font style="${htmlStyleCss(style)}">`;
   const inner = buildFontSpan(style);
   const zwsp = document.createTextNode('\uFEFF');
   inner.append(zwsp);
   const close = document.createElement('span');
   close.className = 'md-font-mark';
+  close.setAttribute('contenteditable', 'false');
   close.textContent = '</font>';
   const frag = document.createDocumentFragment();
   frag.append(open, inner, close);
@@ -4640,7 +4643,9 @@ function onDocumentSelectionChange() {
 // 链接/字体样式不走 md-src：光标进入即展开为可编辑的源标记结构（expandLinkAtCaret/expandFontAtCaret）
 let srcRevealEl = null;
 // 光标移出字体模板（Esc 退出/方向键/点击到标记之外）：剔除淡灰标签装饰，只留样式文字
-//（渲染态）。焦点在编辑器外（菜单/RGB 输入框）或光标仍在模板内时不动作
+//（渲染态）。焦点在编辑器外（菜单/RGB 输入框）或光标仍在模板内时不动作。
+// 「仍在模板内」含紧邻标签的边界位（标记 contenteditable=false，光标不会落入标记文本，
+// 只会停在其左右邻位）——移到标签位置不渲染，移出标签（进入正文）才渲染
 function collapseFontTemplateOutside(el) {
   const marks = el.querySelectorAll('.md-font-mark');
   if (!marks.length) return;
@@ -4649,6 +4654,11 @@ function collapseFontTemplateOutside(el) {
   const anchorEl = anchor ? (anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor) : null;
   if (anchorEl && !el.contains(anchorEl)) return; // 焦点在编辑器外（菜单等）：保持现状
   if (anchorEl?.closest?.('.md-font-mark, span[data-html-style], font')) return; // 光标仍在模板内
+  // 元素边界锚点：光标紧邻任一标签标记（标签左右邻位）视为仍在标签位置，不渲染
+  if (anchor && anchor.nodeType === Node.ELEMENT_NODE) {
+    const isMark = (n) => n?.nodeType === Node.ELEMENT_NODE && n.classList?.contains('md-font-mark');
+    if (isMark(anchor.childNodes[sel.anchorOffset - 1]) || isMark(anchor.childNodes[sel.anchorOffset])) return;
+  }
   marks.forEach((m) => m.remove());
 }
 
@@ -4706,8 +4716,13 @@ function expandFontAtCaret(fontEl) {
   const styleText = fontEl.getAttribute('style');
   if (styleText) attrs.push(`style="${styleText}"`);
   const mark = markSpanFactory('md-font-mark');
-  fontEl.parentNode.insertBefore(mark(`<${tag}${attrs.length ? ' ' + attrs.join(' ') : ''}>`), fontEl);
-  fontEl.parentNode.insertBefore(mark(`</${tag}>`), fontEl.nextSibling);
+  const openMark = mark(`<${tag}${attrs.length ? ' ' + attrs.join(' ') : ''}>`);
+  const closeMark = mark(`</${tag}>`);
+  // 标签仅作显示、不可编辑：否则光标可落入标签文本内，输入被当作装饰剔除（文字被吞）
+  openMark.setAttribute('contenteditable', 'false');
+  closeMark.setAttribute('contenteditable', 'false');
+  fontEl.parentNode.insertBefore(openMark, fontEl);
+  fontEl.parentNode.insertBefore(closeMark, fontEl.nextSibling);
   // 恢复光标到文字内同一偏移
   placeCaretAtTextOffset(fontEl, caretOffset);
 }

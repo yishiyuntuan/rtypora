@@ -1302,3 +1302,33 @@ fn 任务勾选切换_引用内与tab分隔() {
     assert_eq!(markdown::toggle_task_markdown("-\t[ ] 待办", true, None), "-\t[x] 待办");
     assert_eq!(markdown::toggle_task_markdown("1.\t[x] 待办", false, None), "1.\t[ ] 待办");
 }
+
+#[test]
+fn 行内样式span尾随文本与颜色字号往返() {
+    // 回归：①span 后尾随文本（</span> 之后的文字）在解析/序列化链路中不丢；
+    // ②span 的颜色序列化必须落 style CSS（color 属性只有 font 解析，落属性会丢色），
+    // 且二次往返不动点。
+    let src = "<span style=\"color: rgba(0,176,160,1); font-size: 32px\">发射点发射点</span>顶顶顶";
+    let blocks = parse(src);
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(title_text(&blocks[0]), "发射点发射点顶顶顶");
+    let frags = &blocks[0].title.fragments;
+    let styled = frags.iter().find(|f| f.html_style.is_some()).expect("应有样式片段");
+    assert_eq!(styled.text, "发射点发射点");
+    assert!(frags.iter().any(|f| f.html_style.is_none() && f.text == "顶顶顶"), "尾随文本丢失: {frags:?}");
+
+    let md1 = markdown::serialize_markdown(blocks);
+    assert!(md1.contains("顶顶顶"), "序列化后尾随文本丢失: {md1}");
+    let md2 = markdown::serialize_markdown(parse(&md1));
+    assert_eq!(md1, md2, "二次往返应不动点: {md1} vs {md2}");
+    // 重解析后颜色与字号仍在（序列化产物含 color 与 font-size 即两者都在）
+    assert!(md1.contains("color:"), "序列化丢颜色: {md1}");
+    assert!(md1.contains("font-size:"), "序列化丢字号: {md1}");
+
+    // font 标签：颜色走 color 属性（Typora 兼容写法），同样不动点
+    let fmd = "<font color=\"#00b0a0\" style=\"font-size: 32px;\">发射点</font>顶顶顶";
+    let f1 = markdown::serialize_markdown(parse(fmd));
+    assert!(f1.contains("顶顶顶"));
+    let f2 = markdown::serialize_markdown(parse(&f1));
+    assert_eq!(f1, f2, "font 二次往返应不动点: {f1} vs {f2}");
+}
