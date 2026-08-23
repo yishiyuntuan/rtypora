@@ -1,6 +1,6 @@
 //! 文件命令集成测试：目录排序（list_dir）与导出文件名推导（html_export_name）。
 
-use tauri_app_lib::files::{html_export_name, list_dir};
+use tauri_app_lib::files::{self, html_export_name, list_dir};
 
 #[test]
 fn 导出文件名推导() {
@@ -216,4 +216,23 @@ fn 图片dataurl大小上限() {
     let url = read_image_data_url(small.to_str().unwrap(), None).expect("小文件正常读取");
     assert!(url.starts_with("data:image/png;base64,"), "{url}");
     std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn 路径补全_目录穿越拒绝() {
+    let dir = std::env::temp_dir().join("tauri-app-test-complete-path");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("img")).unwrap();
+    std::fs::write(dir.join("img").join("a.png"), b"x").unwrap();
+    std::fs::write(dir.join("notes.txt"), b"x").unwrap();
+    let base = dir.to_string_lossy().to_string();
+    // 正常补全：目录带尾随 /、图片文件命中、非图片文件不命中
+    let all = files::complete_path(&base, "./");
+    assert!(all.contains(&"./img/".to_string()), "目录候选: {all:?}");
+    assert!(!all.iter().any(|p| p.ends_with("notes.txt")), "非图片不应出现: {all:?}");
+    // 目录穿越：../ 与绝对路径组件一律拒绝
+    assert!(files::complete_path(&base, "../").is_empty());
+    assert!(files::complete_path(&base, "./../../").is_empty());
+    assert!(files::complete_path(&base, "C:/").is_empty());
+    let _ = std::fs::remove_dir_all(&dir);
 }

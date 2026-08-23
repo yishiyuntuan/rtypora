@@ -60,7 +60,12 @@ const appWindow = new Window('main');
       <div
         id="titlebar-minimize"
         class="inline-flex h-full w-[46px] items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-(--t-status-bar-button-hover)"
+        role="button"
+        tabindex="0"
+        aria-label="最小化"
         @click="appWindow.minimize()"
+        @keydown.enter.prevent="appWindow.minimize()"
+        @keydown.space.prevent="appWindow.minimize()"
       >
         <svg viewBox="0 0 10 10" aria-hidden="true" class="size-[10px]">
           <rect x="1" y="4.5" width="8" height="1" fill="currentColor" />
@@ -69,7 +74,12 @@ const appWindow = new Window('main');
       <div
         id="titlebar-maximize"
         class="inline-flex h-full w-[46px] items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-(--t-status-bar-button-hover)"
+        role="button"
+        tabindex="0"
+        aria-label="最大化/还原"
         @click="appWindow.toggleMaximize()"
+        @keydown.enter.prevent="appWindow.toggleMaximize()"
+        @keydown.space.prevent="appWindow.toggleMaximize()"
       >
         <svg viewBox="0 0 10 10" aria-hidden="true" class="size-[10px]">
           <rect x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1" />
@@ -78,7 +88,12 @@ const appWindow = new Window('main');
       <div
         id="titlebar-close"
         class="inline-flex h-full w-[46px] items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-[#e81123] hover:text-white active:bg-[#bf0f1d] active:text-white"
+        role="button"
+        tabindex="0"
+        aria-label="关闭"
         @click="appWindow.close()"
+        @keydown.enter.prevent="appWindow.close()"
+        @keydown.space.prevent="appWindow.close()"
       >
         <svg viewBox="0 0 10 10" aria-hidden="true" class="size-[10px]">
           <line x1="2" y1="2" x2="8" y2="8" stroke="currentColor" stroke-width="1.2" />

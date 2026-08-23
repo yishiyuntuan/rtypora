@@ -14,8 +14,16 @@ const props = defineProps({
 });
 const emit = defineEmits(['action']);
 
-// hover 展开的子菜单（'copy' | 'para' | 'insert' | null）
+// hover 展开的子菜单（'copy' | 'para' | 'insert' | 'color' | 'size' | null）
 const openSub = ref(null);
+
+// 菜单项键盘可达：Enter/Space 触发动作，Enter/Space/→ 展开子菜单
+function onItemKeydown(e, fn) {
+  if (e.key === 'Enter' || e.key === ' ' || e.key === 'ArrowRight') {
+    e.preventDefault();
+    fn();
+  }
+}
 
 // 菜单估算尺寸（视口边缘防溢出翻转）
 const MENU_W = 210;
@@ -104,7 +112,7 @@ const BLOCK_ACTIONS = [
 <template>
   <Teleport to="body">
     <div class="t-app">
-      <div class="md-ctx-menu" :style="pos" @mousedown.prevent @contextmenu.prevent @mouseleave="openSub = null">
+      <div class="md-ctx-menu" :style="pos" role="menu" @mousedown.prevent @contextmenu.prevent @mouseleave="openSub = null">
         <!-- 剪贴板 -->
         <div class="md-ctx-icons">
           <button
@@ -119,13 +127,13 @@ const BLOCK_ACTIONS = [
         </div>
         <div class="md-ctx-sep"></div>
         <!-- 复制/粘贴为... -->
-        <div class="md-ctx-item" :class="{ open: openSub === 'copy' }" @mouseenter="openSub = 'copy'">
+        <div class="md-ctx-item" :class="{ open: openSub === 'copy' }" role="menuitem" tabindex="0" @mouseenter="openSub = 'copy'" @keydown="onItemKeydown($event, () => (openSub = 'copy'))">
           <span>复制 / 粘贴为...</span>
           <span class="md-ctx-arrow">▸</span>
           <div v-if="openSub === 'copy'" class="md-ctx-sub" :class="{ flip: subFlip }">
             <template v-for="(it, i) in COPY_SUB" :key="i">
               <div v-if="it === 'sep'" class="md-ctx-sep"></div>
-              <div v-else class="md-ctx-sub-item" @click="emit('action', it.id)">
+              <div v-else class="md-ctx-sub-item" role="menuitem" tabindex="0" @click="emit('action', it.id)" @keydown="onItemKeydown($event, () => emit('action', it.id))">
                 <span>{{ it.label }}</span>
                 <span v-if="it.shortcut" class="md-ctx-shortcut">{{ formatShortcut(it.shortcut) }}</span>
               </div>
@@ -183,7 +191,10 @@ const BLOCK_ACTIONS = [
                 v-for="s in fontSizes"
                 :key="s.label"
                 class="md-ctx-sub-item"
+                role="menuitem"
+                tabindex="0"
                 @click="emit('action', 'fontSize', s.fontSize)"
+                @keydown="onItemKeydown($event, () => emit('action', 'fontSize', s.fontSize))"
               >
                 <span>{{ s.label }}</span>
               </div>
@@ -204,13 +215,13 @@ const BLOCK_ACTIONS = [
         </div>
         <div class="md-ctx-sep"></div>
         <!-- 段落 -->
-        <div class="md-ctx-item" :class="{ open: openSub === 'para' }" @mouseenter="openSub = 'para'">
+        <div class="md-ctx-item" :class="{ open: openSub === 'para' }" role="menuitem" tabindex="0" @mouseenter="openSub = 'para'" @keydown="onItemKeydown($event, () => (openSub = 'para'))">
           <span>段落</span>
           <span class="md-ctx-arrow">▸</span>
           <div v-if="openSub === 'para'" class="md-ctx-sub" :class="{ flip: subFlip }">
             <template v-for="(it, i) in PARA_SUB" :key="i">
               <div v-if="it === 'sep'" class="md-ctx-sep"></div>
-              <div v-else class="md-ctx-sub-item" @click="emit('action', it.id)">
+              <div v-else class="md-ctx-sub-item" role="menuitem" tabindex="0" @click="emit('action', it.id)" @keydown="onItemKeydown($event, () => emit('action', it.id))">
                 <span class="md-ctx-label">
                   <span class="md-ctx-check">{{ currentType === it.id ? '✓' : '' }}</span>
                   {{ it.label }}
@@ -221,18 +232,32 @@ const BLOCK_ACTIONS = [
           </div>
         </div>
         <!-- 插入 -->
-        <div class="md-ctx-item" :class="{ open: openSub === 'insert' }" @mouseenter="openSub = 'insert'">
+        <div class="md-ctx-item" :class="{ open: openSub === 'insert' }" role="menuitem" tabindex="0" @mouseenter="openSub = 'insert'" @keydown="onItemKeydown($event, () => (openSub = 'insert'))">
           <span>插入</span>
           <span class="md-ctx-arrow">▸</span>
           <div v-if="openSub === 'insert'" class="md-ctx-sub" :class="{ flip: subFlip }">
             <template v-for="(it, i) in INSERT_SUB" :key="i">
               <div v-if="it === 'sep'" class="md-ctx-sep"></div>
-              <div v-else class="md-ctx-sub-item" @click="emit('action', it.id)">
+              <div v-else class="md-ctx-sub-item" role="menuitem" tabindex="0" @click="emit('action', it.id)" @keydown="onItemKeydown($event, () => emit('action', it.id))">
                 <span>{{ it.label }}</span>
                 <span v-if="it.shortcut" class="md-ctx-shortcut">{{ formatShortcut(it.shortcut) }}</span>
               </div>
             </template>
           </div>
+        </div>
+        <div class="md-ctx-sep"></div>
+        <!-- 撤销/重做/查找替换 -->
+        <div class="md-ctx-sub-item" role="menuitem" tabindex="0" @click="emit('action', 'undo')" @keydown="onItemKeydown($event, () => emit('action', 'undo'))">
+          <span>撤销</span>
+          <span class="md-ctx-shortcut">{{ formatShortcut('Ctrl+Z') }}</span>
+        </div>
+        <div class="md-ctx-sub-item" role="menuitem" tabindex="0" @click="emit('action', 'redo')" @keydown="onItemKeydown($event, () => emit('action', 'redo'))">
+          <span>重做</span>
+          <span class="md-ctx-shortcut">{{ formatShortcut('Ctrl+Shift+Z') }}</span>
+        </div>
+        <div class="md-ctx-sub-item" role="menuitem" tabindex="0" @click="emit('action', 'find')" @keydown="onItemKeydown($event, () => emit('action', 'find'))">
+          <span>查找替换</span>
+          <span class="md-ctx-shortcut">{{ formatShortcut('Ctrl+F') }}</span>
         </div>
       </div>
     </div>

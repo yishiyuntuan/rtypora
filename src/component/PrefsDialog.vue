@@ -249,6 +249,22 @@ async function onImportTheme() {
                 />
                 <span>侧边栏操作栏自动隐藏（鼠标滑过侧栏时显示）</span>
               </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.spellcheck"
+                  @change="update('spellcheck', $event.target.checked)"
+                />
+                <span>拼写检查（编辑中标记可能的拼写错误）</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.typewriter_mode"
+                  @change="update('typewriter_mode', $event.target.checked)"
+                />
+                <span>打字机模式（输入时光标保持视口垂直居中）</span>
+              </label>
               <p class="t-dim text-[12px]">仅对普通段落生效；引用、列表、表格等容器内的段落不缩进。</p>
 
               <div>

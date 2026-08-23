@@ -1001,12 +1001,38 @@ fn starts_with_standalone_image_child_paragraph(lines: &[String]) -> bool {
 }
 
 fn append_markdown_to_block(block: &mut BlockNode, separator: &str, markdown: &str) {
-    let mut title = block.record.title.clone();
+    // 原地追加，不再逐行克隆整棵已累积标题树（原实现每行 O(标题大小) 复制，
+    // k 行续行即 O(k²)）。take + set_title 保持 sync_raw_fallback 语义不变。
     if !separator.is_empty() {
-        title.append_tree(InlineTextTree::plain(separator.to_string()));
+        block.record.title.append_tree(InlineTextTree::plain(separator.to_string()));
     }
-    title.append_tree(InlineTextTree::from_markdown(markdown));
+    block.record.title.append_tree(InlineTextTree::from_markdown(markdown));
+    let title = std::mem::take(&mut block.record.title);
     block.record.set_title(title);
+}
+
+/// 廉价预判：标题的 Markdown 序列化 trim 后是否可能以 "![" 开头（独立图片语法
+/// 的必要前缀）。序列化只会在可见文本前追加样式定界符或转义符，绝不会凭空产生
+/// "!["，故可见文本 trim_start 后不以 "![" 开头时 `parse_standalone_image` 必为
+/// None，可跳过 `title_markdown()` 的全量序列化（含偏移映射表构建）。
+fn title_may_be_standalone_image(title: &InlineTextTree) -> bool {
+    const PREFIX: [char; 2] = ['!', '['];
+    let mut matched = 0usize;
+    let mut skipping_ws = true;
+    for fragment in &title.fragments {
+        for ch in fragment.text.chars() {
+            if skipping_ws && ch.is_whitespace() {
+                continue;
+            }
+            skipping_ws = false;
+            match PREFIX.get(matched) {
+                Some(&want) if ch == want => matched += 1,
+                Some(_) => return false,
+                None => return true,
+            }
+        }
+    }
+    matched == PREFIX.len()
 }
 
 fn plain_text_paragraph_block( text: String) -> BlockNode {
@@ -1967,12 +1993,20 @@ fn build_blocks_from_lines_internal(
                     continue;
                 }
 
-                let (line_indent_columns, _) = leading_indent_columns_and_bytes(line);
+                let (line_indent_columns, line_indent_bytes) = leading_indent_columns_and_bytes(line);
                 if line_indent_columns > marker.indent_columns {
-                    let anchor_dedented =
-                        dedent_lines(&lines[body_index..item_end], line_indent_columns);
+                    // 锚定视图首行即本行去掉全部前导空白（与 dedent_lines(..,
+                    // line_indent_columns)[0] 完全一致），纯借用零分配。
+                    let anchor_first = &line[line_indent_bytes..];
+                    // 惰性物化：仅当某探测器命中、需要把区域交给消费者时才构建
+                    // dedent 区域；普通续行不再为每行复制剩余全部行
+                    //（原实现每行 1-3 次全区域 dedent，k 行续行即 O(k²) 分配）。
+                    let build_anchor_region = move || {
+                        dedent_lines(&lines[body_index..item_end], line_indent_columns)
+                    };
 
-                    if parse_list_marker(&anchor_dedented[0]).is_some() {
+                    if parse_list_marker(anchor_first).is_some() {
+                        let anchor_dedented = build_anchor_region();
                         // 嵌套深度上限（防栈溢出）：超深嵌套列表区域按原文子块保留
                         if depth + 1 >= MAX_NESTING_DEPTH {
                             block.children.push(raw_block(anchor_dedented.join("\n")));
@@ -1987,7 +2021,8 @@ fn build_blocks_from_lines_internal(
                         continue;
                     }
 
-                    if is_quote_start(&anchor_dedented[0]) {
+                    if is_quote_start(anchor_first) {
+                        let anchor_dedented = build_anchor_region();
                         let (quote, consumed) = collect_quote_block_with_depth(&anchor_dedented, 0, depth + 1);
                         if quote.record.kind == BlockKind::RawMarkdown {
                             fallback_raw = true;
@@ -2002,7 +2037,7 @@ fn build_blocks_from_lines_internal(
                     }
 
                     // 项内分割线（内容级缩进的 ---）：作为分割线子块而非标题文本
-                    if BlockKind::parse_separator_line(&anchor_dedented[0]) {
+                    if BlockKind::parse_separator_line(anchor_first) {
                         block.children.push(BlockNode::leaf(BlockRecord::new(
                             BlockKind::Separator,
                             InlineTextTree::plain(String::new()),
@@ -2013,18 +2048,21 @@ fn build_blocks_from_lines_internal(
                         continue;
                     }
 
-                    if parse_opening_fence(&anchor_dedented[0]).is_some()
-                        && let Some((code_block, consumed)) =
+                    if parse_opening_fence(anchor_first).is_some() {
+                        let anchor_dedented = build_anchor_region();
+                        if let Some((code_block, consumed)) =
                             collect_fenced_code_block(&anchor_dedented, 0)
-                    {
-                        block.children.extend(vec![code_block]);
-                        body_index += consumed;
-                        pending_blank_lines = 0;
-                        saw_child = true;
-                        continue;
+                        {
+                            block.children.extend(vec![code_block]);
+                            body_index += consumed;
+                            pending_blank_lines = 0;
+                            saw_child = true;
+                            continue;
+                        }
                     }
 
-                    if is_root_table_candidate_line(&anchor_dedented[0]) {
+                    if is_root_table_candidate_line(anchor_first) {
+                        let anchor_dedented = build_anchor_region();
                         let table_end = collect_root_table_candidate_region(&anchor_dedented, 0);
                         let table_region = &anchor_dedented[..table_end];
                         let child = if let Some(table) = parse_root_table_region(table_region) {
@@ -2039,21 +2077,28 @@ fn build_blocks_from_lines_internal(
                         continue;
                     }
 
-                    if starts_with_standalone_image_child_paragraph(&anchor_dedented) {
-                        block.children.extend(vec![standalone_image_block(anchor_dedented[0].clone())],
-                        );
-                        body_index += 1;
-                        pending_blank_lines = 0;
-                        saw_child = true;
-                        continue;
+                    if parse_standalone_image(anchor_first).is_some() {
+                        let anchor_dedented = build_anchor_region();
+                        if starts_with_standalone_image_child_paragraph(&anchor_dedented) {
+                            block.children.extend(vec![standalone_image_block(anchor_dedented[0].clone())],
+                            );
+                            body_index += 1;
+                            pending_blank_lines = 0;
+                            saw_child = true;
+                            continue;
+                        }
                     }
 
                     if line_indent_columns >= marker.content_indent_columns {
-                        let content_dedented = dedent_lines(
-                            &lines[body_index..item_end],
-                            marker.content_indent_columns,
-                        );
-                        if strip_indented_code_prefix(&content_dedented[0]).is_some() {
+                        // content 视图首行 = 本行按内容列 dedent（同理零分配借用）
+                        let content_first =
+                            strip_leading_columns(line, marker.content_indent_columns)
+                                .unwrap_or(line.as_str());
+                        if strip_indented_code_prefix(content_first).is_some() {
+                            let content_dedented = dedent_lines(
+                                &lines[body_index..item_end],
+                                marker.content_indent_columns,
+                            );
                             let Some((code_block, consumed)) =
                                 collect_indented_code_block(&content_dedented, 0)
                             else {
@@ -2070,7 +2115,8 @@ fn build_blocks_from_lines_internal(
                         }
                     }
 
-                    if is_reference_definition_start(&anchor_dedented[0]) {
+                    if is_reference_definition_start(anchor_first) {
+                        let anchor_dedented = build_anchor_region();
                         let consumed = collect_reference_definition_region(&anchor_dedented, 0);
                         block.children.extend(vec![raw_block(anchor_dedented[..consumed].join("\n"))],
                         );
@@ -2080,17 +2126,24 @@ fn build_blocks_from_lines_internal(
                         continue;
                     }
 
-                    if let Some((comment, consumed)) =
-                        collect_comment_block(&anchor_dedented, 0)
-                    {
-                        block.children.extend(vec![comment]);
-                        body_index += consumed;
-                        pending_blank_lines = 0;
-                        saw_child = true;
-                        continue;
+                    // 注释起始的廉价守卫（等价于 parse_html_block_start 的 Comment
+                    // 分支——锚定行已无缩进，无需再走缩进剥离）；未闭合时落入下方
+                    // HTML 块分支，与原 else-if 链顺序一致。
+                    if anchor_first.starts_with("<!--") {
+                        let anchor_dedented = build_anchor_region();
+                        if let Some((comment, consumed)) =
+                            collect_comment_block(&anchor_dedented, 0)
+                        {
+                            block.children.extend(vec![comment]);
+                            body_index += consumed;
+                            pending_blank_lines = 0;
+                            saw_child = true;
+                            continue;
+                        }
                     }
 
-                    if is_block_html_start(&anchor_dedented[0]) {
+                    if is_block_html_start(anchor_first) {
+                        let anchor_dedented = build_anchor_region();
                         let consumed = collect_block_html_region(&anchor_dedented, 0);
                         block.children.extend(vec![html_or_raw_block(anchor_dedented[..consumed].join("\n"),
                             )],
@@ -2101,7 +2154,8 @@ fn build_blocks_from_lines_internal(
                         continue;
                     }
 
-                    if is_footnote_definition_start(&anchor_dedented[0]) {
+                    if is_footnote_definition_start(anchor_first) {
+                        let anchor_dedented = build_anchor_region();
                         let consumed = collect_footnote_definition_region(&anchor_dedented, 0);
                         block.children.extend(vec![raw_block(anchor_dedented[..consumed].join("\n"))],
                         );
@@ -2111,7 +2165,8 @@ fn build_blocks_from_lines_internal(
                         continue;
                     }
 
-                    if is_display_math_start(&anchor_dedented[0]) {
+                    if is_display_math_start(anchor_first) {
+                        let anchor_dedented = build_anchor_region();
                         let consumed = collect_display_math_region(&anchor_dedented, 0);
                         block.children.extend(vec![math_or_raw_block(anchor_dedented[..consumed].join("\n"),
                             )],
@@ -2124,10 +2179,12 @@ fn build_blocks_from_lines_internal(
 
                     let should_promote_plain_child = pending_blank_lines > 0
                         || saw_child
-                        || block.record.title.visible_text().is_empty()
-                        || parse_standalone_image(&block.record.title_markdown())
-                            .is_some();
+                        || block.record.title.visible_len() == 0
+                        || (title_may_be_standalone_image(&block.record.title)
+                            && parse_standalone_image(&block.record.title_markdown())
+                                .is_some());
                     if should_promote_plain_child {
+                        let anchor_dedented = build_anchor_region();
                         let (paragraph, consumed) =
                             collect_paragraph_block(&anchor_dedented, 0);
                         block.children.extend(vec![paragraph]);
@@ -2138,23 +2195,9 @@ fn build_blocks_from_lines_internal(
                     }
                 }
 
-                if line_indent_columns >= marker.content_indent_columns {
-                    let content_dedented =
-                        dedent_lines(&lines[body_index..item_end], marker.content_indent_columns);
-                    if strip_indented_code_prefix(&content_dedented[0]).is_some() {
-                        let Some((code_block, consumed)) =
-                            collect_indented_code_block(&content_dedented, 0)
-                        else {
-                            unreachable!("indented code prefix disappeared after detection");
-                        };
-
-                        block.children.extend(vec![code_block]);
-                        body_index += consumed;
-                        pending_blank_lines = 0;
-                        saw_child = true;
-                        continue;
-                    }
-                }
+                // 注：原实现此处还有一次按内容列 dedent 的缩进代码块探测，但它与上方
+                // 锚定块内的同守卫、同输入、同判定完全重复（锚定块内未命中即本处
+                // 必不命中），为不可达死代码，已随惰性化一并移除。
 
                 let trimmed = line.trim_start_matches([' ', '\t']);
                 append_markdown_to_block(

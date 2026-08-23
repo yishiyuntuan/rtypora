@@ -86,13 +86,15 @@ watch(
 </script>
 
 <template>
-  <div ref="menuEl" class="md-slash-menu" :style="{ left: `${left}px`, top: `${top}px` }">
+  <div ref="menuEl" class="md-slash-menu" role="listbox" :style="{ left: `${left}px`, top: `${top}px` }">
     <template v-if="items.length">
       <template v-for="(item, i) in items" :key="item.id">
         <!-- 文本：前导图标独占一行 + 三行多彩徽章（标题 / 行内格式 / 列表） -->
         <div
           v-if="item.id === 'text'"
           class="md-slash-item md-slash-text"
+          role="option"
+          :aria-selected="i === index"
           :class="{ 'md-slash-item-active': i === index }"
           @mousedown.prevent="emit('pick', item)"
           @mouseenter="emit('hover', i)"
@@ -120,6 +122,8 @@ watch(
         <div
           v-else-if="item.id === 'table'"
           class="md-slash-item"
+          role="option"
+          :aria-selected="i === index"
           :class="{ 'md-slash-item-active': i === index }"
           @mousedown.prevent="emit('pick', item)"
           @mouseenter="emit('hover', i)"
@@ -146,6 +150,8 @@ watch(
         <div
           v-else-if="item.id === 'callout'"
           class="md-slash-item md-slash-text"
+          role="option"
+          :aria-selected="i === index"
           :class="{ 'md-slash-item-active': i === index }"
           @mousedown.prevent="emit('pick', item)"
           @mouseenter="emit('hover', i)"
@@ -173,6 +179,8 @@ watch(
         <div
           v-else-if="item.id === 'fontColor'"
           class="md-slash-item md-slash-text"
+          role="option"
+          :aria-selected="i === index"
           :class="{ 'md-slash-item-active': i === index }"
           @mousedown.prevent="emit('pick', item)"
           @mouseenter="emit('hover', i)"
@@ -227,6 +235,8 @@ watch(
         <div
           v-else
           class="md-slash-item"
+          role="option"
+          :aria-selected="i === index"
           :class="{ 'md-slash-item-active': i === index }"
           @mousedown.prevent="emit('pick', item)"
           @mouseenter="emit('hover', i)"

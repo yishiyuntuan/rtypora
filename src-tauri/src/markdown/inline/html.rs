@@ -804,15 +804,24 @@ fn raw_region_end(raw: &str, token: &TagToken) -> Option<usize> {
     }
 
     let close = format!("</{}>", token.name);
-    let close_upper = close.to_ascii_uppercase();
     let rest = &raw[token.source_range.end..];
-    let lower = rest.to_ascii_lowercase();
-    let upper = rest.to_ascii_uppercase();
-    lower
-        .find(&close)
-        .or_else(|| upper.find(&close_upper))
+    // ASCII 大小写不敏感逐窗比较：等价于原先 lower/upper 两趟 find，但不分配。
+    // needle 为纯 ASCII，不会命中多字节字符内部。
+    find_ascii_case_insensitive(rest, &close)
         .map(|offset| token.source_range.end + offset + close.len())
         .or(Some(raw.len()))
+}
+
+/// ASCII 大小写不敏感的子串查找（避免对剩余全文做小写化/大写化分配）。
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let needle = needle.as_bytes();
+    if needle.len() > haystack.len() {
+        return None;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .position(|window| window.eq_ignore_ascii_case(needle))
 }
 
 /// 字符引用解码（仅危险协议判定）：`&#99;` / `&#x63;` 数值引用与少量协议相关命名引用。

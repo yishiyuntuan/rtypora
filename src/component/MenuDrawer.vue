@@ -1,5 +1,6 @@
 <script setup vapor>
 import { ref, watch } from 'vue';
+import { onMounted, onBeforeUnmount } from 'vue';
 import PrefsDialog from './PrefsDialog.vue';
 import { isMac } from '../utils/platform.js';
 
@@ -20,6 +21,16 @@ const selected = ref('open');
 watch(() => props.visible, (v) => {
   if (v) selected.value = 'open';
 });
+
+// Esc 关闭菜单（仅打开时响应；编辑器的 Esc 路由不受影响——菜单打开时编辑器在其下方）
+function onMenuKeydown(e) {
+  if (e.key === 'Escape' && props.visible) {
+    e.stopPropagation();
+    emit('close');
+  }
+}
+onMounted(() => document.addEventListener('keydown', onMenuKeydown));
+onBeforeUnmount(() => document.removeEventListener('keydown', onMenuKeydown));
 
 const fileInput = ref(null);
 const themeFilter = ref('');
@@ -46,6 +57,23 @@ const prefsPages = [
   { id: 'image', label: '图像', desc: '粘贴图片保存行为' },
   { id: 'markdown', label: 'Markdown', desc: '高亮、图表、公式渲染开关' },
   { id: 'appearance', label: '外观', desc: '主题与字体' },
+];
+
+// 快捷键一览（关于页展示；与 Editor/App 的实际键位绑定保持一致）
+const SHORTCUTS = [
+  { keys: 'Ctrl+S', desc: '保存' },
+  { keys: 'Ctrl+O', desc: '打开文件' },
+  { keys: 'Ctrl+P', desc: '打印当前文档' },
+  { keys: 'Ctrl+/', desc: '源码 / 所见即所得切换' },
+  { keys: 'Ctrl+B / I / U', desc: '加粗 / 斜体 / 下划线（再按一次或 Esc 退出）' },
+  { keys: 'Ctrl+0 ~ 6', desc: '段落 / 一至六级标题' },
+  { keys: 'Ctrl+Shift+C / V', desc: '复制为 Markdown / 粘贴为纯文本' },
+  { keys: 'Ctrl+T', desc: '插入表格' },
+  { keys: 'Ctrl+Shift+I / K / M', desc: '插入图像 / 代码块 / 公式块' },
+  { keys: '/', desc: '语法菜单（块首或空白后任意位置）' },
+  { keys: 'Enter', desc: '块内拆分 / 列表续项（空项退出列表）' },
+  { keys: 'Tab / Shift+Tab', desc: '列表缩进 / 取消缩进' },
+  { keys: 'Esc', desc: '退出行内样式 / 关闭菜单' },
 ];
 
 // 菜单项：彩色线性图标 + 标签（图标风格与编辑器角标/工具栏一致）
@@ -182,8 +210,12 @@ function openPrefsColumn(pageId) {
             <p class="menu-dim mb-3">版本 0.1.0</p>
             <p>基于 Tauri 2 + Vue 3 的桌面 Markdown 编辑器，支持所见即所得与源码双模式编辑。</p>
             <p class="mt-2">
-              Markdown 核心移植自 velotype（Apache-2.0）；公式渲染基于 ratex，图表基于 mermaid-rs-renderer，代码高亮基于 tree-sitter。
+              Markdown 核心移植自 velotype（Apache-2.0）；公式渲染基于 ratex，图表基于 mermaid.js 与 PlantUML（@plantuml/core 本地引擎），代码高亮基于 tree-sitter。
             </p>
+            <h3 class="menu-page-subtitle">快捷键一览</h3>
+            <div class="shortcut-list text-[12.5px] leading-relaxed">
+              <p v-for="s in SHORTCUTS" :key="s.keys"><span class="menu-dim">{{ s.keys }}</span>　{{ s.desc }}</p>
+            </div>
           </div>
         </div>
 

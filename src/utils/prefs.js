@@ -20,6 +20,10 @@ const DEFAULTS = {
   content_max_width: null,   // 内容列最大宽度覆盖（px）
   editor_padding: null,      // 编辑区内边距覆盖（px）
   first_line_indent: false,  // 段落首行缩进（2em）
+  // 拼写检查（浏览器原生红线；默认关闭）
+  spellcheck: false,
+  // 打字机模式：输入后光标保持视口垂直居中（默认关闭）
+  typewriter_mode: false,
   // 滚动条自动隐藏：平时隐藏，悬停或滚动时显示
   scrollbar_auto_hide: true,
   // 侧边栏底部操作栏自动隐藏：平时隐藏，鼠标滑过侧栏时显现
@@ -88,7 +92,10 @@ export function setPref(key, value) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
   applyEditorOverrides(prefs);
   prefsVersion.value += 1;
-  if (key.startsWith('render_')) renderVersion.value += 1;
+  // render_* 与 PlantUML 渲染器/服务器选择驱动重渲染（其余偏好不影响渲染输出）
+  if (key.startsWith('render_') || key === 'plantuml_renderer' || key === 'plantuml_server') {
+    renderVersion.value += 1;
+  }
   if (key === 'html_to_md' || key === 'callout_unify') {
     structureVersion.value += 1;
     syncRustPrefs();

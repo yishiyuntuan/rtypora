@@ -665,6 +665,12 @@ function styled(tag, text, className) {
   return el;
 }
 
+// 编辑态装饰标记 span 工厂：md-link-mark（链接/图片原始标记 []()/!）/md-font-mark（font 标签）
+// 等仅作显示、提交提取时由 domToInlines 按类名剥离的标记元素共用（Editor 侧展开/补全亦用）
+export function markSpanFactory(className) {
+  return (t) => styled('span', t, className);
+}
+
 // HTML 标签自动闭合：输入 > 完成开始标签时，在光标后补闭合标签（光标停在开闭之间）。
 // 触发判定在 Rust（inline_html_autoclose，已知标签白名单），这里只做文本插入。
 export async function applyHtmlAutoclose() {
@@ -1077,13 +1083,6 @@ export const LANG_BADGES = {
   toml: { text: 'T', color: '#8a8a8a' },
 };
 
-// 列表行的类型徽章（无序/有序/任务，菜单内 ←/→ 或点选）
-export const SLASH_LIST_TYPES = [
-  { id: 'bulletedListItem', icon: SLASH_ICON.bulletedListItem, label: '无序列表' },
-  { id: 'numberedListItem', icon: SLASH_ICON.numberedListItem, label: '有序列表' },
-  { id: 'taskListItem', icon: SLASH_ICON.taskListItem, label: '任务列表' },
-];
-
 // 警告框类型徽章（GitHub 风格 [!TYPE]，与 Rust CalloutVariant 一致；
 // 警告框菜单项内 ←/→ 切换、Enter 应用当前类型、点选直用）
 export const CALLOUT_TYPES = [
@@ -1187,7 +1186,7 @@ export async function applySlashCommand(el, id, opts) {
   if (id === 'link') {
     const p = styled('p', '', P_CLASS);
     p.setAttribute('data-raw', '');
-    const mark = (t) => styled('span', t, 'md-link-mark');
+    const mark = markSpanFactory('md-link-mark');
     const linkText = styled('span', '', 'md-link-text');
     const textNode = document.createTextNode('\uFEFF');
     linkText.append(textNode);
@@ -1207,7 +1206,7 @@ export async function applySlashCommand(el, id, opts) {
   if (id === 'image') {
     const p = styled('p', '', P_CLASS);
     p.setAttribute('data-raw', '');
-    const mark = (t) => styled('span', t, 'md-link-mark');
+    const mark = markSpanFactory('md-link-mark');
     const altText = styled('span', '', 'md-link-text');
     const textNode = document.createTextNode('\uFEFF');
     altText.append(textNode);
@@ -1343,6 +1342,20 @@ function ensureNestedList(host, tag, className) {
   return nested;
 }
 
+// 容器内 (node, offset) 点之前的 Range 探针（selectNodeContents + setEnd）：
+// toString() 取点前纯文本、cloneContents()/extractContents() 取点前 DOM，光标前缀判定共用
+export function rangeBeforePoint(el, node, offset) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.setEnd(node, offset);
+  return range;
+}
+
+// 容器内 (node, offset) 点之前的纯文本（Range 探针 .toString()）
+export function textBeforePoint(el, node, offset) {
+  return rangeBeforePoint(el, node, offset).toString();
+}
+
 // 光标在容器内的纯文本偏移（<br> 计 1，与 placeCaretAtTextOffset 对齐）；
 // 列表项移动（缩进/提升）前后据此恢复光标，避免浏览器把光标吸附到相邻项末尾
 function caretOffsetIn(el) {
@@ -1350,9 +1363,7 @@ function caretOffsetIn(el) {
   if (!sel.rangeCount || !sel.isCollapsed) return null;
   const caret = sel.getRangeAt(0);
   if (!el.contains(caret.startContainer)) return null;
-  const range = document.createRange();
-  range.selectNodeContents(el);
-  range.setEnd(caret.startContainer, caret.startOffset);
+  const range = rangeBeforePoint(el, caret.startContainer, caret.startOffset);
   const div = document.createElement('div');
   div.append(range.cloneContents());
   return div.textContent.length + div.querySelectorAll('br').length;
@@ -1389,6 +1400,124 @@ function outdentListItem(li) {
   if (!list.children.length) list.remove();
   if (offset != null) placeCaretAtTextOffset(li, offset);
   return true;
+}
+
+// 嵌套空列表项 + Backspace：移出列表转为顶层段落（浏览器原生会并入上一行，光标跳走）。
+// 段落插在容器根列表之后、光标留在原行（可输入非列表内容）；段落标记 data-list-resume，
+// 在该段落内按 Enter 时在其后继续原列表（resumeListEnter）
+export function outdentEmptyNestedListItemToParagraph(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const anchor = sel.anchorNode?.nodeType === Node.TEXT_NODE ? sel.anchorNode.parentElement : sel.anchorNode;
+  const li = anchor?.closest('li');
+  if (!li || !el.contains(li)) return false;
+  const list = li.parentElement;
+  const parentLi = list.parentElement?.closest('li');
+  if (!parentLi) return false; // 顶层项：走既有块级降级路径
+  // 仅空项（标题为空且无嵌套子列表）
+  const host = taskItemBody(li) || li;
+  if (!liTitleBlank(li, host) || host.querySelector('ul, ol')) return false;
+  // 当前项所属的顶层列表（li 的最外层 ul/ol 祖先；容器内可能有多个列表）：
+  // 段落插到「它」之后——不能取容器内第一个列表（多列表场景段落会跑到别的列表后面）
+  let rootList = li.parentElement;
+  while (rootList?.parentElement?.closest('ul, ol')) {
+    rootList = rootList.parentElement.closest('ul, ol');
+  }
+  if (!rootList) return false;
+  li.remove(); // 后续兄弟留在嵌套列表中
+  if (!list.children.length) list.remove();
+  const p = document.createElement('p');
+  p.className = `blk-paragraph ${P_CLASS}`;
+  p.setAttribute('data-list-resume', '');
+  p.innerHTML = '<br>';
+  rootList.after(p);
+  placeCursorAtStart(p);
+  return true;
+}
+
+// 光标是否在某列表项的标题行首（任务项在勾选框之后）；是则返回该 li，否则 null
+function caretAtListItemStart(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return null;
+  const anchor = sel.anchorNode?.nodeType === Node.TEXT_NODE ? sel.anchorNode.parentElement : sel.anchorNode;
+  const li = anchor?.closest('li');
+  if (!li || !el.contains(li)) return null;
+  const host = taskItemBody(li) || li;
+  if (textBeforePoint(host, sel.anchorNode, sel.anchorOffset) !== '') return null;
+  return li;
+}
+
+// 嵌套列表项标题行首 + Backspace：降低一层缩进（outdent），光标保持在本项原文位置；
+// 浏览器原生会并入前一项导致光标跳走。返回 false 表示不适用（调用方走既有路径）
+export function outdentNestedListItemAtCaret(el) {
+  const li = caretAtListItemStart(el);
+  if (!li) return false;
+  if (!li.parentElement?.closest('li')) return false; // 顶层项：交给块级退格
+  return outdentListItem(li);
+}
+
+// 顶层空列表项行首 + Backspace：退出列表转为段落（exitListAtEmptyItem，光标留在原行）；
+// 浏览器原生会把空项并入上一项、光标被带到上一项末尾。嵌套空项另有路径（转段落带续列表标记）
+export function exitEmptyTopLevelListItemAtCaret(el) {
+  const li = caretAtListItemStart(el);
+  if (!li) return false;
+  if (li.parentElement?.closest('li')) return false; // 嵌套项：走嵌套路径
+  const host = taskItemBody(li) || li;
+  if (!liTitleBlank(li, host) || host.querySelector('ul, ol')) return false;
+  exitListAtEmptyItem(li);
+  return true;
+}
+
+// data-list-resume 段落（嵌套空项 Backspace 移出列表时标记）内 Enter：
+// 段落保持普通段落，在其后按容器根列表形态继续列表（新列表项，光标入内）；
+// 一次性标记，用后即移除；列表已不在容器内时回退普通拆分
+export function resumeListEnter(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return false;
+  const anchor = sel.anchorNode?.nodeType === Node.TEXT_NODE ? sel.anchorNode.parentElement : sel.anchorNode;
+  const p = anchor?.closest('p[data-list-resume]');
+  if (!p || !el.contains(p)) return false;
+  p.removeAttribute('data-list-resume');
+  // 续的是段落所跟随的那个列表（容器内可能有多个列表）：取紧邻前驱列表，否则取首个
+  let rootList = p.previousElementSibling;
+  if (rootList && !['UL', 'OL'].includes(rootList.tagName)) rootList = null;
+  if (!rootList) rootList = el.querySelector('ul, ol');
+  if (!rootList) return false;
+  const list = document.createElement(rootList.tagName.toLowerCase());
+  list.className = rootList.className;
+  const li = document.createElement('li');
+  li.className = 'my-0.5';
+  li.innerHTML = '<br>';
+  list.append(li);
+  p.after(list);
+  placeCursorAtStart(li);
+  return true;
+}
+
+// 光标所在列表项的内容以 ` 或 ~ 开头（可能是围栏行）时返回该 li（Enter 分支据此优先转代码块）；
+// 有嵌套子列表的项不返回（防丢子块）
+export function fenceCandidateLi(el) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount || !sel.isCollapsed) return null;
+  const anchor = sel.anchorNode?.nodeType === Node.TEXT_NODE ? sel.anchorNode.parentElement : sel.anchorNode;
+  const li = anchor?.closest('li');
+  if (!li || !el.contains(li)) return null;
+  const host = taskItemBody(li) || li;
+  if (host.querySelector('ul, ol')) return null;
+  if (!/^[`~]/.test(host.textContent.trim())) return null;
+  return li;
+}
+
+// 围栏行列表项就地转换为代码块编辑（Rust detect_block_shortcut 判定；
+// 该 li 内容替换为 pre，提交时作为该列表项的子代码块——列表结构保留）
+export async function convertFenceInListItem(li) {
+  const host = taskItemBody(li) || li;
+  const hit = await invoke('detect_block_shortcut', { line: host.textContent.trim() }).catch(() => null);
+  if (!hit || hit.type !== 'codeBlock' || !li.isConnected) return;
+  const pre = createCodePre(hit.language);
+  host.innerHTML = '';
+  host.append(pre);
+  placeCursorAtEnd(pre);
 }
 
 // ---------- 列表内 Enter（Typora 式续项/退出列表） ----------
@@ -1514,9 +1643,7 @@ export function deleteTaskCheckboxBeforeCaret(el) {
     const first = cur.firstElementChild;
     if (!first || first.tagName !== 'INPUT' || first.getAttribute('type') !== 'checkbox') continue;
     // cur 是任务行容器：勾选框之后、光标之前不能有任何文本/有意义元素
-    const before = document.createRange();
-    before.selectNodeContents(cur);
-    before.setEnd(caret.startContainer, caret.startOffset);
+    const before = rangeBeforePoint(cur, caret.startContainer, caret.startOffset);
     const div = document.createElement('div');
     div.append(before.cloneContents());
     div.querySelectorAll('input').forEach((n) => n.remove());
@@ -1540,9 +1667,7 @@ export function isCaretAtStart(el) {
   if (!sel.rangeCount || !sel.isCollapsed) return false;
   const caret = sel.getRangeAt(0);
   if (!el.contains(caret.startContainer)) return false;
-  const before = document.createRange();
-  before.selectNodeContents(el);
-  before.setEnd(caret.startContainer, caret.startOffset);
+  const before = rangeBeforePoint(el, caret.startContainer, caret.startOffset);
   const div = document.createElement('div');
   div.append(before.cloneContents());
   div.querySelectorAll('input').forEach((n) => n.remove());

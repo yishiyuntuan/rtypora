@@ -111,6 +111,14 @@ const newFileName = ref('');
 const nameError = ref(false);
 const nameInput = ref(null);
 
+// 工具栏 div 按钮的键盘可达：Enter/Space 触发与点击相同动作
+function onBtnKeydown(e, fn) {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    fn();
+  }
+}
+
 async function startNaming() {
   if (!props.workspaceDir || namingFile.value) return;
   nameError.value = false;
@@ -472,12 +480,13 @@ const outlineItems = computed(() => {
           <div v-else class="t-dim flex h-full items-center justify-center text-[12px]">文件列表为空</div>
         </div>
 
-        <!-- 底部工具栏（与状态栏同高 h-7，图标文字垂直居中；偏好开启时自动隐藏，悬停侧栏显现） -->
+        <!-- 底部工具栏（与状态栏同高 h-7，图标文字垂直居中；偏好开启时自动隐藏，悬停侧栏显现；
+             div 按钮带 role/tabindex/keydown 保持键盘可达） -->
         <div class="side-toolbar relative flex h-7 items-center justify-between border-t border-(--t-table-border) px-2">
           <template v-if="workspaceDir">
-            <div class="t-btn sb-new flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1 text-[14px] leading-none" style="color: #03b736" title="在当前文件夹新建文件" @click="startNaming">+</div>
+            <div class="t-btn sb-new flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1 text-[14px] leading-none" style="color: #03b736" title="在当前文件夹新建文件" role="button" tabindex="0" @click="startNaming" @keydown="onBtnKeydown($event, startNaming)">+</div>
             <!-- 刷新：软刷新（保留目录展开状态；窗口聚焦也会自动刷新） -->
-            <div class="t-btn sb-refresh flex shrink-0 cursor-pointer items-center rounded px-1 py-1" title="刷新目录" @click="softRefreshTree">
+            <div class="t-btn sb-refresh flex shrink-0 cursor-pointer items-center rounded px-1 py-1" title="刷新目录" role="button" tabindex="0" @click="softRefreshTree" @keydown="onBtnKeydown($event, softRefreshTree)">
               <svg viewBox="0 0 16 16" class="size-[13px]" aria-hidden="true" style="color: #2f9dbb">
                 <path d="M13.2 8a5.2 5.2 0 1 1-1.5-3.7M13.3 2.4v3h-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" />
               </svg>
@@ -485,7 +494,10 @@ const outlineItems = computed(() => {
             <div
               class="t-btn flex min-w-0 flex-1 cursor-pointer items-center justify-center rounded px-1.5 py-1 text-[12px]"
               :title="workspaceDir"
+              role="button"
+              tabindex="0"
               @click="opsMenuOpen = !opsMenuOpen"
+              @keydown="onBtnKeydown($event, () => (opsMenuOpen = !opsMenuOpen))"
             >
               <svg viewBox="0 0 16 16" class="mr-1 size-[12px] shrink-0" aria-hidden="true" style="color: #f59102">
                 <path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6l1.4 1.6h5A1.5 1.5 0 0 1 14 6.1v5.4a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7z" fill="none" stroke="currentColor" stroke-width="1.2" />
@@ -495,14 +507,20 @@ const outlineItems = computed(() => {
             <div
               class="t-btn flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1 text-[13px] leading-none tracking-wider"
               title="操作"
+              role="button"
+              tabindex="0"
               @click="opsMenuOpen = !opsMenuOpen"
+              @keydown="onBtnKeydown($event, () => (opsMenuOpen = !opsMenuOpen))"
             >
               ⋮
             </div>
             <div
               class="t-btn flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1"
               :title="viewMode === 'tree' ? '树形显示' : '列表显示'"
+              role="button"
+              tabindex="0"
               @click="viewMode = viewMode === 'tree' ? 'list' : 'tree'"
+              @keydown="onBtnKeydown($event, () => (viewMode = viewMode === 'tree' ? 'list' : 'tree'))"
             >
               <svg v-if="viewMode === 'tree'" viewBox="0 0 16 16" class="size-[13px]" aria-hidden="true" style="color: #3e69d7">
                 <!-- 文件树图标（当前为树形显示） -->
@@ -518,13 +536,16 @@ const outlineItems = computed(() => {
             </div>
           </template>
           <template v-else>
-            <div class="t-btn flex min-w-0 flex-1 cursor-pointer items-center justify-center rounded px-1.5 py-1 text-[12px]" @click="emit('open-folder')">
+            <div class="t-btn flex min-w-0 flex-1 cursor-pointer items-center justify-center rounded px-1.5 py-1 text-[12px]" role="button" tabindex="0" @click="emit('open-folder')" @keydown="onBtnKeydown($event, () => emit('open-folder'))">
               打开文件夹…
             </div>
             <div
               class="t-btn flex shrink-0 cursor-pointer items-center rounded px-1.5 py-1 text-[13px] leading-none tracking-wider"
               title="操作"
+              role="button"
+              tabindex="0"
               @click="opsMenuOpen = !opsMenuOpen"
+              @keydown="onBtnKeydown($event, () => (opsMenuOpen = !opsMenuOpen))"
             >
               ⋮
             </div>

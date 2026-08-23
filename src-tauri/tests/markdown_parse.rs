@@ -1282,3 +1282,23 @@ fn 列表项后紧跟未缩进围栏解析为根级块() {
     assert_eq!(blocks.len(), 1);
     assert!(matches!(blocks[0].kind, BlockKindDto::BulletedListItem { .. }));
 }
+
+#[test]
+fn 任务勾选切换_引用内与tab分隔() {
+    // 引用内任务项（解析器产出这类子块，点击勾选不应静默失效）
+    assert_eq!(
+        markdown::toggle_task_markdown("> - [ ] 待办", true, None),
+        "> - [x] 待办"
+    );
+    assert_eq!(
+        markdown::toggle_task_markdown("> > - [x] 嵌套引用", false, None),
+        "> > - [ ] 嵌套引用"
+    );
+    assert_eq!(
+        markdown::toggle_task_markdown("> [!NOTE]\n> - [ ] 待办", true, Some(0)),
+        "> [!NOTE]\n> - [x] 待办"
+    );
+    // tab 分隔的任务项
+    assert_eq!(markdown::toggle_task_markdown("-\t[ ] 待办", true, None), "-\t[x] 待办");
+    assert_eq!(markdown::toggle_task_markdown("1.\t[x] 待办", false, None), "1.\t[ ] 待办");
+}

@@ -89,6 +89,10 @@ export default {
       link_hover: '#f59102',
       strikethrough_line: '#e30f2e',
       table_zebra_bg: '#22262b',
+      // 查找匹配高亮（style.css 的 ::highlight(find-*) 伪元素消费；全部匹配淡显/当前匹配浓显；荧光黄记号笔色）
+      find_highlight_bg: '#ffef3b80',
+      find_highlight_current_bg: '#ffff00',
+      find_highlight_current_text: '#1c1f24',
     },
     typography: {
       font_family:

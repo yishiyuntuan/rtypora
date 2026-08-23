@@ -285,6 +285,14 @@ pub fn complete_path(base_dir: &str, prefix: &str) -> Vec<String> {
         Some(i) => (&rel[..i], &rel[i + 1..]),
         None => ("", rel),
     };
+    // 目录穿越防护：只接受 Normal/CurDir 组件（拒绝 ../绝对路径/盘符前缀），
+    // 补全范围限制在 base_dir 之内（与 save_pasted_image 的组件白名单同策略）
+    if std::path::Path::new(dir_part)
+        .components()
+        .any(|c| !matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir))
+    {
+        return Vec::new();
+    }
     let dir = std::path::Path::new(base_dir).join(dir_part);
     let needle = name_prefix.to_lowercase();
     let mut dirs = Vec::new();
@@ -351,6 +359,8 @@ fn percent_decode(s: &str) -> Option<String> {
 
 /// 解析本地图片路径：相对路径按 base_dir 拼接；候选依次为原文、百分号解码后路径
 ///（目录名本身含合法 % 序列时原文优先，避免误解码），返回第一个存在的文件。
+/// 注意：`../` 上指是 Markdown 文档引用图片的合法用法（Typora 允许），此处不限制
+/// 目录穿越；本应用的本地文件边界由 asset 协议 scope 承担（tauri.conf.json `**`）。
 fn resolve_local_image(source: &str, base_dir: Option<&str>) -> Option<PathBuf> {
     let mut candidates = vec![source.to_string()];
     if let Some(decoded) = percent_decode(source) {

@@ -673,20 +673,42 @@ pub fn highlight_code(language: Option<&str>, code: &str) -> Vec<HighlightSpanDt
     if result.spans.is_empty() {
         return Vec::new();
     }
-    // 字节偏移 → UTF-16 码元偏移（一次性前缀映射）
-    let mut byte_to_utf16 = vec![0usize; code.len() + 1];
-    let mut utf16 = 0;
-    for (byte, ch) in code.char_indices() {
-        byte_to_utf16[byte] = utf16;
-        utf16 += ch.len_utf16();
+    // 字节偏移 → UTF-16 码元偏移：只收集 span 边界，排序去重后单趟推进计算，
+    // 不再为整块代码分配 `code.len() + 1` 的前缀映射表。
+    let mut boundaries: Vec<usize> = result
+        .spans
+        .iter()
+        .flat_map(|span| [span.range.start, span.range.end])
+        .map(|byte| byte.min(code.len()))
+        .collect();
+    boundaries.sort_unstable();
+    boundaries.dedup();
+
+    // 与 boundaries 平行的 UTF-16 偏移；每个分段只遍历一次，整体 O(code.len())。
+    let mut utf16_at = Vec::with_capacity(boundaries.len());
+    let mut utf16 = 0usize;
+    let mut prev_byte = 0usize;
+    for &byte in &boundaries {
+        if let Some(segment) = code.get(prev_byte..byte) {
+            utf16 += segment.chars().map(char::len_utf16).sum::<usize>();
+        }
+        utf16_at.push(utf16);
+        prev_byte = byte;
     }
-    byte_to_utf16[code.len()] = utf16;
+    let utf16_offset = |byte: usize| {
+        let byte = byte.min(code.len());
+        match boundaries.binary_search(&byte) {
+            Ok(index) => utf16_at[index],
+            // 边界集合由同一 clamp 逻辑生成，必然命中；兜底取最近前驱偏移。
+            Err(index) => index.checked_sub(1).map_or(0, |i| utf16_at[i]),
+        }
+    };
     result
         .spans
         .iter()
         .map(|span| HighlightSpanDto {
-            start: byte_to_utf16[span.range.start.min(code.len())],
-            end: byte_to_utf16[span.range.end.min(code.len())],
+            start: utf16_offset(span.range.start),
+            end: utf16_offset(span.range.end),
             class_name: span.class,
         })
         .collect()

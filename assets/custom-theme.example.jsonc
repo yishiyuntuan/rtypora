@@ -55,6 +55,9 @@
       "task_checkbox_checked_bg": null, // 任务勾选框背景（已勾选）
       "task_checkbox_check": null,      // 勾选标记颜色
       "scrollbar_thumb": null,          // 滚动条滑块
+      "find_highlight_bg": null,          // 查找匹配高亮（全部匹配）背景
+      "find_highlight_current_bg": null,  // 查找匹配高亮（当前匹配）背景
+      "find_highlight_current_text": null,// 查找匹配高亮（当前匹配）文字颜色
       "code_syntax_comment": null,      // 语法高亮：注释
       "code_syntax_keyword": null,      // 关键字
       "code_syntax_string": null,       // 字符串

@@ -270,32 +270,36 @@ pub fn format_table_source(markdown: &str) -> Option<String> {
     Some(table::serialize_table_markdown_lines_padded(&table).join("\n"))
 }
 
-/// 行内任务标记位置：仅在「列表标记前缀（无序 -/*/+ 或有序 1./1)，任意缩进）+
-/// 空白」之后紧跟 [ ]/[x]/[X] 时命中——围栏/缩进代码/行内代码与正文中的
-/// 同形文本不计入（杜绝篡改代码内容或勾选静默失效）。
+/// 行内任务标记位置：剥离引用/callout 层级前缀（`>` 可重复，`>` 后可空一格）后，
+/// 在「列表标记前缀（无序 -/*/+ 或有序 1./1)，任意缩进）+ 空白（空格或 tab）」之后
+/// 紧跟 [ ]/[x]/[X] 时命中——围栏/缩进代码/行内代码与正文中的同形文本不计入
+///（杜绝篡改代码内容或勾选静默失效）。与解析器同规则（tab 分隔符、引用内任务项）。
 fn task_marker_pos_in_line(line: &str) -> Option<usize> {
-    let t = line.trim_start();
-    let after_bullet = if t.len() >= 2 && matches!(t.as_bytes()[0], b'-' | b'+' | b'*') && t.as_bytes()[1] == b' ' {
-        &t[2..]
+    let mut rest = line.trim_start();
+    while let Some(stripped) = rest.strip_prefix('>') {
+        rest = stripped.strip_prefix(' ').unwrap_or(stripped);
+    }
+    let bytes = rest.as_bytes();
+    let after_bullet = if bytes.len() >= 2
+        && matches!(bytes[0], b'-' | b'+' | b'*')
+        && matches!(bytes[1], b' ' | b'\t')
+    {
+        &rest[2..]
     } else {
-        // 有序列表标记：digits + (.|)) + space
-        let bytes = t.as_bytes();
+        // 有序列表标记：digits + (.|)) + space/tab
         let mut i = 0;
         while i < bytes.len() && bytes[i].is_ascii_digit() {
             i += 1;
         }
-        if i > 0 && i + 1 < bytes.len() && (bytes[i] == b'.' || bytes[i] == b')') && bytes[i + 1] == b' ' {
-            &t[i + 2..]
+        if i > 0 && i + 1 < bytes.len() && (bytes[i] == b'.' || bytes[i] == b')') && matches!(bytes[i + 1], b' ' | b'\t') {
+            &rest[i + 2..]
         } else {
             return None;
         }
     };
-    for pat in ["[ ]", "[x]", "[X]"] {
-        if after_bullet.starts_with(pat) {
-            return Some(line.len() - after_bullet.len());
-        }
-    }
-    None
+    // 任务标记须紧跟列表前缀（与解析器 parse_task_list_item_prefix 一致）
+    block::state::BlockKind::parse_task_list_item_prefix(after_bullet)?;
+    Some(line.len() - after_bullet.len())
 }
 
 /// 任务列表勾选：把源码中第 occurrence 个（0 基，默认首个）任务标记替换为勾选状态。

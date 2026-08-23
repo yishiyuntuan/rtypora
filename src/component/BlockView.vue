@@ -9,7 +9,7 @@ import { resolveImageSrc } from '../utils/image.js';
 import { renderMermaid, peekMermaid } from '../utils/mermaid.js';
 import { plantumlUrl, plantumlRenderer, renderPlantumlLocal, peekPlantuml } from '../utils/plantuml.js';
 import { themeVersion } from '../themes/index.js';
-import { getPref, renderVersion, prefsVersion } from '../utils/prefs.js';
+import { getPref, renderVersion } from '../utils/prefs.js';
 
 // 递归块渲染器：渲染 velotype 移植版块模型（17 种块类型）。
 // 顶层块的编辑状态由 Editor.vue 管理，本组件只负责渲染与事件转发。
@@ -23,7 +23,7 @@ const props = defineProps({
   depth: { type: Number, default: 0 },
 });
 
-const emit = defineEmits(['toggle-task']);
+const emit = defineEmits(['toggle-task', 'resize-image']);
 
 // 列表标记按层级区分（体现父子层级）：圆点 •/◦/▪，序号 1./a./i.
 const bulletMarker = computed(() => ['•', '◦', '▪'][Math.min(props.depth, 2)]);
@@ -160,7 +160,7 @@ const plantumlSvg = ref('');
 const plantumlUrlRef = ref(null);
 const plantumlFailed = ref(false);
 watch(
-  () => [props.block.id, plainText(props.block.title), renderVersion.value, prefsVersion.value, mounted.value],
+  () => [props.block.id, plainText(props.block.title), renderVersion.value, mounted.value],
   async () => {
     plantumlFailed.value = false;
     plantumlSvg.value = '';
@@ -185,6 +185,34 @@ watch(
   },
   { immediate: true },
 );
+
+// 图片拖拽调宽：右缘手柄水平拖动，实时预览 zoom；松开后经 Editor 回写源码
+//（zoom<100% → <img style="zoom:N%"> HTML 行；拉回 100% → 还原 markdown 图片语法）
+function startImageResize(e) {
+  const wrap = e.target.closest('.img-resizable');
+  const img = wrap?.querySelector('img');
+  if (!img) return;
+  const startX = e.clientX;
+  const startWidth = img.getBoundingClientRect().width;
+  const startZoom = parseFloat(img.style.zoom) || 1;
+  if (!startWidth) return;
+  let pending = startZoom;
+  const onMove = (ev) => {
+    pending = Math.min(1.5, Math.max(0.1, startZoom * ((startWidth + ev.clientX - startX) / startWidth)));
+    img.style.zoom = String(pending);
+  };
+  const onUp = () => {
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    if (Math.abs(pending - startZoom) > 0.01) {
+      emit('resize-image', { block: props.block, zoom: pending });
+    } else {
+      img.style.zoom = startZoom === 1 ? '' : String(startZoom); // 未拖动：还原预览
+    }
+  };
+  window.addEventListener('mousemove', onMove);
+  window.addEventListener('mouseup', onUp);
+}
 
 // 独立图片段落：相对路径以文档目录为基准解析（App provide）
 const documentDir = inject('documentDir', { value: null });
@@ -280,8 +308,8 @@ function alignStyle(alignments, index) {
 </script>
 
 <template>
-  <!-- 独立图片段落：渲染图片，加载失败显示占位 -->
-  <div v-if="block.type === 'paragraph' && block.image" class="my-2">
+  <!-- 独立图片段落：渲染图片，加载失败显示占位；右缘手柄拖拽调宽（回写 zoom 源码） -->
+  <div v-if="block.type === 'paragraph' && block.image" class="img-resizable group relative my-2">
     <img
       v-if="imageSrc"
       :src="imageSrc"
@@ -292,6 +320,12 @@ function alignStyle(alignments, index) {
     <div v-else class="md-placeholder rounded border p-3 text-center text-[12px]">
       {{ block.image.alt || '图片' }}（无法加载 {{ block.image.src }}）
     </div>
+    <div
+      v-if="imageSrc"
+      class="img-resize-handle"
+      title="拖拽调整宽度"
+      @mousedown.prevent.stop="startImageResize"
+    ></div>
   </div>
 
   <!-- 内容目录（[TOC] 段落）：渲染文档大纲，点击标题定位（须在通用段落分支之前） -->
@@ -346,6 +380,7 @@ function alignStyle(alignments, index) {
           :ordinal="childOrdinals.get(child.id) || 1"
           :depth="depth + 1"
           @toggle-task="emit('toggle-task', $event)"
+          @resize-image="(p) => emit('resize-image', p)"
         />
       </div>
     </div>
@@ -362,6 +397,7 @@ function alignStyle(alignments, index) {
       :ordinal="childOrdinals.get(child.id) || 1"
       :depth="depth"
       @toggle-task="emit('toggle-task', $event)"
+      @resize-image="(p) => emit('resize-image', p)"
     />
   </blockquote>
 
@@ -379,6 +415,7 @@ function alignStyle(alignments, index) {
       :ordinal="childOrdinals.get(child.id) || 1"
       :depth="depth"
       @toggle-task="emit('toggle-task', $event)"
+      @resize-image="(p) => emit('resize-image', p)"
     />
   </div>
 
@@ -402,6 +439,7 @@ function alignStyle(alignments, index) {
         :ordinal="childOrdinals.get(child.id) || 1"
         :depth="depth"
         @toggle-task="emit('toggle-task', $event)"
+        @resize-image="(p) => emit('resize-image', p)"
       />
     </div>
     <div class="md-footnote-back">
@@ -512,7 +550,7 @@ function alignStyle(alignments, index) {
 
   <!-- htmlBlock：独立 <img> HTML 行按图片渲染（含 zoom 缩放，src 经文档目录解析）；
        其余 htmlBlock / rawMarkdown 源码展示，避免注入 -->
-  <div v-else-if="block.type === 'htmlBlock' && block.image" class="my-2">
+  <div v-else-if="block.type === 'htmlBlock' && block.image" class="img-resizable group relative my-2">
     <img
       v-if="imageSrc"
       :src="imageSrc"
@@ -523,6 +561,12 @@ function alignStyle(alignments, index) {
     <div v-else class="md-placeholder rounded border p-3 text-center text-[12px]">
       {{ block.image.alt || '图片' }}（无法加载 {{ block.image.src }}）
     </div>
+    <div
+      v-if="imageSrc"
+      class="img-resize-handle"
+      title="拖拽调整宽度"
+      @mousedown.prevent.stop="startImageResize"
+    ></div>
   </div>
   <pre
     v-else-if="block.type === 'htmlBlock' || block.type === 'rawMarkdown'"

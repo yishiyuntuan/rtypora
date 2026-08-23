@@ -417,6 +417,38 @@
   display: block;
 }
 
+/* 查找匹配高亮（CSS Custom Highlight API；样式走主题 token --t-find-highlight-*，
+   自定义主题经 colors 的 find_highlight_bg/find_highlight_current_bg/find_highlight_current_text 覆盖）：
+   find-all 全部匹配（淡显+下划线），find-current 当前匹配（浓显） */
+::highlight(find-all) {
+  background: var(--t-find-highlight-bg, #f5b00238);
+  text-decoration: underline;
+  text-decoration-color: var(--t-find-highlight-bg, #f5b00238);
+}
+::highlight(find-current) {
+  background: var(--t-find-highlight-current-bg, #3e69d7);
+  color: var(--t-find-highlight-current-text, #ffffff);
+}
+
+/* 图片拖拽调宽手柄：右缘中部，悬停图片时显示 */
+.img-resize-handle {
+  position: absolute;
+  right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 8px;
+  height: 34px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--t-text-default) 30%, transparent);
+  cursor: ew-resize;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  z-index: 5;
+}
+.img-resizable:hover .img-resize-handle {
+  opacity: 1;
+}
+
 /* 链接原始标记编辑态（/插入链接）：方括号/圆括号淡灰，链接文字蓝色 */
 .md-link-mark {
   color: var(--t-text-placeholder);

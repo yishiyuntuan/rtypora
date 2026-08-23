@@ -21,7 +21,7 @@ const emit = defineEmits(['close']);
           <p class="mt-2">
             Markdown 解析/序列化核心移植自
             <a href="https://github.com/manyougz/velotype" class="underline" target="_blank" rel="noreferrer">velotype</a>（Apache-2.0），
-            公式渲染基于 ratex，图表渲染基于 mermaid-rs-renderer，代码高亮基于 tree-sitter。
+            公式渲染基于 ratex，图表渲染基于 mermaid.js 与 PlantUML（@plantuml/core 本地引擎），代码高亮基于 tree-sitter。
           </p>
         </div>
       </div>

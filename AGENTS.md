@@ -28,7 +28,7 @@
 - PlantUML 渲染：` ```plantuml `/` ```puml ` 围栏在解析层即普通 codeBlock（language 标记），**零解析层改动**；渲染层叠加（`src/utils/plantuml.js`），**两种模式**（偏好 `plantuml_renderer`，默认 local）：①**local 内置引擎**——官方 TeaVM 构建 `@plantuml/core`（`renderToString(lines, onSuccess, onError)`；**注意：Graphviz 布局引擎 viz-global.js 必须经 `?url` 取资源 URL 后以经典 `<script>` 注入加载**——引擎对 `Viz` 是裸引用，ES 模块导入会让打包器包上 CJS exports、UMD 全局失真导致静默失败；引擎 ~8MB 动态 import 分包、首个 PlantUML 块可见才加载，纯 JS 离线渲染无需服务器/Java；SVG 结果 FIFO 缓存，重挂载 `peekPlantuml` 同步回填）；②**server 服务器**——`<img>` 直连 `/svg/<encoded>`（webview 跨域 fetch 会被 CORS 拦截故不用 fetch；`plantuml_server` 可换自部署实例）。失败（离线/语法错误）回退代码显示；偏好开关 `render_plantuml`；语言补全含 plantuml（`code_languages`，徽章 `LANG_BADGES.plantuml`）。
 - `src/latex.rs`：LaTeX 公式渲染，移植自 velotype 管线（ratex parser→layout→svg，自包含 SVG 内嵌字形）。命令 `render_display_math`（`$$`/`\[...\]`/````math` 围栏原文）/`render_inline_math`（LaTeX 正文，含 `\(...\)`）返回 SVG；`set_math_unicode_font` 设置公式中文回落字体（主题 `math_cjk_font` 驱动）。**physics 包宏在解析前展开**（`\dv`/`\pdv`（含 `[n]` 阶数）/`\abs`/`\norm`/`\bra`/`\ket`/`\braket`/`\qty`/`\eval`/`\dd`）；非标准宏别名容错（`\part`→`\partial`）；颜色/字号由前端按当前主题传入，缩放 1.25/1.12 与 velotype 一致。展示公式块的 DTO 带 `mathNumbered`（源码是否使用 AMS 编号环境，非星号 align/gather/equation/multline/flalign/alignat/eqnarray），前端按偏好 `math_numbering`（off/ams/all）生成编号序列并显示 `(n)` 徽标。
 - `src/markdown/`：Markdown 核心，移植自 velotype（GPUI 依赖已全部剥离）。`mod.rs` 暴露命令：`parse_markdown`（全文 → 块树 JSON）、`parse_blocks`（片段 → 块树 JSON，偏移相对片段起点，用于增量更新）、`serialize_markdown`（块树 JSON → 规范 Markdown，前端提交编辑时调用）、`toggle_task_markdown`（任务勾选标记替换，支持 occurrence 序号）、`text_stats`（行/词/字符统计，CJK 感知词数）、`detect_block_shortcut`（块级快捷输入检测，含 fence、分割线与 `<section>` 行）、`inline_shortcut`（行内快捷输入检测）、`lcp_offsets`（批量序列化对齐公共前缀，Ctrl+/ 光标精确映射一次调用）、`block_template`（斜杠命令原子块模板，表格经 TableData 序列化）、`merge_block_markdown`（块首退格合并接缝规则）。`model.rs` 是对外 DTO（`BlockDto`/`BlockKindDto`，嵌套 children + UTF-16 偏移；**SectionBlock 为 DTO 层分类**——`<section>` 容器因 velotype HTML 安全分级不含该标签而解析为 RawMarkdown，`from_node` 统一归类为 SectionBlock，序列化按 RawMarkdown 原文透传）；`inline/` 为行内引擎（`InlineTextTree` 解析/序列化、链接/HTML/脚注/图片）；`table.rs` 为表格数据与解析；`block/` 为块模型（`state.rs` 的 `BlockRecord`/`BlockKind`）、逐行解析器（`document.rs`，输出 `RootBlock{node,start_line,end_line}`）与序列化器（`tree.rs`）。Rust 端无状态，文档全文由前端持有。
-- `Cargo.toml`：`edition = "2024"`（velotype 源码使用 let-chain）；`cssparser`（行内 HTML 样式解析）、`serde`/`serde_json`、`uuid`（v4，生成块 id）已投入使用；`im`（持久化不可变树，用于规划的 undo/redo）尚未使用。
+- `Cargo.toml`：`edition = "2024"`（velotype 源码使用 let-chain）；`cssparser`（行内 HTML 样式解析）、`serde`/`serde_json`、`uuid`（v4，生成块 id）已投入使用。
 - lib 目标名 `tauri_app_lib`，crate-type 含 `staticlib`/`cdylib`（为移动端预留），`export = ["_*"]` 仅导出 Tauri 必需符号；`test = false`（cargo 的 `rustc-link-arg-tests` 不应用于 lib 单测目标，会缺 Windows 清单，本 crate 测试全部走 tests/ 集成测试）。
 - `build.rs` 除 `tauri_build::build()` 外，还把 tauri-build 生成的 Windows 清单资源（`libresource.a`，含 comctl32 v6 清单）通过 `rustc-link-arg-tests` 补链到测试目标——否则 `cargo test` 的测试程序缺清单，启动时报 `STATUS_ENTRYPOINT_NOT_FOUND`（缺 `TaskDialogIndirect`）。
 
@@ -67,8 +67,10 @@ src/
     ├── AboutDialog.vue # 关于对话框
     ├── ConfirmDialog.vue # 未保存更改确认（保存/不保存/取消）
     ├── Sidebar.vue    # 侧边栏：「目录」（文件面板：中部文件树/列表 + 底部文件夹名操作菜单/新建/视图切换，含最近目录）与「大纲」（标题嵌套树 + 树形缩进标记/层级徽标），v-model:visible 控制显隐
-    ├── Editor.vue     # 双模式编辑区：持有全文 Markdown（唯一数据源）；源码模式为 textarea，WYSIWYG 模式渲染块树，点击块进入 contenteditable 就地编辑；emit update:blocks/update:active-heading，defineExpose 暴露 scrollToBlock
+    ├── Editor.vue     # 双模式编辑区：持有全文 Markdown（唯一数据源）；源码模式为 textarea，WYSIWYG 模式渲染块树，点击块进入 contenteditable 就地编辑；撤销/重做快照栈、查找高亮、拖放图片均在此；emit update:blocks/update:active-heading，defineExpose 暴露 scrollToBlock/undo/redo/openFind
     ├── BlockView.vue  # 递归块渲染器（17 种块类型：段落/标题/分割线/三种列表项/引用/callout/脚注定义/表格/代码块/注释/HTML/section 图文排版/数学/Mermaid/Raw）
+    ├── FindBar.vue    # 查找/替换浮动条（Ctrl+F 查找、Ctrl+H 带替换行；匹配高亮用 CSS Custom Highlight API，颜色走主题 token）
+    ├── ContextMenu.vue # 编辑器右键菜单（格式化/插入/字体/撤销重做/查找替换等，样式走 --t-* 变量）
     ├── SlashMenu.vue  # 斜杠命令菜单面板（/ 召唤语法菜单；样式走 --t-* 变量，blocks.slashMenu/slashMenuItemActive 可定制）
     ├── SectionView.vue # section 图文排版块渲染（Mdmdt 式 grid 布局，图片经 Rust 解析为 data URL；render_html_block 偏好可关）
     ├── InlineView.vue # 行内渲染器：按 fragment 样式标志递归包裹（粗/斜/删/下划线/行内代码/上下标/链接/脚注引用/行内公式占位）
@@ -114,14 +116,20 @@ src-tauri/
 - 编辑交互：**普通 Enter 在光标处拆分块**（光标前内容提交渲染，光标后进入新块编辑、光标在开头）；**围栏行（```lang）按 Enter 转换为代码块并进入块内编辑**（不拆分）；`Ctrl/Cmd+Enter` 整块提交（在代码块/Mermaid 等 pre 内为整块提交并在其后新建空段落进入编辑，其余块为提交并退出编辑）；`Shift+Enter` 软换行；`Escape` 取消；失焦提交。代码块/Mermaid 等 pre（含 data-raw 原子块）内 Enter 插入换行符。语言补全覆盖两处：围栏行输入（``` 后）与代码块右上角语言输入框（同一菜单组件，应用时写回输入框并同步 `pre[data-language]`）。列表项退出后的新块依赖解析器保留列表尾随空行（`collect_list_item_region` 末尾不吞 pending_blank_lines——吞掉会导致 `- a\n\n` 末尾空段落丢失、退出列表后 Enter 焦点跳回列表开头）。
 - velotype 模型差异要点：列表项是独立块（嵌套经 `children`，无 List 容器）；块不存储定界符，序列化时统一再生；不支持的语法以 `rawFallback` 原文保留可无损往返；上下标 `^x^`/`~x~` 要求标记两侧为 ASCII 字母数字（词内）；表格分隔行要求至少 3 个连字符；下划线用 `<u>`；原子块（表格/公式/Mermaid/HTML/注释/raw）在前端按原始 Markdown 切片编辑。
 - 编辑交互补充：**callout 为富文本编辑**（`blockToHtml` 生成 `data-variant` + `contenteditable=false` 变体标签 + 标题/子块，`elementToBlocks` 按 `.blk-callout` 识别并剔除标签还原 DTO；**双击变体标签**经 `convertCalloutToRawEdit` 序列化当前内容转原文编辑以修改 `[!TYPE]`）；**无焦点框选的右键格式化**：非编辑态选区按「块内纯文本偏移」暂存（跳过 `.md-marker`/`.md-code-lang-badge`/`.md-callout-label` 非内容文本），右键直入编辑、挂载即重建高亮（`stashCtxSelection`/`rangeFromTextOffsets`/`restoreCtxSelectionOnMount`）；**点击进入编辑的守卫只拦跨块选区**（`selectionSpansMultipleBlocks`，同块选区点击即塌陷并进入编辑）；**有序列表中间插入/删除项后源标记联动重编号**（`renumberOrderedMarkers`，编号规则与 `numberedOrdinals`/Rust 序列化器逐字一致，仅编辑流调用、加载路径不调）；**容器块首行空占位段可 Backspace 删除**（仅删空行不触发块级降级）。
+- 撤销/重做与查找：**撤销/重做**为 `watch(content)` 快照栈（全文快照、1 秒输入合并窗口、上限 200 条，`applyingHistory`/`loadingDoc` 守卫防止回放与加载时入栈），Ctrl+Z/Ctrl+Shift+Z(Ctrl+Y) 与右键菜单入口；**查找/替换**（FindBar.vue，Ctrl+F/Ctrl+H，右键菜单同入口）高亮走 **CSS Custom Highlight API**（`applyFindHighlights` 扫 DOM 文本节点建 Range 注册 `find`/`find-current` 两个 Highlight，滚动/输入防抖重扫，关闭清除），颜色为主题 token `find_highlight_bg`/`find_highlight_current_bg`/`find_highlight_current_text`（`::highlight()` 规则在 style.css 经 `var()` 消费）。
+- 行内格式编辑模型：加粗/斜体/下划线/删除线/高亮/上下标等**样式元素就地插入**（光标进入已渲染样式时显现源码标记 `.md-src` 包裹层，退出或 Esc 后重新渲染收起）；**Esc 退出样式用 `\uFEFF` 哨兵字符**（光标放哨兵后 offset 1——空文本节点与 setStartAfter 都会被 Chromium 边界归并吃掉），提交时剔除哨兵；输入 `**` 自动补全为 `**|**`；斜杠菜单**任意位置可触发**（`extractSlashFrags` 取光标前 `/` 后片段为查询词，`spliceSlashFrags` 应用时保留 `/` 前后上下文，不再要求行首）；**链接/图片/字体模板插入为标记 span 形态**（`md-link-mark`/`md-link-text` 淡灰标记 + 蓝色文本，再次点击进入 `expandLinkAtCaret`/`expandFontAtCaret` 展开原文编辑，图片支持路径补全、选中图片后 Esc 光标移到图后）。
+- 列表退格/缩进套件（均为光标保持原位的 DOM 手术，提交走常规序列化）：`outdentEmptyNestedListItemToParagraph`（嵌套空项 Backspace→移出列表转段落，打 `data-list-resume` 标记，`resumeListEnter` 在该段落输入后 Enter 续原列表）、`exitEmptyTopLevelListItemAtCaret`（顶层空项退列表）、`outdentNestedListItemAtCaret`（嵌套项行首 Backspace 降一层）；**取根列表必须用 li 的最外层祖先列表**（`container.firstElementChild` 在多列表容器（追加/拼接产生）下会拿错列表，导致段落插错位置、光标跳走）。
+- 图片与媒体交互：**拖放图片进编辑器**（`onEditorDrop` → `save_pasted_image` 落盘 → 落点光标处插入 `![](path)`，无落点追加文末）；**图片右缘拖拽调宽**（拖拽手柄改显示宽度，提交时回写源码 `<img style="zoom:N%">`，≈100% 时还原为纯 `![]()` markdown 语法）；偏好设置新增**拼写检查开关**（contenteditable 的 spellcheck 属性）与**打字机模式**（光标行保持视口中部）。
+- CI：`.github/workflows/build.yml` 推送时构建 Windows/macOS/Linux 三平台安装包（matrix + tauri-action）。
 - 窗口控制相关的 capability 权限必须与前端调用对应：自定义标题栏依赖 `core:window:allow-*` 权限，新增原生调用时同步更新 `src-tauri/capabilities/*.json`。
 - `vite.config.js` 中 `clearScreen: false`、固定端口 1420、忽略监听 `src-tauri/` 均为 Tauri 要求，不要随意修改。
 - `Cargo.toml` 的 release profile 配置了体积优化（`lto = true`、`codegen-units = 1`、`panic = "abort"`、`strip = true`），勿删除。
 
 ## 测试
 
-- Rust：`cd src-tauri && cargo test`，现有解析器集成测试 `tests/markdown_parse.rs`（块模型结构、UTF-16 区间、任务列表、表格、callout、脚注、raw 保留、往返不动点 + velotype 压力集夹具）。改动 markdown 模块后必须跑通。
-- 前端无测试框架、无 CI 配置，验证方式为手动运行 `pnpm tauri dev` 检查行为；改动前端后至少跑 `pnpm build`。
+- Rust：`cd src-tauri && cargo test`，现有解析器集成测试 `tests/markdown_parse.rs`（块模型结构、UTF-16 区间、任务列表、表格、callout、脚注、raw 保留、往返不动点 + velotype 压力集夹具）与 `tests/list_item_continuation.rs`（列表续行/退出/嵌套回归）。改动 markdown 模块后必须跑通。
+- 前端无测试框架，验证方式为手动运行 `pnpm tauri dev` 检查行为；改动前端后至少跑 `pnpm build`。有序列表重编号逻辑有独立脚本回归：`node scripts/test-renumber.mjs`。
+- CI：`.github/workflows/build.yml` 在推送时经 tauri-action 构建 Windows/macOS/Linux 安装包。
 
 ## 安全注意事项
 
