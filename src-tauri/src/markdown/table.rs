@@ -479,7 +479,7 @@ pub fn is_table_row_candidate(line: &str) -> bool {
 
 /// Collects a contiguous table-candidate region in the current container
 /// scope.
-pub fn collect_table_candidate_region(lines: &[String], start: usize) -> usize {
+pub fn collect_table_candidate_region(lines: &[&str], start: usize) -> usize {
     let mut index = start + 1;
     while index < lines.len() && is_table_candidate_line(&lines[index]) {
         index += 1;
@@ -488,7 +488,7 @@ pub fn collect_table_candidate_region(lines: &[String], start: usize) -> usize {
 }
 
 /// Parses a pipe-table region into native table data.
-pub fn parse_table_region(lines: &[String]) -> Option<TableData> {
+pub fn parse_table_region(lines: &[&str]) -> Option<TableData> {
     if lines.len() < 2 {
         return None;
     }
@@ -554,7 +554,7 @@ fn is_delimiter_row(line: &str, columns: usize) -> bool {
 /// blank line, matching GFM. Returns `None` for ordinary prose so a stray `|`
 /// is never mistaken for a table; single-column pipeless candidates are also
 /// rejected because they are ambiguous with setext headings.
-pub fn collect_pipeless_table_region(lines: &[String], start: usize) -> Option<usize> {
+pub fn collect_pipeless_table_region(lines: &[&str], start: usize) -> Option<usize> {
     // 快速守卫：不含 `|` 的散文行直接排除（避免 split_table_cells 的全量分配）
     let line = lines.get(start)?;
     if !line.contains('|') {
@@ -581,12 +581,12 @@ pub fn is_root_table_candidate_line(line: &str) -> bool {
 }
 
 /// Collects a contiguous root-level table candidate region.
-pub fn collect_root_table_candidate_region(lines: &[String], start: usize) -> usize {
+pub fn collect_root_table_candidate_region(lines: &[&str], start: usize) -> usize {
     collect_table_candidate_region(lines, start)
 }
 
 /// Parses a root-level pipe table region into native table data.
-pub fn parse_root_table_region(lines: &[String]) -> Option<TableData> {
+pub fn parse_root_table_region(lines: &[&str]) -> Option<TableData> {
     parse_table_region(lines)
 }
 
@@ -647,6 +647,13 @@ pub fn serialize_table_markdown_lines_padded(table: &TableData) -> Vec<String> {
         .map(|row| row.iter().map(serialize_table_cell_markdown).collect::<Vec<_>>())
         .collect::<Vec<_>>();
 
+    // 单元格字符数只算一趟：列宽统计与 pad 填充共用，避免逐格重复 chars().count()
+    let header_lens: Vec<usize> = header.iter().map(|cell| cell.chars().count()).collect();
+    let body_lens: Vec<Vec<usize>> = body
+        .iter()
+        .map(|row| row.iter().map(|cell| cell.chars().count()).collect())
+        .collect();
+
     let mut widths = vec![3usize; columns];
     for (i, width) in widths.iter_mut().enumerate() {
         *width = (*width).max(delimiter_min_width(
@@ -656,38 +663,37 @@ pub fn serialize_table_markdown_lines_padded(table: &TableData) -> Vec<String> {
                 .copied()
                 .unwrap_or(TableColumnAlignment::Default),
         ));
-        if let Some(cell) = header.get(i) {
-            *width = (*width).max(cell.chars().count());
+        if let Some(len) = header_lens.get(i) {
+            *width = (*width).max(*len);
         }
-        for row in &body {
-            if let Some(cell) = row.get(i) {
-                *width = (*width).max(cell.chars().count());
+        for row_lens in &body_lens {
+            if let Some(len) = row_lens.get(i) {
+                *width = (*width).max(*len);
             }
         }
     }
 
-    let pad = |cell: &str, width: usize| {
-        let len = cell.chars().count();
+    let pad = |cell: &str, len: usize, width: usize| {
         if len >= width {
             cell.to_string()
         } else {
             format!("{}{}", cell, " ".repeat(width - len))
         }
     };
-    let padded_row = |cells: &[String]| {
+    let padded_row = |cells: &[String], lens: &[usize]| {
         format!(
             "| {} |",
             cells
                 .iter()
                 .enumerate()
-                .map(|(i, cell)| pad(cell, widths.get(i).copied().unwrap_or(3)))
+                .map(|(i, cell)| pad(cell, lens[i], widths.get(i).copied().unwrap_or(3)))
                 .collect::<Vec<_>>()
                 .join(" | ")
         )
     };
 
     let mut lines = Vec::with_capacity(2 + body.len());
-    lines.push(padded_row(&header));
+    lines.push(padded_row(&header, &header_lens));
     lines.push(format!(
         "| {} |",
         (0..columns)
@@ -705,7 +711,7 @@ pub fn serialize_table_markdown_lines_padded(table: &TableData) -> Vec<String> {
             .collect::<Vec<_>>()
             .join(" | ")
     ));
-    lines.extend(body.iter().map(|row| padded_row(row)));
+    lines.extend(body.iter().zip(&body_lens).map(|(row, lens)| padded_row(row, lens)));
     lines
 }
 
@@ -728,9 +734,9 @@ mod tests {
     #[test]
     fn parses_valid_root_table_region() {
         let lines = vec![
-            "| Left | Center | Right |".to_string(),
-            "| :--- | :---: | ---: |".to_string(),
-            "| a | b | c |".to_string(),
+            "| Left | Center | Right |",
+            "| :--- | :---: | ---: |",
+            "| a | b | c |",
         ];
         let table = parse_root_table_region(&lines).expect("table should parse");
         assert_eq!(table.alignments.len(), 3);
@@ -748,13 +754,13 @@ mod tests {
 
     #[test]
     fn rejects_invalid_alignment_row() {
-        let lines = vec!["| Left | Right |".to_string(), "| nope | --- |".to_string()];
+        let lines = vec!["| Left | Right |", "| nope | --- |"];
         assert!(parse_root_table_region(&lines).is_none());
     }
 
     #[test]
     fn rejects_alignment_row_with_wrong_column_count() {
-        let lines = vec!["| A | B | C |".to_string(), "| --- | --- |".to_string()];
+        let lines = vec!["| A | B | C |", "| --- | --- |"];
         assert!(parse_root_table_region(&lines).is_none());
     }
 
@@ -763,9 +769,9 @@ mod tests {
         // ":---" is explicit left and must survive a parse/serialize round-trip
         // instead of being silently rewritten to a bare "---".
         let lines = vec![
-            "| L | D | R |".to_string(),
-            "| :--- | --- | ---: |".to_string(),
-            "| a | b | c |".to_string(),
+            "| L | D | R |",
+            "| :--- | --- | ---: |",
+            "| a | b | c |",
         ];
         let table = parse_root_table_region(&lines).expect("table should parse");
         assert_eq!(
@@ -785,10 +791,10 @@ mod tests {
     #[test]
     fn pads_short_body_rows_and_truncates_long_ones() {
         let lines = vec![
-            "| A | B | C |".to_string(),
-            "| --- | --- | --- |".to_string(),
-            "| short |".to_string(),
-            "| 1 | 2 | 3 | 4 |".to_string(),
+            "| A | B | C |",
+            "| --- | --- | --- |",
+            "| short |",
+            "| 1 | 2 | 3 | 4 |",
         ];
         let table = parse_root_table_region(&lines).expect("table should parse");
         assert_eq!(table.rows.len(), 2);
@@ -803,10 +809,10 @@ mod tests {
     #[test]
     fn parses_pipeless_table() {
         let lines = vec![
-            "Name | Score".to_string(),
-            "--- | ---".to_string(),
-            "Alice | 10".to_string(),
-            "Bob | 7".to_string(),
+            "Name | Score",
+            "--- | ---",
+            "Alice | 10",
+            "Bob | 7",
         ];
         let end = collect_pipeless_table_region(&lines, 0).expect("region");
         assert_eq!(end, 4);
@@ -819,20 +825,20 @@ mod tests {
 
     #[test]
     fn prose_with_pipe_is_not_a_pipeless_table() {
-        let lines = vec!["this | that".to_string(), "and the next line".to_string()];
+        let lines = vec!["this | that", "and the next line"];
         assert!(collect_pipeless_table_region(&lines, 0).is_none());
     }
 
     #[test]
     fn pipeless_table_requires_valid_delimiter_row() {
-        let lines = vec!["Name | Score".to_string(), "Alice | 10".to_string()];
+        let lines = vec!["Name | Score", "Alice | 10"];
         assert!(collect_pipeless_table_region(&lines, 0).is_none());
     }
 
     #[test]
     fn single_column_pipeless_is_not_a_table() {
         // Ambiguous with a setext heading; must not be captured as a table.
-        let lines = vec!["Title".to_string(), "---".to_string()];
+        let lines = vec!["Title", "---"];
         assert!(collect_pipeless_table_region(&lines, 0).is_none());
     }
 
@@ -844,17 +850,17 @@ mod tests {
                 InlineTextTree::from_markdown("[link](https://example.com)"),
             ],
             rows: vec![vec![
-                InlineTextTree::plain("A | B".to_string()),
-                InlineTextTree::plain("value".to_string()),
+                InlineTextTree::plain("A | B"),
+                InlineTextTree::plain("value"),
             ]],
             alignments: vec![TableColumnAlignment::Default, TableColumnAlignment::Right],
         };
         assert_eq!(
             serialize_table_markdown_lines(&table),
             vec![
-                "| **bold** | [link](https://example.com) |".to_string(),
-                "| --- | ---: |".to_string(),
-                "| A \\| B | value |".to_string(),
+                "| **bold** | [link](https://example.com) |",
+                "| --- | ---: |",
+                "| A \\| B | value |",
             ]
         );
     }
@@ -862,10 +868,10 @@ mod tests {
     #[test]
     fn detects_root_table_candidate_runs() {
         let lines = vec![
-            "| A | B |".to_string(),
-            "| --- | --- |".to_string(),
-            "| 1 | 2 |".to_string(),
-            "paragraph".to_string(),
+            "| A | B |",
+            "| --- | --- |",
+            "| 1 | 2 |",
+            "paragraph",
         ];
         assert!(is_root_table_candidate_line(&lines[0]));
         assert_eq!(collect_root_table_candidate_region(&lines, 0), 3);
@@ -931,17 +937,17 @@ mod tests {
     fn append_column_extends_every_row_and_uses_requested_alignment() {
         let mut table = TableData {
             header: vec![
-                InlineTextTree::plain("A".to_string()),
-                InlineTextTree::plain("B".to_string()),
+                InlineTextTree::plain("A"),
+                InlineTextTree::plain("B"),
             ],
             rows: vec![
                 vec![
-                    InlineTextTree::plain("1".to_string()),
-                    InlineTextTree::plain("2".to_string()),
+                    InlineTextTree::plain("1"),
+                    InlineTextTree::plain("2"),
                 ],
                 vec![
-                    InlineTextTree::plain("3".to_string()),
-                    InlineTextTree::plain("4".to_string()),
+                    InlineTextTree::plain("3"),
+                    InlineTextTree::plain("4"),
                 ],
             ],
             alignments: vec![TableColumnAlignment::Left, TableColumnAlignment::Right],
@@ -968,8 +974,8 @@ mod tests {
     #[test]
     fn append_column_pads_missing_alignments_with_default() {
         let mut table = TableData {
-            header: vec![InlineTextTree::plain("A".to_string())],
-            rows: vec![vec![InlineTextTree::plain("1".to_string())]],
+            header: vec![InlineTextTree::plain("A")],
+            rows: vec![vec![InlineTextTree::plain("1")]],
             alignments: Vec::new(),
         };
 
@@ -1000,10 +1006,10 @@ mod tests {
     #[test]
     fn swap_visual_rows_exchanges_header_with_first_body_row() {
         let mut table = TableData {
-            header: vec![InlineTextTree::plain("A".to_string())],
+            header: vec![InlineTextTree::plain("A")],
             rows: vec![
-                vec![InlineTextTree::plain("1".to_string())],
-                vec![InlineTextTree::plain("2".to_string())],
+                vec![InlineTextTree::plain("1")],
+                vec![InlineTextTree::plain("2")],
             ],
             alignments: vec![TableColumnAlignment::Left],
         };
@@ -1024,12 +1030,12 @@ mod tests {
     fn swap_columns_exchanges_header_body_and_alignment() {
         let mut table = TableData {
             header: vec![
-                InlineTextTree::plain("A".to_string()),
-                InlineTextTree::plain("B".to_string()),
+                InlineTextTree::plain("A"),
+                InlineTextTree::plain("B"),
             ],
             rows: vec![vec![
-                InlineTextTree::plain("1".to_string()),
-                InlineTextTree::plain("2".to_string()),
+                InlineTextTree::plain("1"),
+                InlineTextTree::plain("2"),
             ]],
             alignments: vec![TableColumnAlignment::Left, TableColumnAlignment::Right],
         };
@@ -1058,10 +1064,10 @@ mod tests {
     #[test]
     fn remove_header_row_promotes_first_body_row() {
         let mut table = parse_root_table_region(&[
-            "| A | B |".to_string(),
-            "| --- | --- |".to_string(),
-            "| 1 | 2 |".to_string(),
-            "| 3 | 4 |".to_string(),
+            "| A | B |",
+            "| --- | --- |",
+            "| 1 | 2 |",
+            "| 3 | 4 |",
         ])
         .expect("valid table");
 

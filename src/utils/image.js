@@ -7,6 +7,12 @@ import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 const cache = new Map();
 // asset URL → 本地源信息（导出 HTML 时把 asset URL 换回 data URL，保证导出文件自包含）
 const assetUrlToLocal = new Map();
+// 缓存上限（FIFO）：长会话频繁切换目录/文档时防无界增长（key 含 baseDir，每目录一组新 key）
+const CACHE_MAX = 500;
+function cacheSet(map, key, value) {
+  if (map.size >= CACHE_MAX) map.delete(map.keys().next().value);
+  map.set(key, value);
+}
 
 // 解析图片源为可用于 <img src> 的 URL；失败返回 null（显示占位）
 export async function resolveImageSrc(source, baseDir) {
@@ -18,11 +24,11 @@ export async function resolveImageSrc(source, baseDir) {
     .then((abs) => {
       if (!abs) return null;
       const url = convertFileSrc(abs);
-      assetUrlToLocal.set(url, { source, baseDir: baseDir ?? null });
+      cacheSet(assetUrlToLocal, url, { source, baseDir: baseDir ?? null });
       return url;
     })
     .catch(() => null);
-  cache.set(key, promise);
+  cacheSet(cache, key, promise);
   const result = await promise;
   if (!result) cache.delete(key); // 失败不缓存（文件可能稍后生成）
   return result;

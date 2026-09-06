@@ -71,9 +71,12 @@ export function useOverlayScrollbar(getScrollEl, autoHide) {
       dragging.value = false;
       document.removeEventListener('pointermove', move);
       document.removeEventListener('pointerup', up);
+      document.removeEventListener('pointercancel', up);
     };
     document.addEventListener('pointermove', move);
     document.addEventListener('pointerup', up);
+    // pointercancel（系统中断触摸/窗口失焦）同样结束拖动，否则监听器与 dragging 状态残留
+    document.addEventListener('pointercancel', up);
   }
 
   // 点击轨道翻页（滑块上方/下方各一页）

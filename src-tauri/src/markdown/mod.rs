@@ -6,15 +6,17 @@ pub mod inline;
 pub mod model;
 pub mod table;
 
-/// 每行的 UTF-16 码元起始偏移（`split('\n')` 与解析器一致的行切分）。
-fn line_utf16_starts(markdown: &str) -> Vec<usize> {
+/// 每行的 UTF-16 码元起始偏移（`split('\n')` 与解析器一致的行切分），
+/// 以及全文的 UTF-16 总长度（同一趟扫描得出，免去第二次全文编码扫描）。
+fn line_utf16_starts(markdown: &str) -> (Vec<usize>, usize) {
     let mut starts = Vec::new();
     let mut offset = 0;
     for line in markdown.split('\n') {
         starts.push(offset);
         offset += line.encode_utf16().count() + 1;
     }
-    starts
+    // offset 累计了每行长度 + 每行一个换行，实际换行比行数少一个
+    (starts, offset - 1)
 }
 
 /// 解析入口共用：根块行区间 → 带 UTF-16 偏移的 DTO（偏移相对传入文本起点）。
@@ -26,8 +28,7 @@ fn parse_to_dtos(markdown: &str) -> Vec<model::BlockDto> {
     let roots = inline::with_parse_reference_definitions(&link_defs, &image_defs, || {
         block::document::parse_root_blocks(markdown)
     });
-    let starts = line_utf16_starts(markdown);
-    let total = markdown.encode_utf16().count();
+    let (starts, total) = line_utf16_starts(markdown);
     let mut out: Vec<model::BlockDto> = roots
         .iter()
         .map(|root| {
@@ -51,7 +52,7 @@ fn parse_to_dtos(markdown: &str) -> Vec<model::BlockDto> {
         if !shared {
             continue;
         }
-        let Some(first_src) = out[i].raw_fallback.clone() else {
+        let Some(first_src) = out[i].raw_fallback.as_deref() else {
             continue;
         };
         // 防御性钳制：首块原文长度不应超过共享区间（解析层保证，此处兜底）
@@ -265,7 +266,7 @@ pub fn serialize_markdown(blocks: Vec<model::BlockDto>) -> String {
 /// 内容与对齐不变，仅重排空白；输入不是合法表格时返回 None（前端保持原样）。
 #[tauri::command]
 pub fn format_table_source(markdown: &str) -> Option<String> {
-    let lines = markdown.lines().map(str::to_string).collect::<Vec<_>>();
+    let lines = markdown.lines().collect::<Vec<_>>();
     let table = table::parse_root_table_region(&lines)?;
     Some(table::serialize_table_markdown_lines_padded(&table).join("\n"))
 }

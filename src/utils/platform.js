@@ -23,6 +23,17 @@ export function dedupPaths(list) {
   return out;
 }
 
+// 从 localStorage 读取 JSON 数组（最近文件/目录列表等）：数据损坏时回退空数组，
+// 避免 JSON.parse 抛异常导致挂载即白屏
+export function readStoredList(key) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 // 公式中文回落字体默认规格（ratex：路径 或 路径#字体族名）：
 // Windows 宋体（SimSun）；macOS 华文宋体（Songti SC，同为衬线）
 export const mathCjkFontSpec = isMac

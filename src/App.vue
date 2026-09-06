@@ -13,7 +13,7 @@ import AboutDialog from "./component/AboutDialog.vue";
 import ConfirmDialog from "./component/ConfirmDialog.vue";
 import { applyEditorOverrides, getPref, syncRustPrefs } from "./utils/prefs.js";
 import { assetUrlToDataUrl } from "./utils/image.js";
-import { pathKey, dedupPaths } from "./utils/platform.js";
+import { pathKey, dedupPaths, readStoredList } from "./utils/platform.js";
 
 const appWindow = new Window("main");
 
@@ -80,7 +80,7 @@ let pendingAction = null;
 // 最近使用的文件（localStorage，最多 10 条，最新在前；按规范化路径键去重——
 // 对话框反斜杠形式与拼接正斜杠形式、Windows 大小写差异不会重复入列）
 const RECENT_KEY = "tauri-editor.recent-files";
-const recentFiles = ref(dedupPaths(JSON.parse(localStorage.getItem(RECENT_KEY) || "[]")));
+const recentFiles = ref(dedupPaths(readStoredList(RECENT_KEY)));
 function recordRecent(path) {
   const list = [path, ...recentFiles.value.filter((p) => pathKey(p) !== pathKey(path))].slice(0, 10);
   recentFiles.value = list;

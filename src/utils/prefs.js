@@ -86,11 +86,25 @@ export function getPref(key) {
   return load()[key];
 }
 
+// 参与排版覆盖的偏好键（applyEditorOverrides 消费的键；其余偏好变更无需重套覆盖/发 IPC）
+const OVERRIDE_KEYS = new Set([
+  'text_size',
+  'text_line_height',
+  'content_max_width',
+  'editor_padding',
+  'editor_font_family',
+  'code_font_family',
+  'scrollbar_auto_hide',
+  'math_cjk_font',
+  'traffic_light_autohide',
+]);
+
 export function setPref(key, value) {
   const prefs = load();
   prefs[key] = value;
   localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs));
-  applyEditorOverrides(prefs);
+  // 仅排版覆盖键变更时重套覆盖——否则每次 setPref 都会连带发 set_math_unicode_font 等 IPC
+  if (OVERRIDE_KEYS.has(key)) applyEditorOverrides(prefs);
   prefsVersion.value += 1;
   // render_* 与 PlantUML 渲染器/服务器选择驱动重渲染（其余偏好不影响渲染输出）
   if (key.startsWith('render_') || key === 'plantuml_renderer' || key === 'plantuml_server') {

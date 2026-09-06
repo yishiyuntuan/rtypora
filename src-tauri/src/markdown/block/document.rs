@@ -74,7 +74,7 @@ fn strip_fence_indent(line: &str) -> Option<&str> {
     (indent <= 3).then_some(&line[indent..])
 }
 
-fn collect_until_blank_line(lines: &[String], start: usize) -> usize {
+fn collect_until_blank_line(lines: &[&str], start: usize) -> usize {
     let mut index = start + 1;
     while index < lines.len() && !lines[index].trim().is_empty() {
         index += 1;
@@ -82,7 +82,7 @@ fn collect_until_blank_line(lines: &[String], start: usize) -> usize {
     index
 }
 
-fn collect_html_fallback_region(lines: &[String], start: usize) -> usize {
+fn collect_html_fallback_region(lines: &[&str], start: usize) -> usize {
     let mut index = start + 1;
     while index < lines.len() {
         if lines[index].trim().is_empty()
@@ -148,8 +148,8 @@ fn line_contains_matching_backtick_run(line: &str, run_len: usize) -> bool {
 }
 
 fn paragraph_can_continue_through_boundary(
-    paragraph_lines: &[String],
-    lines: &[String],
+    paragraph_lines: &[&str],
+    lines: &[&str],
     boundary_index: usize,
 ) -> bool {
     let Some(run_len) = pending_inline_code_run_len(&paragraph_lines.join("\n")) else {
@@ -181,7 +181,7 @@ fn is_closing_fence(line: &str, opener: &FenceInfo) -> bool {
 }
 
 fn find_matching_closing_fence(
-    lines: &[String],
+    lines: &[&str],
     start_index: usize,
     opener: &FenceInfo,
 ) -> Option<usize> {
@@ -278,14 +278,11 @@ fn strip_leading_columns(line: &str, columns: usize) -> Option<&str> {
     None
 }
 
-fn dedent_lines(lines: &[String], columns: usize) -> Vec<String> {
+/// 行区域去缩进：纯借用零分配（返回的 &str 借用自输入行）
+fn dedent_lines<'a>(lines: &[&'a str], columns: usize) -> Vec<&'a str> {
     lines
         .iter()
-        .map(|line| {
-            strip_leading_columns(line, columns)
-                .unwrap_or(line.as_str())
-                .to_string()
-        })
+        .map(|line| strip_leading_columns(line, columns).unwrap_or(line))
         .collect()
 }
 
@@ -424,7 +421,7 @@ fn is_block_html_start(line: &str) -> bool {
     parse_html_block_start(line).is_some()
 }
 
-fn collect_closed_html_comment_region(lines: &[String], start: usize) -> Option<usize> {
+fn collect_closed_html_comment_region(lines: &[&str], start: usize) -> Option<usize> {
     match parse_html_block_start(&lines[start])? {
         HtmlBlockStart::Comment => {}
         HtmlBlockStart::Tag { .. } => return None,
@@ -445,7 +442,7 @@ fn collect_closed_html_comment_region(lines: &[String], start: usize) -> Option<
     None
 }
 
-fn collect_block_html_region(lines: &[String], start: usize) -> usize {
+fn collect_block_html_region(lines: &[&str], start: usize) -> usize {
     match parse_html_block_start(&lines[start]) {
         Some(HtmlBlockStart::Comment) => collect_closed_html_comment_region(lines, start)
             .unwrap_or_else(|| collect_html_fallback_region(lines, start)),
@@ -490,7 +487,7 @@ fn collect_block_html_region(lines: &[String], start: usize) -> usize {
     }
 }
 
-fn collect_reference_definition_region(lines: &[String], start: usize) -> usize {
+fn collect_reference_definition_region(lines: &[&str], start: usize) -> usize {
     let mut index = start + 1;
     while index < lines.len() && is_reference_definition_title_continuation(&lines[index]) {
         index += 1;
@@ -498,7 +495,7 @@ fn collect_reference_definition_region(lines: &[String], start: usize) -> usize 
     index
 }
 
-fn collect_footnote_definition_region(lines: &[String], start: usize) -> usize {
+fn collect_footnote_definition_region(lines: &[&str], start: usize) -> usize {
     let mut index = start + 1;
     while index < lines.len() {
         let line = &lines[index];
@@ -531,7 +528,7 @@ fn is_display_math_start(line: &str) -> bool {
         })
 }
 
-fn collect_display_math_region(lines: &[String], start: usize) -> usize {
+fn collect_display_math_region(lines: &[&str], start: usize) -> usize {
     let opener = strip_fence_indent(&lines[start])
         .map(str::trim_end)
         .unwrap_or_default();
@@ -630,7 +627,7 @@ fn parse_html_close_tag_name(line: &str) -> Option<String> {
     Some(name.to_string())
 }
 
-fn collect_quote_raw_region(lines: &[String], start: usize) -> usize {
+fn collect_quote_raw_region(lines: &[&str], start: usize) -> usize {
     let mut index = start;
     while index < lines.len() {
         let line = &lines[index];
@@ -642,7 +639,7 @@ fn collect_quote_raw_region(lines: &[String], start: usize) -> usize {
     index
 }
 
-fn quote_content_starts_unsupported(lines: &[String], index: usize) -> bool {
+fn quote_content_starts_unsupported(lines: &[&str], index: usize) -> bool {
     let line = &lines[index];
     is_block_html_start(line)
         || is_footnote_definition_start(line)
@@ -657,7 +654,7 @@ fn quote_content_starts_unsupported(lines: &[String], index: usize) -> bool {
             .is_some()
 }
 
-fn collect_unsupported_quote_region(lines: &[String], start: usize) -> Option<usize> {
+fn collect_unsupported_quote_region(lines: &[&str], start: usize) -> Option<usize> {
     if start >= lines.len() {
         return None;
     }
@@ -692,7 +689,7 @@ fn collect_unsupported_quote_region(lines: &[String], start: usize) -> Option<us
     None
 }
 
-fn collect_list_item_region(lines: &[String], start: usize, marker_indent_columns: usize) -> usize {
+fn collect_list_item_region(lines: &[&str], start: usize, marker_indent_columns: usize) -> usize {
     let mut index = start + 1;
     let mut pending_blank_lines = 0usize;
     while index < lines.len() {
@@ -740,7 +737,7 @@ fn collect_list_item_region(lines: &[String], start: usize, marker_indent_column
     index.saturating_sub(pending_blank_lines)
 }
 
-fn looks_like_root_block_start(lines: &[String], index: usize) -> bool {
+fn looks_like_root_block_start(lines: &[&str], index: usize) -> bool {
     let line = &lines[index];
     if line.trim().is_empty() {
         return true;
@@ -775,7 +772,7 @@ fn build_code_block(
 }
 
 fn collect_fenced_code_block(
-    lines: &[String],
+    lines: &[&str],
     start: usize,
 ) -> Option<(BlockNode, usize)> {
     let fence = parse_opening_fence(&lines[start])?;
@@ -808,7 +805,7 @@ fn collect_fenced_code_block(
 }
 
 fn collect_indented_code_block(
-    lines: &[String],
+    lines: &[&str],
     start: usize,
 ) -> Option<(BlockNode, usize)> {
     let stripped = strip_indented_code_prefix(&lines[start])?;
@@ -955,7 +952,7 @@ fn math_or_raw_block( markdown: String) -> BlockNode {
 }
 
 fn collect_comment_block(
-    lines: &[String],
+    lines: &[&str],
     start: usize,
 ) -> Option<(BlockNode, usize)> {
     let end = collect_closed_html_comment_region(lines, start)?;
@@ -977,11 +974,11 @@ fn standalone_image_block( markdown: String) -> BlockNode {
     BlockNode::leaf(BlockRecord::paragraph(markdown.trim().to_string()))
 }
 
-fn is_standalone_image_paragraph(lines: &[String]) -> bool {
+fn is_standalone_image_paragraph(lines: &[&str]) -> bool {
     lines.len() == 1 && parse_standalone_image(&lines[0]).is_some()
 }
 
-fn starts_with_standalone_image_child_paragraph(lines: &[String]) -> bool {
+fn starts_with_standalone_image_child_paragraph(lines: &[&str]) -> bool {
     if lines.is_empty() || !is_standalone_image_paragraph(&lines[..1]) {
         return false;
     }
@@ -1035,7 +1032,7 @@ fn title_may_be_standalone_image(title: &InlineTextTree) -> bool {
     matched == PREFIX.len()
 }
 
-fn plain_text_paragraph_block( text: String) -> BlockNode {
+fn plain_text_paragraph_block(text: impl Into<String>) -> BlockNode {
     BlockNode::leaf(BlockRecord::paragraph(text))
 }
 
@@ -1049,7 +1046,7 @@ fn append_quote_separator_children(
 }
 
 fn build_native_footnote_definition_block(
-    lines: &[String],
+    lines: &[&str],
     depth: usize,
 ) -> Option<BlockNode> {
     // 嵌套深度上限（防栈溢出）：脚注正文以整树重解析接入（quote/list 深度计数
@@ -1069,13 +1066,14 @@ fn build_native_footnote_definition_block(
         } else {
             body_lines.push(
                 strip_leading_columns(line, 4)
-                    .unwrap_or(line.as_str())
+                    .unwrap_or(line)
                     .to_string(),
             );
         }
     }
 
-    let children = build_blocks_from_lines_internal(&body_lines, false, depth + 1)
+    let body_refs = body_lines.iter().map(String::as_str).collect::<Vec<_>>();
+    let children = build_blocks_from_lines_internal(&body_refs, false, depth + 1)
             .into_iter()
             .map(|root| root.node)
             .collect::<Vec<_>>();
@@ -1106,10 +1104,7 @@ impl RootBlock {
 
 /// 解析 Markdown 全文为根级块序列（携带行区间）。
 pub fn parse_root_blocks(markdown: &str) -> Vec<RootBlock> {
-    let lines = markdown
-        .split('\n')
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
+    let lines = markdown.split('\n').collect::<Vec<_>>();
     build_blocks_from_lines_internal(&lines, true, 0)
 }
 
@@ -1117,12 +1112,12 @@ pub fn parse_root_blocks(markdown: &str) -> Vec<RootBlock> {
 ///
 /// 仅为运行时编辑器可安全编辑的语法创建原生块；更复杂的合法 Markdown
 /// 区域回退为 [`BlockKind::RawMarkdown`]，保存时原样保留。
-pub fn build_blocks_from_lines(lines: &[String]) -> Vec<RootBlock> {
+pub fn build_blocks_from_lines(lines: &[&str]) -> Vec<RootBlock> {
     build_blocks_from_lines_internal(lines, true, 0)
 }
 
 fn build_blocks_from_lines_internal(
-    lines: &[String],
+    lines: &[&str],
     allow_root_footnote_definitions: bool,
     depth: usize,
 ) -> Vec<RootBlock> {
@@ -1402,10 +1397,10 @@ fn build_blocks_from_lines_internal(
     }
 
     fn collect_paragraph_block(
-        lines: &[String],
+        lines: &[&str],
         start: usize,
     ) -> (BlockNode, usize) {
-        let mut paragraph_lines = vec![lines[start].to_string()];
+        let mut paragraph_lines = vec![lines[start]];
         let mut index = start + 1;
         while index < lines.len() {
             if (lines[index].trim().is_empty() || looks_like_root_block_start(lines, index))
@@ -1413,7 +1408,7 @@ fn build_blocks_from_lines_internal(
             {
                 break;
             }
-            paragraph_lines.push(lines[index].to_string());
+            paragraph_lines.push(lines[index]);
             index += 1;
         }
 
@@ -1429,7 +1424,7 @@ fn build_blocks_from_lines_internal(
     // 类型经 CalloutVariant::from_marker 映射（与引用式警告框同一清单），
     // 内容复用 build_native_callout_block（与引用式同一构建路径）。
     fn collect_fenced_callout_block(
-        lines: &[String],
+        lines: &[&str],
         start: usize,
         depth: usize,
     ) -> Option<(BlockNode, usize)> {
@@ -1447,10 +1442,10 @@ fn build_blocks_from_lines_internal(
                 _ => (rest, String::new()),
             };
             let variant = CalloutVariant::from_marker(marker.trim())?;
-            let mut inner: Vec<String> = Vec::new();
+            let mut inner: Vec<&str> = Vec::new();
             let mut index = start + 1;
             while index < lines.len() && lines[index].trim() != ":::" {
-                inner.push(lines[index].clone());
+                inner.push(lines[index]);
                 index += 1;
             }
             if index >= lines.len() {
@@ -1470,19 +1465,19 @@ fn build_blocks_from_lines_internal(
                 _ => (rest, String::new()),
             };
             let variant = CalloutVariant::from_marker(marker.trim())?;
-            let mut inner: Vec<String> = Vec::new();
+            let mut inner: Vec<&str> = Vec::new();
             let mut index = start + 1;
             while index < lines.len() {
                 let line = &lines[index];
                 if line.trim().is_empty() {
-                    inner.push(String::new());
+                    inner.push("");
                     index += 1;
                     continue;
                 }
                 let Some(content) = line.strip_prefix("    ") else {
                     break;
                 };
-                inner.push(content.to_string());
+                inner.push(content);
                 index += 1;
             }
             // 尾部空行不属于容器（避免吞掉块间空行）
@@ -1501,7 +1496,7 @@ fn build_blocks_from_lines_internal(
     }
 
     fn collect_quote_block_with_depth(
-        lines: &[String],
+        lines: &[&str],
         start: usize,
         depth: usize,
     ) -> (BlockNode, usize) {
@@ -1524,7 +1519,8 @@ fn build_blocks_from_lines_internal(
             dequoted.push(content);
         }
 
-        let Some(block) = build_native_quote_block(&dequoted, depth) else {
+        let dequoted_refs = dequoted.iter().map(String::as_str).collect::<Vec<_>>();
+        let Some(block) = build_native_quote_block(&dequoted_refs, depth) else {
             return (raw_block(region.join("\n")), end);
         };
 
@@ -1542,7 +1538,7 @@ fn build_blocks_from_lines_internal(
     }
 
     fn build_native_quote_block(
-        lines: &[String],
+        lines: &[&str],
         depth: usize,
     ) -> Option<BlockNode> {
         if depth >= MAX_NESTING_DEPTH {
@@ -1721,7 +1717,7 @@ fn build_blocks_from_lines_internal(
                 continue;
             }
 
-            let mut paragraph_lines = vec![line.clone()];
+            let mut paragraph_lines = vec![*line];
             index += 1;
             while index < lines.len() {
                 let next = &lines[index];
@@ -1735,7 +1731,7 @@ fn build_blocks_from_lines_internal(
                     break;
                 }
 
-                paragraph_lines.push(next.clone());
+                paragraph_lines.push(*next);
                 index += 1;
             }
 
@@ -1781,7 +1777,7 @@ fn build_blocks_from_lines_internal(
     }
 
     fn build_native_callout_block(
-        lines: &[String],
+        lines: &[&str],
         variant: CalloutVariant,
         title: String,
         depth: usize,
@@ -1900,7 +1896,7 @@ fn build_blocks_from_lines_internal(
                 continue;
             }
 
-            let mut paragraph_lines = vec![line.clone()];
+            let mut paragraph_lines = vec![*line];
             index += 1;
             while index < lines.len() {
                 let next = &lines[index];
@@ -1914,7 +1910,7 @@ fn build_blocks_from_lines_internal(
                     break;
                 }
 
-                paragraph_lines.push(next.clone());
+                paragraph_lines.push(*next);
                 index += 1;
             }
 
@@ -1937,7 +1933,7 @@ fn build_blocks_from_lines_internal(
     }
 
     fn collect_list_blocks_with_depth(
-        lines: &[String],
+        lines: &[&str],
         start: usize,
         depth: usize,
     ) -> (Vec<RootBlock>, usize) {
@@ -1967,7 +1963,7 @@ fn build_blocks_from_lines_internal(
                     dedent_lines(&lines[body_index..item_end], marker.content_indent_columns);
                 if let Some(closing_index) = find_matching_closing_fence(&content_dedented, 0, &fence) {
                     let raw = std::iter::once(fence_line.as_str())
-                        .chain(content_dedented[..=closing_index].iter().map(String::as_str))
+                        .chain(content_dedented[..=closing_index].iter().copied())
                         .collect::<Vec<_>>()
                         .join("\n");
                     let child = if is_mermaid_info_string(fence.language.as_deref()) {
@@ -2080,7 +2076,7 @@ fn build_blocks_from_lines_internal(
                     if parse_standalone_image(anchor_first).is_some() {
                         let anchor_dedented = build_anchor_region();
                         if starts_with_standalone_image_child_paragraph(&anchor_dedented) {
-                            block.children.extend(vec![standalone_image_block(anchor_dedented[0].clone())],
+                            block.children.extend(vec![standalone_image_block(anchor_dedented[0].to_string())],
                             );
                             body_index += 1;
                             pending_blank_lines = 0;
@@ -2093,7 +2089,7 @@ fn build_blocks_from_lines_internal(
                         // content 视图首行 = 本行按内容列 dedent（同理零分配借用）
                         let content_first =
                             strip_leading_columns(line, marker.content_indent_columns)
-                                .unwrap_or(line.as_str());
+                                .unwrap_or(line);
                         if strip_indented_code_prefix(content_first).is_some() {
                             let content_dedented = dedent_lines(
                                 &lines[body_index..item_end],

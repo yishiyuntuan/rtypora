@@ -3080,153 +3080,92 @@ fn escape_literal_text_with_offset_map(text: &str) -> InlineMarkdownOffsetMap {
     let mut markdown_to_visible = vec![0];
     let mut index = 0;
 
+    // 追加一段转义文本并同步映射：resize 以 index 填充已覆盖整个新增区间，
+    // 无需再逐位写一遍（此前 resize + 循环是同一区间的重复填充）。
+    macro_rules! push_mapped {
+        ($chunk:expr) => {{
+            escaped.push_str($chunk);
+            markdown_to_visible.resize(escaped.len() + 1, index);
+        }};
+    }
+
     while index < text.len() {
         visible_to_markdown[index] = escaped.len();
         if text[index..].starts_with("</strong>") {
-            let start = escaped.len();
-            escaped.push('\\');
-            escaped.push_str("</strong>");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\</strong>");
             index += 9;
             continue;
         }
 
         if text[index..].starts_with("<strong>") {
-            let start = escaped.len();
-            escaped.push('\\');
-            escaped.push_str("<strong>");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\<strong>");
             index += 8;
             continue;
         }
 
         if text[index..].starts_with("</em>") {
-            let start = escaped.len();
-            escaped.push('\\');
-            escaped.push_str("</em>");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\</em>");
             index += 5;
             continue;
         }
 
         if text[index..].starts_with("<em>") {
-            let start = escaped.len();
-            escaped.push('\\');
-            escaped.push_str("<em>");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\<em>");
             index += 4;
             continue;
         }
 
         if text[index..].starts_with("</u>") {
-            let start = escaped.len();
-            escaped.push('\\');
-            escaped.push_str("</u>");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\</u>");
             index += 4;
             continue;
         }
 
         if text[index..].starts_with("<u>") {
-            let start = escaped.len();
-            escaped.push('\\');
-            escaped.push_str("<u>");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\<u>");
             index += 3;
             continue;
         }
 
         if text[index..].starts_with('\\') {
-            let start = escaped.len();
-            escaped.push_str("\\\\");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\\\");
             index += 1;
             continue;
         }
 
         if text[index..].starts_with('*') {
-            let start = escaped.len();
-            escaped.push_str("\\*");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\*");
             index += 1;
             continue;
         }
 
         if text[index..].starts_with('_') {
-            let start = escaped.len();
-            escaped.push_str("\\_");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\_");
             index += 1;
             continue;
         }
 
         if text[index..].starts_with('~') {
-            let start = escaped.len();
-            escaped.push_str("\\~");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\~");
             index += 1;
             continue;
         }
 
         if text[index..].starts_with('^') {
-            let start = escaped.len();
-            escaped.push_str("\\^");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\^");
             index += 1;
             continue;
         }
 
         if text[index..].starts_with('`') {
-            let start = escaped.len();
-            escaped.push_str("\\`");
-            markdown_to_visible.resize(escaped.len() + 1, index);
-            for local in 0..=escaped.len() - start {
-                markdown_to_visible[start + local] = index;
-            }
+            push_mapped!("\\`");
             index += 1;
             continue;
         }
 
         let ch = text[index..].chars().next().unwrap();
-        let start = escaped.len();
         escaped.push(ch);
         markdown_to_visible.resize(escaped.len() + 1, index);
-        for local in 0..=escaped.len() - start {
-            markdown_to_visible[start + local] = index;
-        }
         index += ch.len_utf8();
     }
     visible_to_markdown[text.len()] = escaped.len();

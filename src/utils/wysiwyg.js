@@ -21,7 +21,7 @@ const headingClasses = {
 
 const P_CLASS = 'my-2 whitespace-pre-wrap';
 const INLINE_CODE_CLASS = 'md-code px-1 py-0.5 font-mono';
-const LINK_CLASS = 'underline underline-offset-2';
+export const LINK_CLASS = 'underline underline-offset-2';
 const PRE_CLASS = 'md-pre my-2 overflow-x-auto rounded p-3 font-mono text-[13px]';
 
 // 编辑态代码块复制按钮（contenteditable=false、无文本节点，不参与提交；
@@ -172,7 +172,7 @@ export function blockToHtml(block, rawSource, depth = 0, ordinal = 1) {
       if (block.image) {
         const alt = escapeHtml(block.image.alt || '');
         const src = escapeHtml(block.image.src || '');
-        return `<p class="blk-paragraph ${P_CLASS}" data-raw><span class="md-link-mark">!</span><span class="md-link-mark">[</span><span class="md-link-text">${alt}</span><span class="md-link-mark">]</span><span class="md-link-mark">(</span>${src}<span class="md-link-mark">)</span></p>`;
+        return `<p class="blk-paragraph ${P_CLASS}" data-raw><span class="md-link-mark" contenteditable="false">!</span><span class="md-link-mark" contenteditable="false">[</span><span class="md-link-text">${alt}</span><span class="md-link-mark" contenteditable="false">]</span><span class="md-link-mark" contenteditable="false">(</span><span class="md-link-url">${src}</span><span class="md-link-mark" contenteditable="false">)</span></p>`;
       }
       // 空段落补 <br> 占位行高（容器内的空行因此可见、可点入、可删除）
       return `<p class="blk-paragraph ${P_CLASS}">${inlineToHtml(block.title) || '<br>'}</p>`;
@@ -344,28 +344,42 @@ function domToInlines(el, style = {}, out = []) {
       continue;
     }
     // 链接源编辑形态折叠（光标进入链接时展开为 [文字](url) 标记结构，见 Editor expandLinkAtCaret）：
-    // [ 标记 + md-link-text 文字 + ] + ( 标记 + url 文本 + ) 标记 → 链接 fragment；
+    // [ 标记 + md-link-text 文字 + ] + ( 标记 + 地址内容 + ) 标记 → 链接 fragment；
     // 结构不完整（用户删改过标记）按普通文本落入后续分支
     if (tag === 'SPAN' && node.classList.contains('md-link-mark') && node.textContent === '[') {
       const textEl = children[i + 1];
       const isMark = (n, t) =>
         n?.nodeType === Node.ELEMENT_NODE && n.classList?.contains('md-link-mark') && n.textContent === t;
-      const urlNode = children[i + 4];
       if (
         textEl?.nodeType === Node.ELEMENT_NODE &&
         textEl.classList.contains('md-link-text') &&
         isMark(children[i + 2], ']') &&
-        isMark(children[i + 3], '(') &&
-        isMark(children[i + 5], ')')
+        isMark(children[i + 3], '(')
       ) {
-        const url = (urlNode?.nodeType === Node.TEXT_NODE ? urlNode.textContent : '')
-          .replace(/\uFEFF/g, '')
-          .trim();
-        const inner = domToInlines(textEl, style, []);
-        for (const f of inner) f.link = { type: 'inline', destination: url };
-        out.push(...inner);
-        i += 5; // 跳过已消费的标记/文本节点
-        continue;
+        // 地址区扫描到 ) 标记为止（容忍地址变形：光标在 ( 与地址 span 之间点击/输入、
+        // 删除重打、边界归并都可能产生额外裸文本节点或空 span——逐位取 children[i+4]
+        // 会在变形时折叠失败，链接退化为转义字面文本，表现为「渲染成灰色原文」）
+        let closeIdx = -1;
+        for (let j = i + 4; j < children.length; j++) {
+          const n = children[j];
+          if (n.nodeType === Node.ELEMENT_NODE && n.classList?.contains('md-link-mark')) {
+            if (isMark(n, ')')) closeIdx = j;
+            break; // 其他标记先到：结构已残，按字面量保留
+          }
+        }
+        if (closeIdx > 0) {
+          const url = children
+            .slice(i + 4, closeIdx)
+            .map((n) => n.textContent)
+            .join('')
+            .replace(/\uFEFF/g, '')
+            .trim();
+          const inner = domToInlines(textEl, style, []);
+          for (const f of inner) f.link = { type: 'inline', destination: url };
+          out.push(...inner);
+          i = closeIdx; // 跳过已消费的标记/地址节点
+          continue;
+        }
       }
     }
     // HTML 行内样式 span（<span style>/<font> 编辑态占位）：data-html-style JSON 无损往返
@@ -666,9 +680,16 @@ function styled(tag, text, className) {
 }
 
 // 编辑态装饰标记 span 工厂：md-link-mark（链接/图片原始标记 []()/!）/md-font-mark（font 标签）
-// 等仅作显示、提交提取时由 domToInlines 按类名剥离的标记元素共用（Editor 侧展开/补全亦用）
+// 等仅作显示、提交提取时由 domToInlines 按类名剥离的标记元素共用（Editor 侧展开/补全亦用）。
+// 一律 contenteditable=false（原子装饰）：光标不会停进标记文本内、输入不会污染标记——
+// 否则方向键逐一停进 []()/! 内部位（需按两下才能越过），且打进标记内的文本会使
+// 折叠/提取的结构识别（isMark 精确匹配）永久失效，表现为「光标移出 ) 也不渲染」
 export function markSpanFactory(className) {
-  return (t) => styled('span', t, className);
+  return (t) => {
+    const el = styled('span', t, className);
+    el.setAttribute('contenteditable', 'false');
+    return el;
+  };
 }
 
 // HTML 标签自动闭合：输入 > 完成开始标签时，在光标后补闭合标签（光标停在开闭之间）。
@@ -1180,9 +1201,9 @@ export async function applySlashCommand(el, id, opts) {
     if (tpl) return rawPre(tpl.markdown, tpl.caretOffset);
     return false;
   }
-  // 链接：显示原始 Markdown 标记 []()——方括号/圆括号淡灰 span、链接文字蓝色 span，
-  // 光标在 [] 中间的蓝色文字位（\uFEFF 哨兵防边界归并）；data-raw 段落提交按原文回写
-  //（提取时剥离哨兵）重解析为链接；() 内输入 ./ 触发路径补全（见 Editor linkPathContext）
+  // 链接：显示原始 Markdown 标记 []()——方括号/圆括号淡灰 span、链接文字蓝色 span、
+  // 括号内地址同为浅蓝（md-link-url span 包裹）；光标在 [] 中间的蓝色文字位（\uFEFF 哨兵
+  // 防边界归并）；data-raw 段落提交按原文回写（提取时剥离哨兵）重解析为链接
   if (id === 'link') {
     const p = styled('p', '', P_CLASS);
     p.setAttribute('data-raw', '');
@@ -1190,7 +1211,9 @@ export async function applySlashCommand(el, id, opts) {
     const linkText = styled('span', '', 'md-link-text');
     const textNode = document.createTextNode('\uFEFF');
     linkText.append(textNode);
-    p.append(mark('['), linkText, mark(']'), mark('('), document.createTextNode('\uFEFF'), mark(')'));
+    const urlSpan = styled('span', '', 'md-link-url');
+    urlSpan.append(document.createTextNode('\uFEFF'));
+    p.append(mark('['), linkText, mark(']'), mark('('), urlSpan, mark(')'));
     el.append(p);
     const sel = window.getSelection();
     const range = document.createRange();
@@ -1200,7 +1223,7 @@ export async function applySlashCommand(el, id, opts) {
     sel.addRange(range);
     return true;
   }
-  // 图片：与链接同一编辑形态——原始标记 ![]()（!/方括号/圆括号淡灰、alt 文字蓝色），
+  // 图片：与链接同一编辑形态——原始标记 ![]()（!/方括号/圆括号淡灰、alt 与路径浅蓝），
   // 光标在 [] 中间（\uFEFF 哨兵）；data-raw 段落提交按原文回写重解析为图片；
   // () 内输入 ./ 触发图片路径补全（见 Editor imagePathContext）
   if (id === 'image') {
@@ -1210,7 +1233,9 @@ export async function applySlashCommand(el, id, opts) {
     const altText = styled('span', '', 'md-link-text');
     const textNode = document.createTextNode('\uFEFF');
     altText.append(textNode);
-    p.append(mark('!'), mark('['), altText, mark(']'), mark('('), document.createTextNode('\uFEFF'), mark(')'));
+    const srcSpan = styled('span', '', 'md-link-url');
+    srcSpan.append(document.createTextNode('\uFEFF'));
+    p.append(mark('!'), mark('['), altText, mark(']'), mark('('), srcSpan, mark(')'));
     el.append(p);
     const sel = window.getSelection();
     const range = document.createRange();

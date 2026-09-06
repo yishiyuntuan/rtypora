@@ -126,9 +126,11 @@ fn render_cached(
         .ok()
         .or_else(|| {
             let aliased = alias_nonstandard_macros(latex);
-            (aliased != latex)
-                .then(|| render_latex_to_svg(&aliased, &color, font_size).ok())
-                .flatten()
+            if aliased != latex {
+                render_latex_to_svg(&aliased, &color, font_size).ok()
+            } else {
+                None
+            }
         });
     // 进程内缓存上限（防无界增长）：满 500 条清空重建（命中率损失可接受）
     let mut cache = LATEX_CACHE.lock().ok()?;

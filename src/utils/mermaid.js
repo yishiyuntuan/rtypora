@@ -9,11 +9,13 @@ let renderSeq = 0;
 // 当前应用主题为暗色？（按编辑器背景亮度判定）
 function isDarkTheme() {
   const bg = getComputedStyle(document.documentElement).getPropertyValue('--t-editor-background').trim();
-  const m = bg.match(/#([0-9a-f]{6})/i) || bg.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+  const m = bg.match(/#([0-9a-f]{6})\b/i) || bg.match(/#([0-9a-f]{3})\b/i) || bg.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/);
   if (!m) return false;
   const [r, g, b] =
     m.length === 2
-      ? [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)]
+      ? m[1].length === 3
+        ? [parseInt(m[1][0] + m[1][0], 16), parseInt(m[1][1] + m[1][1], 16), parseInt(m[1][2] + m[1][2], 16)]
+        : [parseInt(m[1].slice(0, 2), 16), parseInt(m[1].slice(2, 4), 16), parseInt(m[1].slice(4, 6), 16)]
       : [Number(m[1]), Number(m[2]), Number(m[3])];
   return (r * 299 + g * 587 + b * 114) / 1000 < 128;
 }
@@ -58,22 +60,34 @@ export function peekMermaid(source) {
 }
 
 // 渲染图源为 SVG 字符串；语法错误返回 null（调用方回退源码占位）
+// 在途去重：同 key 并发请求共享同一 Promise（多相同图块/快速重挂载只渲染一次）
+const pendingJobs = new Map();
 export async function renderMermaid(source) {
   const src = stripFence(source);
   if (!src || !src.trim()) return null;
   const key = cacheKey(source);
   const hit = svgCache.get(key);
   if (hit) return hit;
-  const mermaid = await getMermaid();
-  const id = `mmd-${Date.now()}-${++renderSeq}`;
+  const pending = pendingJobs.get(key);
+  if (pending) return pending;
+  const job = (async () => {
+    const mermaid = await getMermaid();
+    const id = `mmd-${Date.now()}-${++renderSeq}`;
+    try {
+      const { svg } = await mermaid.render(id, src);
+      cachePut(key, svg);
+      return svg;
+    } catch {
+      // mermaid 渲染失败时会把错误图形塞进 body（#d{id}），清理掉
+      document.getElementById(id)?.remove();
+      document.getElementById(`d${id}`)?.remove();
+      return null;
+    }
+  })();
+  pendingJobs.set(key, job);
   try {
-    const { svg } = await mermaid.render(id, src);
-    cachePut(key, svg);
-    return svg;
-  } catch {
-    // mermaid 渲染失败时会把错误图形塞进 body（#d{id}），清理掉
-    document.getElementById(id)?.remove();
-    document.getElementById(`d${id}`)?.remove();
-    return null;
+    return await job;
+  } finally {
+    pendingJobs.delete(key);
   }
 }

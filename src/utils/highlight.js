@@ -29,6 +29,7 @@ export function highlightCodeHtml(code, language) {
       const spans = await invoke('highlight_code', { language: language ?? null, code });
       return spansToHtml(code, spans);
     } catch {
+      cache.delete(key); // 瞬时失败不缓存（否则该块在缓存被挤出前永远降级为纯文本）
       return escapeHtml(code);
     }
   });

@@ -449,11 +449,15 @@
   opacity: 1;
 }
 
-/* 链接原始标记编辑态（/插入链接）：方括号/圆括号淡灰，链接文字蓝色 */
+/* 链接原始标记编辑态（/插入链接）：方括号/圆括号淡灰，链接文字与括号内地址浅蓝 */
 .md-link-mark {
   color: var(--t-text-placeholder);
 }
 .md-link-text {
+  color: var(--t-text-link);
+}
+/* 括号内的链接地址/图片路径：与链接文字同一主题色（text_link token 可定制） */
+.md-link-url {
   color: var(--t-text-link);
 }
 /* 字体模板标签（<font ...> 编辑态显示）：淡灰色，仅作显示不入内容 */
