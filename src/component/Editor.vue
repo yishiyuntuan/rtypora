@@ -65,6 +65,21 @@ import { themeVersion } from '../themes/index.js';
 // 前端只负责渲染与 DOM 结构提取：Markdown 解析、序列化、勾选切换、统计、快捷判定
 // 全部由 Rust 命令完成（parse_markdown / parse_blocks / serialize_markdown /
 // toggle_task_markdown / text_stats / detect_block_shortcut）。
+//
+// 本文件较长，按下方章节导航（各节以 `// ---------- 标题 ----------` 分隔）：
+//   撤销/重做历史        快照栈（watch(content) 自动记录，1s 合并窗口，上限 200）
+//   查找/替换            Ctrl+F/Ctrl+H；高亮走 CSS Custom Highlight API
+//   虚拟滚动与渐进挂载    VRow 占位 + IntersectionObserver 按需挂载，大文件秒开
+//   表格编辑              就地编辑 + 悬停工具栏/四边 + 按钮/尺寸网格面板
+//   斜杠命令菜单          / 召唤语法菜单（任意位置触发），含字体色板与 RGB 输入
+//   右键菜单              选区暂存/恢复（WKWebView 右键会塌陷选区），格式化动作
+//   围栏语言/图片路径补全  共用 SlashMenu 面板的两套自动补全
+//   编辑提交链路          commitEdit/拆分/合并/增量重解析（parse_blocks 原位替换）
+//   编辑态事件            input/keydown/paste/dblclick/blur 等 contenteditable 交互
+//   大纲联动与滚动        scrollToBlock/滚动位置恢复/标题位置测量
+//   文档加载与导出        loadDocument（渐进首屏）/getContent/打印
+//   选区与剪贴板          跨块框选删除、复制为 Markdown（domRangeToMarkdown）
+//   行内源码显现          光标进入样式元素时显现 .md-src 标记层（Esc 经 FEFF 哨兵退出）
 const props = defineProps({
   sourceMode: { type: Boolean, default: false },
 });

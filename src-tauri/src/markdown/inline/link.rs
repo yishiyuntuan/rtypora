@@ -1,29 +1,21 @@
-//! Reference-style links and autolink helpers.
+//! 引用式链接与自动链接辅助。
+//! 移植自 velotype `components/markdown/link.rs`。
 
 use std::collections::HashMap;
 
 use super::image::normalize_reference_label;
+// 引用定义扫描骨架（围栏跟踪/HTML 块抑制/容器前缀剥离/转义感知查找）集中在 refscan，
+// 与 image.rs 共用单一来源
+use super::refscan::{
+    HtmlBlockStart, find_open_title_quote, find_unescaped_char, is_escaped,
+    is_reference_definition_title_continuation, is_reference_scan_closing_fence,
+    parse_reference_scan_html_block_start, parse_reference_scan_html_close_tag_name,
+    parse_reference_scan_opening_fence, strip_reference_scan_container_prefixes,
+    unescape_ascii_punctuation,
+};
 
-/// Active fenced code block while scanning for link reference definitions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FenceInfo {
-    ch: char,
-    len: usize,
-}
 
-/// HTML block start that suppresses reference-definition scanning.
-enum HtmlBlockStart {
-    /// HTML comment beginning with `<!--`.
-    Comment,
-    /// HTML tag block whose closing behavior depends on the tag.
-    Tag {
-        name: String,
-        self_closing: bool,
-        closes_same_line: bool,
-    },
-}
-
-/// Global reference definition for reference-style links.
+/// 引用式链接的全局引用定义（`[label]: url "title"`）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkReferenceDefinition {
     pub(crate) destination: String,
@@ -178,150 +170,6 @@ fn parse_link_reference_definition(
     ))
 }
 
-fn strip_reference_scan_container_prefixes(mut line: &str) -> &str {
-    loop {
-        let original = line;
-        if let Some(rest) = strip_reference_scan_quote_prefix(line) {
-            line = rest;
-            continue;
-        }
-        if let Some(rest) = strip_reference_scan_list_marker(line) {
-            line = rest;
-            continue;
-        }
-        if line == original {
-            return line;
-        }
-    }
-}
-
-fn strip_reference_scan_quote_prefix(line: &str) -> Option<&str> {
-    let leading_spaces = line.bytes().take_while(|b| *b == b' ').count();
-    if leading_spaces > 3 {
-        return None;
-    }
-
-    let rest = &line[leading_spaces..];
-    if !rest.starts_with('>') {
-        return None;
-    }
-
-    Some(rest[1..].strip_prefix(' ').unwrap_or(&rest[1..]))
-}
-
-fn strip_reference_scan_list_marker(line: &str) -> Option<&str> {
-    let indent_bytes = line
-        .chars()
-        .take_while(|ch| matches!(ch, ' ' | '\t'))
-        .map(char::len_utf8)
-        .sum::<usize>();
-    let rest = &line[indent_bytes..];
-
-    if let Some(marker @ ('-' | '*' | '+')) = rest.chars().next() {
-        let after_marker = &rest[marker.len_utf8()..];
-        return after_marker
-            .strip_prefix(' ')
-            .or_else(|| after_marker.strip_prefix('\t'));
-    }
-
-    let digit_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
-    if !(1..=9).contains(&digit_len) {
-        return None;
-    }
-
-    let marker = *rest.as_bytes().get(digit_len)?;
-    if !matches!(marker, b'.' | b')') {
-        return None;
-    }
-
-    let separator = *rest.as_bytes().get(digit_len + 1)?;
-    if !matches!(separator, b' ' | b'\t') {
-        return None;
-    }
-
-    Some(&rest[digit_len + 2..])
-}
-
-fn parse_reference_scan_opening_fence(line: &str) -> Option<FenceInfo> {
-    let trimmed = line.trim_end();
-    let ch = trimmed.chars().next()?;
-    if !matches!(ch, '`' | '~') {
-        return None;
-    }
-    let len = trimmed.chars().take_while(|current| *current == ch).count();
-    let rest = &trimmed[ch.len_utf8() * len..];
-    if ch == '`' && rest.contains('`') {
-        return None;
-    }
-    (len >= 3).then_some(FenceInfo { ch, len })
-}
-
-fn is_reference_scan_closing_fence(line: &str, opener: FenceInfo) -> bool {
-    let trimmed = line.trim_end();
-    if !trimmed.starts_with(opener.ch) {
-        return false;
-    }
-
-    let run_len = trimmed
-        .chars()
-        .take_while(|current| *current == opener.ch)
-        .count();
-    run_len >= opener.len && trimmed[opener.ch.len_utf8() * run_len..].trim().is_empty()
-}
-
-fn parse_reference_scan_html_block_start(line: &str) -> Option<HtmlBlockStart> {
-    let rest = line.trim_start().trim_end();
-    if rest.starts_with("<!--") {
-        return Some(HtmlBlockStart::Comment);
-    }
-
-    let tagged = rest.strip_prefix('<')?;
-    if tagged.starts_with('/') {
-        return None;
-    }
-
-    let name_len = tagged
-        .chars()
-        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
-        .count();
-    if name_len == 0 {
-        return None;
-    }
-
-    let name = &tagged[..name_len];
-    let suffix = &tagged[name_len..];
-    let next = suffix.chars().next()?;
-    if !matches!(next, '>' | ' ' | '\t' | '/') {
-        return None;
-    }
-
-    Some(HtmlBlockStart::Tag {
-        name: name.to_string(),
-        self_closing: rest.ends_with("/>"),
-        closes_same_line: rest.contains(&format!("</{name}>")),
-    })
-}
-
-fn parse_reference_scan_html_close_tag_name(line: &str) -> Option<String> {
-    let rest = line.trim_start().trim_end();
-    let tagged = rest.strip_prefix("</")?;
-    let name_len = tagged
-        .chars()
-        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
-        .count();
-    if name_len == 0 {
-        return None;
-    }
-
-    let name = &tagged[..name_len];
-    let suffix = &tagged[name_len..];
-    let next = suffix.chars().next()?;
-    if !matches!(next, '>' | ' ' | '\t') {
-        return None;
-    }
-
-    Some(name.to_string())
-}
 
 pub(crate) fn parse_link_target(inner: &str) -> Option<(String, Option<String>)> {
     if inner.is_empty() {
@@ -357,68 +205,6 @@ fn normalize_link_destination(destination: &str) -> String {
     }
 }
 
-fn unescape_ascii_punctuation(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' && chars.peek().is_some_and(|next| next.is_ascii_punctuation()) {
-            output.push(chars.next().expect("peeked punctuation must exist"));
-        } else {
-            output.push(ch);
-        }
-    }
-    output
-}
-
-fn is_reference_definition_title_continuation(line: &str) -> bool {
-    let indent_bytes = line
-        .chars()
-        .take_while(|ch| matches!(ch, ' ' | '\t'))
-        .map(char::len_utf8)
-        .sum::<usize>();
-    if indent_bytes == 0 {
-        return false;
-    }
-
-    let trimmed = line[indent_bytes..].trim();
-    (trimmed.starts_with('"') && trimmed.ends_with('"'))
-        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
-        || (trimmed.starts_with('(') && trimmed.ends_with(')'))
-}
-
-fn find_open_title_quote(input: &str, close_quote: usize) -> Option<usize> {
-    let bytes = input.as_bytes();
-    (0..close_quote).rev().find(|&index| {
-        bytes[index] == b'"'
-            && !is_escaped(input, index)
-            && index > 0
-            && bytes[index - 1].is_ascii_whitespace()
-    })
-}
-
-fn find_unescaped_char(input: &str, start: usize, target: u8) -> Option<usize> {
-    let bytes = input.as_bytes();
-    (start..bytes.len()).find(|&index| bytes[index] == target && !is_escaped(input, index))
-}
-
-fn is_escaped(input: &str, index: usize) -> bool {
-    if index == 0 {
-        return false;
-    }
-
-    let bytes = input.as_bytes();
-    let mut backslashes = 0usize;
-    let mut cursor = index;
-    while cursor > 0 {
-        cursor -= 1;
-        if bytes[cursor] == b'\\' {
-            backslashes += 1;
-        } else {
-            break;
-        }
-    }
-    backslashes % 2 == 1
-}
 
 #[cfg(test)]
 mod tests {

@@ -30,6 +30,10 @@ async function getMermaid() {
       // 本地文档也不放行脚本（strict 级别，图内 HTML/脚本不执行）
       securityLevel: 'strict',
       theme: themeKey,
+      // mermaid 12 起默认改用 ELK 布局 + neo 外观（旧图会重排变色）；
+      // 锁定 dagre + classic 保持与升级前一致的渲染结果
+      layout: 'dagre',
+      look: 'classic',
       fontFamily: getComputedStyle(document.body).fontFamily || undefined,
     });
   }

@@ -1,4 +1,6 @@
 <script setup vapor>
+// 状态栏：Ln/Col 光标位置、行/词/字符统计、主题选择与自定义主题导入、
+// 源码模式与侧边栏开关；自动保存开关与触发方式也在此（偏好存取走 prefs.js）。
 import { computed, ref } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listThemes, currentThemeId, applyTheme, importThemeJson, isSystemDark, themeVersion } from '../themes/index.js';

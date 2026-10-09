@@ -1,9 +1,10 @@
-//! Native Markdown table data model plus parse and serialize helpers.
+//! 原生 Markdown 表格数据模型与解析/序列化工具。
 //!
-//! Tables are supported as native blocks at the root level and inside
-//! quote-like containers in rendered mode. More complex nested contexts that
-//! are still outside the runtime-safe subset continue to use raw-Markdown
-//! fallback paths.
+//! 渲染模式下，根级与引用类容器内的表格按原生块支持；
+//! 更复杂的嵌套上下文（仍在运行时安全子集之外）继续走原文 Markdown
+//! 回落路径。
+//!
+//! 移植自 velotype `components/table.rs`。
 
 // 轴高亮、布局等类型为后续原生表格 UI 预留。
 #![allow(dead_code)]
@@ -12,33 +13,32 @@ use serde::{Deserialize, Serialize};
 
 use crate::markdown::inline::tree::InlineTextTree;
 
-/// Horizontal alignment declared by the table's delimiter row.
+/// 表格分隔行声明的水平对齐。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TableColumnAlignment {
-    /// No explicit alignment marker (`---`). Renders left, but stays distinct
-    /// from [`Left`](Self::Left) so an unmarked column is not silently rewritten
-    /// with a leading colon on the next serialize.
+    /// 无显式对齐标记（`---`）。渲染按左对齐，但与 [`Left`](Self::Left) 保持区分，
+    /// 未标记的列不会在下次序列化时被静默改写为带前导冒号的形式。
     Default,
-    /// Explicit left alignment (`:---`).
+    /// 显式左对齐（`:---`）。
     Left,
-    /// Center-aligned cells (`:---:`).
+    /// 居中对齐（`:---:`）。
     Center,
-    /// Right-aligned cells (`---:`).
+    /// 右对齐（`---:`）。
     Right,
 }
 
-/// Axis kinds addressable by rendered-mode native table maintenance UI.
+/// 渲染模式下原生表格维护 UI 可寻址的轴种类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TableAxisKind {
-    /// Table row axis.
+    /// 表格行轴。
     Row,
-    /// Table column axis.
+    /// 表格列轴。
     Column,
 }
 
-/// A row or column marker inside one native table.
+/// 原生表格内的一个行或列标记。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableAxisMarker {
@@ -46,20 +46,20 @@ pub struct TableAxisMarker {
     pub index: usize,
 }
 
-/// Visual emphasis level used when previewing or selecting table axes.
+/// 预览或选中表格轴时的视觉强调级别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum TableAxisHighlight {
-    /// No axis emphasis.
+    /// 无轴强调。
     #[default]
     None,
-    /// Hover preview emphasis.
+    /// 悬停预览强调。
     Preview,
-    /// Persistent selected-axis emphasis.
+    /// 持久的选中轴强调。
     Selected,
 }
 
-/// Persistent cell contents for a native table block.
+/// 原生表格块的持久化单元格内容（表头 + 数据行 + 列对齐）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableData {
@@ -79,8 +79,7 @@ impl PartialEq for TableData {
 impl Eq for TableData {}
 
 impl TableData {
-    /// Creates an empty table with one header row, `body_rows` body rows, and
-    /// `columns` left-aligned columns.
+    /// 创建空表格：一行表头、`body_rows` 个数据行、`columns` 个左对齐列（均至少为 1）。
     pub fn new_empty(body_rows: usize, columns: usize) -> Self {
         let columns = columns.max(1);
         let header = (0..columns)
@@ -124,7 +123,7 @@ impl TableData {
         }
     }
 
-    /// Appends one empty body row while preserving the current column count.
+    /// 追加一个空数据行，保持当前列数不变。
     pub fn append_row(&mut self) {
         self.normalize_shape();
         let columns = self.column_count();
@@ -135,7 +134,7 @@ impl TableData {
         );
     }
 
-    /// Appends one empty column to the header and every body row.
+    /// 向表头与每个数据行各追加一个空单元格（即新增一列），并记录其对齐。
     pub fn append_column(&mut self, alignment: TableColumnAlignment) {
         self.normalize_shape();
         self.header.push(InlineTextTree::plain(String::new()));
@@ -145,7 +144,7 @@ impl TableData {
         }
     }
 
-    /// Sets the alignment of one column if it exists.
+    /// 设置某列的对齐（列存在才生效）。
     pub fn set_column_alignment(&mut self, column: usize, alignment: TableColumnAlignment) {
         self.normalize_shape();
         if let Some(slot) = self.alignments.get_mut(column) {
@@ -153,10 +152,9 @@ impl TableData {
         }
     }
 
-    /// Swaps two rows addressed by their visual index, where row `0` is the
-    /// header and rows `1..=rows.len()` are the body rows. Swapping the header
-    /// with the first body row exchanges header and body content, mirroring how
-    /// the row handles treat the header as just another movable row.
+    /// 按视觉序号交换两行：行 `0` 为表头，行 `1..=rows.len()` 为数据行。
+    /// 表头与首个数据行交换即交换表头与数据内容——与行拖拽把手
+    /// 把表头当作可移动的一行来对待的行为一致。
     pub fn swap_visual_rows(&mut self, row_a: usize, row_b: usize) {
         self.normalize_shape();
         let total = self.rows.len() + 1;
@@ -171,7 +169,7 @@ impl TableData {
         }
     }
 
-    /// Swaps two columns across header, body, and alignment vectors.
+    /// 跨表头、数据行与对齐向量交换两列。
     pub fn swap_columns(&mut self, col_a: usize, col_b: usize) {
         self.normalize_shape();
         let columns = self.column_count();
@@ -186,20 +184,18 @@ impl TableData {
         }
     }
 
-    /// Removes one body row while preserving at least one body row.
+    /// 删除一个数据行。
     pub fn remove_body_row(&mut self, row_index: usize) {
         self.normalize_shape();
         if row_index >= self.rows.len() {
             return;
         }
-        // A table may be left header-only; the editor removes the whole block
-        // when the header itself is then deleted.
+        // 表格可以只剩表头；之后删除表头本身时由编辑器移除整个块。
         self.rows.remove(row_index);
     }
 
-    /// Removes the header row by promoting the first body row into its place.
-    /// Returns false (leaving the table unchanged) when there are no body rows,
-    /// since a pipe table must keep a header row.
+    /// 删除表头行：把首个数据行提升为新表头。
+    /// 没有数据行时返回 false（表格不变）——管道表必须保留表头行。
     pub fn remove_header_row(&mut self) -> bool {
         self.normalize_shape();
         if self.rows.is_empty() {
@@ -209,7 +205,7 @@ impl TableData {
         true
     }
 
-    /// Removes one column while preserving at least one column.
+    /// 删除一列，至少保留一列。
     pub fn remove_column(&mut self, col_index: usize) {
         self.normalize_shape();
         let columns = self.column_count();
@@ -225,7 +221,7 @@ impl TableData {
     }
 }
 
-/// Responsive width fractions shared by every row of a native table.
+/// 原生表格每行共享的响应式列宽比例。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableColumnLayout {
@@ -342,11 +338,11 @@ impl TableColumnLayout {
     }
 }
 
-/// Runtime-only location of a cell inside a native table.
+/// 单元格在原生表格内的运行时位置（仅运行时使用，不持久化）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TableCellPosition {
-    /// Zero-based visual row. Header is row `0`; first body row is `1`.
+    /// 0 基视觉行：表头为行 `0`，首个数据行为 `1`。
     pub row: usize,
     pub column: usize,
 }
@@ -371,8 +367,8 @@ fn split_table_cells(line: &str) -> Option<Vec<String>> {
     if rest.is_empty() {
         return None;
     }
-    // Outer pipes are optional (GFM): strip them when present so pipeless rows
-    // like `Name | Score` split the same way as `| Name | Score |`.
+    // 外管道可选（GFM）：存在则剥掉，使 `Name | Score` 这样的无管道行
+    // 与 `| Name | Score |` 按同样方式拆分。
     let inner = rest.strip_prefix('|').unwrap_or(rest);
     let inner = inner.strip_suffix('|').unwrap_or(inner);
     let mut cells = Vec::new();
@@ -454,31 +450,28 @@ fn serialize_row<'a>(cells: impl IntoIterator<Item = &'a InlineTextTree>) -> Str
     format!("| {} |", rendered.join(" | "))
 }
 
-/// Returns true when a line is a candidate native table row in the current
-/// container scope.
+/// 判断一行是否为当前容器作用域内的候选原生表格行（缩进 ≤3 且以 `|` 开头）。
 pub fn is_table_candidate_line(line: &str) -> bool {
     strip_table_indent(line)
         .map(str::trim_end)
         .is_some_and(|rest| rest.starts_with('|'))
 }
 
-/// Number of pipe-separated cells in `line`, treating outer pipes as optional
-/// (GFM) so pipeless rows like `Name | Score` are recognized. Returns `None`
-/// for single-column lines so prose containing a stray `|` is not mistaken for
-/// a table row.
+/// `line` 中以管道分隔的单元格数：外管道按 GFM 视为可选，
+/// 故 `Name | Score` 这样的无管道行也能识别。单列行返回 `None`——
+/// 散文中偶然出现的 `|` 不会被误判为表格行。
 pub fn table_row_column_count(line: &str) -> Option<usize> {
     split_table_cells(line)
         .map(|cells| cells.len())
         .filter(|count| *count >= 2)
 }
 
-/// True when `line` could be a table row, including a pipeless GFM row.
+/// `line` 是否可能是表格行（含无管道的 GFM 行）。
 pub fn is_table_row_candidate(line: &str) -> bool {
     table_row_column_count(line).is_some()
 }
 
-/// Collects a contiguous table-candidate region in the current container
-/// scope.
+/// 收集当前容器作用域内连续的表格候选区域（返回区域末尾，开区间）。
 pub fn collect_table_candidate_region(lines: &[&str], start: usize) -> usize {
     let mut index = start + 1;
     while index < lines.len() && is_table_candidate_line(&lines[index]) {
@@ -487,7 +480,7 @@ pub fn collect_table_candidate_region(lines: &[&str], start: usize) -> usize {
     index
 }
 
-/// Parses a pipe-table region into native table data.
+/// 把管道表格区域解析为原生表格数据（表头 + 分隔行对齐 + 数据行）。
 pub fn parse_table_region(lines: &[&str]) -> Option<TableData> {
     if lines.len() < 2 {
         return None;
@@ -506,9 +499,8 @@ pub fn parse_table_region(lines: &[&str]) -> Option<TableData> {
 
     let mut rows = Vec::new();
     for line in &lines[2..] {
-        // GFM normalizes body rows to the header width: short rows are padded
-        // with empty cells and long rows drop their trailing cells, instead of
-        // invalidating the whole table.
+        // GFM 把数据行归一化到表头宽度：短行补空单元格、长行丢弃尾部单元格，
+        // 而不是让整张表失效。
         let mut cells = split_table_cells(line)?;
         cells.resize(header.len(), String::new());
         rows.push(
@@ -537,8 +529,7 @@ pub fn parse_table_region(lines: &[&str]) -> Option<TableData> {
     })
 }
 
-/// Returns true when `line` is a delimiter row of exactly `columns` cells, each
-/// a valid alignment specifier.
+/// 判断 `line` 是否为恰好 `columns` 个单元格的分隔行（每格都是合法对齐规格）。
 fn is_delimiter_row(line: &str, columns: usize) -> bool {
     split_table_cells(line).is_some_and(|cells| {
         cells.len() == columns
@@ -548,12 +539,10 @@ fn is_delimiter_row(line: &str, columns: usize) -> bool {
     })
 }
 
-/// Detects a table that starts at `start` without requiring outer pipes,
-/// returning the region end (exclusive) when `lines[start]` is a multi-column
-/// header followed by a matching delimiter row. Body rows extend to the next
-/// blank line, matching GFM. Returns `None` for ordinary prose so a stray `|`
-/// is never mistaken for a table; single-column pipeless candidates are also
-/// rejected because they are ambiguous with setext headings.
+/// 探测从 `start` 开始的表格（不要求外管道）：`lines[start]` 是多列表头
+/// 且紧跟匹配的分隔行时返回区域末尾（开区间）。数据行延伸到下一个空行，
+/// 与 GFM 一致。普通散文返回 `None`，偶然的 `|` 不会被误认为表格；
+/// 单列无管道候选同样拒绝（与 setext 标题歧义）。
 pub fn collect_pipeless_table_region(lines: &[&str], start: usize) -> Option<usize> {
     // 快速守卫：不含 `|` 的散文行直接排除（避免 split_table_cells 的全量分配）
     let line = lines.get(start)?;
@@ -575,24 +564,23 @@ pub fn collect_pipeless_table_region(lines: &[&str], start: usize) -> Option<usi
     Some(end)
 }
 
-/// Returns true when a root-level line is a candidate native table row.
+/// 判断根级行是否为候选原生表格行。
 pub fn is_root_table_candidate_line(line: &str) -> bool {
     is_table_candidate_line(line)
 }
 
-/// Collects a contiguous root-level table candidate region.
+/// 收集根级连续的表格候选区域。
 pub fn collect_root_table_candidate_region(lines: &[&str], start: usize) -> usize {
     collect_table_candidate_region(lines, start)
 }
 
-/// Parses a root-level pipe table region into native table data.
+/// 把根级管道表格区域解析为原生表格数据。
 pub fn parse_root_table_region(lines: &[&str]) -> Option<TableData> {
     parse_table_region(lines)
 }
 
-/// Parses a single table body row, normalized to `columns` cells (padded when
-/// short, truncated when long). Returns `None` when the line is not a table
-/// row at all.
+/// 解析单个表格数据行，归一化为 `columns` 个单元格（短补空、长截尾）。
+/// 该行不是表格行时返回 `None`。
 pub fn parse_table_body_row(line: &str, columns: usize) -> Option<Vec<InlineTextTree>> {
     let mut cells = split_table_cells(line)?;
     cells.resize(columns, String::new());
@@ -604,7 +592,7 @@ pub fn parse_table_body_row(line: &str, columns: usize) -> Option<Vec<InlineText
     )
 }
 
-/// Serializes native table data to canonical pipe-table Markdown lines.
+/// 把原生表格数据序列化为规范管道表格 Markdown 行。
 pub fn serialize_table_markdown_lines(table: &TableData) -> Vec<String> {
     let mut lines = Vec::with_capacity(2 + table.rows.len());
     lines.push(serialize_row(table.header.iter()));
@@ -621,8 +609,8 @@ pub fn serialize_table_markdown_lines(table: &TableData) -> Vec<String> {
     lines
 }
 
-/// Minimum delimiter-cell width per alignment, keeping the delimiter row
-/// parseable (`parse_alignment_cell` requires at least three dashes).
+/// 各对齐方式的分隔单元格最小宽度，保证分隔行可解析
+///（`parse_alignment_cell` 要求至少三个连字符）。
 fn delimiter_min_width(alignment: TableColumnAlignment) -> usize {
     match alignment {
         TableColumnAlignment::Default => 3,
@@ -631,8 +619,8 @@ fn delimiter_min_width(alignment: TableColumnAlignment) -> usize {
     }
 }
 
-/// Serializes native table data to pipe-table Markdown with every column
-/// padded to a uniform width so the pipes line up (Typora 的「格式化表格源码」）。
+/// 把原生表格数据序列化为管道表格 Markdown，每列补齐到统一宽度使管道对齐
+///（Typora 的「格式化表格源码」）。
 /// 宽度按 Unicode 字符数计（不补偿 CJK 全角宽度）；内容与对齐保持不变。
 pub fn serialize_table_markdown_lines_padded(table: &TableData) -> Vec<String> {
     let columns = table.column_count();
@@ -766,8 +754,8 @@ mod tests {
 
     #[test]
     fn preserves_explicit_left_alignment_colon() {
-        // ":---" is explicit left and must survive a parse/serialize round-trip
-        // instead of being silently rewritten to a bare "---".
+        // ":---" 是显式左对齐，必须在解析/序列化往返后存活，
+        // 而不是被静默改写为裸的 "---"。
         let lines = vec![
             "| L | D | R |",
             "| :--- | --- | ---: |",
@@ -837,7 +825,7 @@ mod tests {
 
     #[test]
     fn single_column_pipeless_is_not_a_table() {
-        // Ambiguous with a setext heading; must not be captured as a table.
+        // 与 setext 标题歧义；不得被捕获为表格。
         let lines = vec!["Title", "---"];
         assert!(collect_pipeless_table_region(&lines, 0).is_none());
     }
@@ -1013,14 +1001,13 @@ mod tests {
             ],
             alignments: vec![TableColumnAlignment::Left],
         };
-        // Visual row 0 is the header; swapping it with visual row 1 exchanges
-        // header and first-body content.
+        // 视觉行 0 是表头；与视觉行 1 交换即交换表头与首个数据行内容。
         table.swap_visual_rows(0, 1);
         assert_eq!(table.header[0].serialize_markdown(), "1");
         assert_eq!(table.rows[0][0].serialize_markdown(), "A");
         assert_eq!(table.rows[1][0].serialize_markdown(), "2");
 
-        // Two body rows (visual 1 and 2) swap like ordinary rows.
+        // 两个数据行（视觉行 1 和 2）像普通行一样交换。
         table.swap_visual_rows(1, 2);
         assert_eq!(table.rows[0][0].serialize_markdown(), "2");
         assert_eq!(table.rows[1][0].serialize_markdown(), "A");
@@ -1054,9 +1041,9 @@ mod tests {
         table.remove_body_row(0);
         assert_eq!(table.rows.len(), 1);
         table.remove_body_row(0);
-        // The last body row can be removed, leaving a header-only table.
+        // 最后一个数据行可以删除，留下仅表头的表格。
         assert!(table.rows.is_empty());
-        // Out-of-range removal is a no-op.
+        // 越界删除是空操作。
         table.remove_body_row(0);
         assert!(table.rows.is_empty());
     }
@@ -1077,7 +1064,7 @@ mod tests {
         assert_eq!(table.rows.len(), 1);
         assert_eq!(table.rows[0][0].serialize_markdown(), "3");
 
-        // Promoting the last remaining row leaves a header-only table.
+        // 提升最后剩余的一行后，留下仅表头的表格。
         assert!(table.remove_header_row());
         assert!(table.rows.is_empty());
         assert!(!table.remove_header_row());

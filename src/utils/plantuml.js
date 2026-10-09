@@ -7,6 +7,10 @@ import plantumlEncoder from 'plantuml-encoder';
 import vizGlobalUrl from '../assets/vendor/viz-global.js?url';
 // TeaVM 引擎本体同样内置为资源，按原始文件 URL 加载（见 getEngine 注释）
 import plantumlCoreUrl from '../assets/vendor/plantuml-core.js?url';
+//
+// 注意：vendor/ 两个文件是 npm 包 @plantuml/core 的工件快照（plantuml.js 与
+// viz-global.js，升级该依赖时须同步拷贝）。不走包导入的原因见下方两处注释：
+// 引擎的 TeaVM 编译产物经打包器重写会静默损坏，只能按原始文件 URL 加载。
 import { getPref } from './prefs.js';
 
 export function plantumlRenderer() {

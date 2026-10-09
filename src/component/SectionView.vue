@@ -1,4 +1,7 @@
 <script setup vapor>
+// section 图文排版块渲染（Mdmdt 式 grid 布局，图片经 Rust 解析为 asset URL）；
+// 安全：`<section>` 原文先做 DOM 净化（剔除脚本元素/on* 事件属性/javascript: 协议）
+// 再 v-html 上屏——净化不可省略；渲染可用偏好 render_html_block 关闭。
 import { ref, watch, inject } from 'vue';
 import { resolveImageSrc } from '../utils/image.js';
 import { getPref, renderVersion } from '../utils/prefs.js';

@@ -1,4 +1,8 @@
 <script setup vapor>
+// 侧边栏（v-model:visible 控制显隐），两个标签页：
+// 「目录」——文件面板：文件树/列表（排序在 Rust 完成）+ 底部文件夹操作菜单/
+// 新建/视图切换，含最近目录；「大纲」——标题嵌套树（树形缩进标记/层级徽标），
+// 点击经 select-block 事件让 Editor 滚动到对应块。
 import { computed, ref, watch, nextTick, onMounted, onBeforeUnmount } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { plainText } from '../utils/wysiwyg.js';

@@ -1,61 +1,62 @@
-//! Native-safe HTML classification for Markdown raw HTML blocks.
+//! Markdown 原始 HTML 块的安全分级（native-safe）解析。
 //!
-//! The parser keeps the original source as the serialization truth and builds
-//! a conservative semantic tree only for tags that can be rendered safely in
-//! GPUI. Anything risky, unknown, malformed, or ambiguous becomes raw text.
+//! 解析器始终以原始源码为序列化真值，只为可安全渲染的标签构建保守的语义树；
+//! 任何有风险、未知、畸形或歧义的内容都按原始文本处理。
+//!
+//! 移植自 velotype `components/markdown/html.rs`（GPUI 渲染侧已剥离，分类与解析保留）。
 
 use std::ops::Range;
 
 use cssparser::color::{parse_hash_color, parse_named_color};
 use serde::{Deserialize, Serialize};
 
-/// Safety classification for an HTML fragment.
+/// HTML 片段的安全分级。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum HtmlSafetyClass {
-    /// The fragment has at least one safe semantic node.
+    /// 片段中至少有一个安全的语义节点。
     Semantic,
-    /// The entire fragment must be shown and stored as plain raw text.
+    /// 整个片段必须按普通原始文本展示与存储。
     RawTextBlock,
 }
 
-/// Broad rendering category of a parsed HTML node.
+/// 解析出的 HTML 节点的粗粒度渲染类别。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum HtmlNodeKind {
-    /// Safe inline tag or text that can be represented with text runs.
+    /// 安全的行内标签或文本，可用文本段表示。
     InlineSemantic,
-    /// Safe block tag that maps to a native block-like GPUI element.
+    /// 安全的块级标签，映射为类块的原生元素。
     BlockSemantic,
-    /// Opaque raw source that must not be interpreted as HTML.
+    /// 不透明的原始源码，不得按 HTML 解释。
     RawTextBlock,
 }
 
-/// One source attribute from an HTML tag.
+/// HTML 标签中的一个源码属性。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HtmlAttr {
-    /// Lowercase attribute name used for safety checks.
+    /// 小写属性名（安全检查用）。
     pub(crate) name: String,
-    /// Parsed attribute value without surrounding quotes.
+    /// 去掉外层引号的解析后属性值。
     pub(crate) value: Option<String>,
-    /// Exact attribute source text.
+    /// 属性的精确源码文本。
     pub(crate) raw_source: String,
 }
 
-/// Parsed CSS color value from a safe inline `style` attribute.
+/// 从安全的行内 `style` 属性解析出的 CSS 颜色值。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HtmlCssColor {
-    /// The CSS `currentColor` keyword.
+    /// CSS `currentColor` 关键字。
     CurrentColor,
-    /// An sRGB color with alpha.
+    /// 带 alpha 的 sRGB 颜色。
     Rgba(HtmlCssRgba),
     /// `var(--custom-property)` 引用（主题变量，原样保留到渲染与序列化）
     Var(String),
 }
 
-/// RGBA channels normalized enough for both GPUI rendering and export CSS.
+/// 归一化的 RGBA 通道（同时满足渲染与导出 CSS 的需要）。
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HtmlCssRgba {
@@ -65,7 +66,7 @@ pub struct HtmlCssRgba {
     pub(crate) alpha: f32,
 }
 
-/// Parsed CSS font-size value from a safe inline `style` attribute.
+/// 从安全的行内 `style` 属性解析出的 CSS 字号值。
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HtmlCssFontSize {
@@ -76,7 +77,7 @@ pub enum HtmlCssFontSize {
     Keyword(HtmlCssFontSizeKeyword),
 }
 
-/// CSS absolute and relative font-size keywords supported by rendered HTML.
+/// 渲染态 HTML 支持的 CSS 绝对/相对字号关键字。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum HtmlCssFontSizeKeyword {
@@ -91,7 +92,7 @@ pub enum HtmlCssFontSizeKeyword {
     Larger,
 }
 
-/// Whitelisted visual CSS parsed from a safe HTML `style` attribute.
+/// 从安全的 HTML `style` 属性解析出的白名单视觉 CSS（颜色/背景/字号）。
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HtmlInlineStyle {
@@ -105,7 +106,7 @@ pub struct HtmlInlineStyle {
 
 impl Eq for HtmlInlineStyle {}
 
-/// Safe data extracted from a standalone HTML `<img>` block.
+/// 从独立 HTML `<img>` 块提取的安全数据（src/alt/zoom，事件属性已被安全分级剔除）。
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HtmlImageBlock {
@@ -136,33 +137,33 @@ impl HtmlImageBlock {
     }
 }
 
-/// A classified HTML node.
+/// 一个已分级的 HTML 节点。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HtmlNode {
-    /// Rendering category selected by the safety policy.
+    /// 安全策略选定的渲染类别。
     pub(crate) kind: HtmlNodeKind,
-    /// Lowercase tag name, or `#text` for text nodes.
+    /// 小写标签名；文本节点为 `#text`。
     pub(crate) tag_name: String,
-    /// Safe attributes retained as semantic data.
+    /// 作为语义数据保留的安全属性。
     pub(crate) attrs: Vec<HtmlAttr>,
-    /// Classified child nodes. Empty for raw text nodes.
+    /// 已分级的子节点（原始文本节点为空）。
     pub(crate) children: Vec<HtmlNode>,
-    /// Exact source text covered by this node.
+    /// 该节点覆盖的精确源码文本。
     pub(crate) raw_source: String,
-    /// Byte range in the original HTML fragment.
+    /// 在原始 HTML 片段中的字节区间。
     pub(crate) source_range: Range<usize>,
 }
 
-/// Classified HTML fragment plus its preserved source text.
+/// 已分级的 HTML 片段及其保留的源码文本。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HtmlDocument {
-    /// Exact source string used for serialization and raw editing.
+    /// 用于序列化与原文编辑的精确源码字符串。
     pub(crate) raw_source: String,
-    /// Root-level classified nodes.
+    /// 根级已分级节点。
     pub(crate) nodes: Vec<HtmlNode>,
-    /// Overall fragment safety.
+    /// 片段整体安全级别。
     pub(crate) safety: HtmlSafetyClass,
 }
 
@@ -300,8 +301,8 @@ struct TagToken {
     source_range: Range<usize>,
 }
 
-/// Parses and classifies a raw HTML fragment. The returned document always
-/// preserves `raw_source` exactly, even when semantic parsing succeeds.
+/// 解析并分级一个原始 HTML 片段。返回的文档始终精确保留 `raw_source`——
+/// 即使语义解析成功也是如此（序列化/原文编辑以源码为准）。
 pub(crate) fn parse_html_document(raw_source: &str) -> HtmlDocument {
     if raw_source.trim().is_empty() {
         return HtmlDocument::raw(raw_source);
@@ -326,9 +327,8 @@ pub(crate) fn parse_html_document(raw_source: &str) -> HtmlDocument {
     }
 }
 
-/// Rewrites an HTML fragment for document export: safe semantic nodes keep
-/// their HTML shape, while raw text nodes are escaped so browsers cannot
-/// execute or interpret them.
+/// 为文档导出重写 HTML 片段：安全的语义节点保持其 HTML 形态，
+/// 原始文本节点则被转义，浏览器无法执行或解释它们。
 pub(crate) fn sanitize_html_for_export(raw_source: &str) -> String {
     if let Some(image) = parse_html_image_block(raw_source) {
         return image.to_sanitized_html_with_src(&image.src);
@@ -349,7 +349,7 @@ pub(crate) fn sanitize_html_for_export(raw_source: &str) -> String {
         .collect::<String>()
 }
 
-/// Parses the safe visual subset of a semantic node's `style` attribute.
+/// 解析语义节点 `style` 属性中的安全视觉子集。
 /// `<font>` 额外接受遗留属性：`color`（同 CSS color）与 `size`（HTML 1-7 档，
 /// 或 ±n 相对档，以第 3 档 16px 为基准）——Typora 兼容的 font 标签渲染。
 pub(crate) fn style_for_node(node: &HtmlNode) -> HtmlInlineStyle {
@@ -659,19 +659,17 @@ fn parse_tag_token(raw: &str, start: usize) -> Option<TagToken> {
     None
 }
 
-/// Peek the next char at `index` without advancing. Returns `None` at EOF.
+/// 窥探 `index` 处的下一个字符但不前进。EOF 返回 `None`。
 #[inline]
 fn peek_char(source: &str, index: usize) -> Option<char> {
     source[index..].chars().next()
 }
 
-/// Advance `index` past the next char and return it. Returns `None` at EOF.
-/// Encapsulates the byte-index ↔ UTF-8-boundary invariant so callers that
-/// don't need the char's value can't drift into a panic by hand-incrementing
-/// `index` by anything other than `ch.len_utf8()`. Loops that *do* need the
-/// char for a check should peek with [`peek_char`], inspect the value, and
-/// then advance with `index += ch.len_utf8()` — see [`parse_html_attrs`] —
-/// so the char is read only once per iteration.
+/// 把 `index` 推进过下一个字符并返回它。EOF 返回 `None`。
+/// 封装「字节索引 ↔ UTF-8 边界」不变量：不需要字符值的调用方不会因
+/// 手工自增 `index`（非 `ch.len_utf8()`）而破坏边界导致 panic；确实需要
+/// 字符做判定的循环应先用 [`peek_char`] 窥探、检查值，再以
+/// `index += ch.len_utf8()` 前进（见 [`parse_html_attrs`]），保证每轮只读一次。
 #[inline]
 fn advance_char(source: &str, index: &mut usize) -> Option<char> {
     let ch = source[*index..].chars().next()?;
@@ -699,7 +697,7 @@ pub(crate) fn parse_html_attrs(source: &str) -> Vec<HtmlAttr> {
         }
         let name_end = index;
         if name_end == start {
-            // Lone separator we couldn't classify — consume one char and retry.
+            // 无法归类的孤立分隔符——消费一个字符后重试。
             advance_char(source, &mut index);
             continue;
         }

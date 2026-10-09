@@ -40,17 +40,17 @@ impl BlockNode {
     }
 }
 
-/// Parsed opening code-fence metadata.
+/// 解析出的代码围栏起始元数据。
 ///
-/// The opening fence records both the marker character and its run length so
-/// only a matching closing fence can terminate the block.
+/// 起始围栏同时记录标记字符与连续长度，
+/// 因此只有匹配的闭合围栏才能结束该块。
 type FenceInfo = CodeFenceOpening;
 
-/// HTML block form recognized by the Markdown importer.
+/// Markdown 导入器识别的 HTML 块形态。
 enum HtmlBlockStart {
-    /// HTML comment region beginning with `<!--`.
+    /// 以 `<!--` 开始的 HTML 注释区域。
     Comment,
-    /// HTML tag block whose closing behavior depends on the tag shape.
+    /// HTML 标签块（闭合行为取决于标签形态）。
     Tag {
         name: String,
         self_closing: bool,
@@ -58,7 +58,7 @@ enum HtmlBlockStart {
     },
 }
 
-/// Ordered-list or unordered-list marker parsed from one source line.
+/// 从一行源码解析出的有序/无序列表标记。
 #[derive(Clone)]
 struct ListMarker {
     kind: BlockKind,
@@ -187,18 +187,16 @@ fn find_matching_closing_fence(
 ) -> Option<usize> {
     for index in (start_index + 1)..lines.len() {
         let line = &lines[index];
-        // A fenced block closes at its first matching fence, as in CommonMark.
-        // Scanning for a later fence (the previous behavior) let any opener
-        // swallow the following blocks whose closing fences are bare, merging
-        // them and corrupting them on round-trip (issue #58). A bare closing
-        // fence is indistinguishable from an empty opener, so first-match is
-        // the only unambiguous rule.
+        // 与 CommonMark 一致：围栏块在首个匹配的闭合围栏处结束。
+        // 此前的「继续找更靠后的围栏」行为会让任意起始围栏吞掉后续
+        // 闭围栏为裸标记的块，把它们合并、往返时损坏（issue #58）。
+        // 裸闭合围栏与空起始围栏无法区分，故「首个匹配」是唯一无歧义的规则。
         if is_closing_fence(line, opener) {
             return Some(index);
         }
 
-        // An info-tagged opener can never be a closing fence, so reaching one
-        // first means this block was never closed and stays unmatched.
+        // 带信息串的起始围栏永远不可能是闭合围栏，所以先遇到它
+        // 意味着本块从未闭合，保持不匹配。
         if parse_opening_fence(line)
             .as_ref()
             .and_then(|fence| fence.language.as_ref())
@@ -793,9 +791,9 @@ fn collect_fenced_code_block(
         ));
     }
 
-    // Length is known: closing_index - (start + 1). slice.to_vec()
-    // allocates the exact capacity in one shot, vs Vec::new() + while-push
-    // which doubles the buffer 2-3 times for any non-trivial code block.
+    // 长度已知：closing_index - (start + 1)。slice.to_vec() 一次性
+    // 按精确容量分配，而 Vec::new() + while-push 对任何非平凡代码块
+    // 都要把缓冲区翻倍 2-3 次。
     let code_lines = lines[start + 1..closing_index].to_vec();
 
     Some((

@@ -6,7 +6,12 @@ const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [vue(),tailwindcss()],
+  plugins: [vue(), tailwindcss()],
+  // mermaid 12 要求 ES2024（Safari 17.4+ / 现代 WebView2/Chromium），
+  // 构建目标对齐，避免 esbuild 把 mermaid 产物降级成它不认识的语法
+  build: {
+    target: "es2024",
+  },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //

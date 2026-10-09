@@ -1,18 +1,35 @@
 //! 全量审查修复的回归测试：递归深度上限、任务勾选伪命中、引用式链接/图片、
-/// Markdown 嗅探、相邻表格序列化、脚注模板 id、渐进打开 CJK 接缝。
+// Markdown 嗅探、相邻表格序列化、脚注模板 id、渐进打开 CJK 接缝。
 use tauri_app_lib::markdown;
+
+/// 递归深度压力测试的公共运行器：
+/// 测试线程默认栈（macOS 512 KiB / libtest 8 MiB）不足以容纳
+/// 「深度上限 128 层 × 多种嵌套类型交替」的调试帧，统一放到 64 MiB 大栈线程上跑。
+fn big_stack(f: impl FnOnce() + Send + 'static) {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024 * 1024)
+        .spawn(f)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+
 
 #[test]
 fn 超深引用嵌套不栈溢出() {
+    big_stack(|| {
     let src = format!("{}x", "> ".repeat(3000));
     let blocks = markdown::parse_blocks(&src);
     assert!(!blocks.is_empty(), "超深嵌套应降级为原文块而非崩溃");
     let rt = markdown::serialize_markdown(blocks);
     assert!(rt.contains('x'), "内容不丢: {rt}");
+    });
 }
 
 #[test]
 fn 超深列表嵌套不栈溢出() {
+    big_stack(|| {
     let mut src = String::new();
     for i in 0..3000 {
         src.push_str(&"  ".repeat(i));
@@ -20,15 +37,18 @@ fn 超深列表嵌套不栈溢出() {
     }
     let blocks = markdown::parse_blocks(&src);
     assert!(!blocks.is_empty());
+    });
 }
 
 #[test]
 fn 超深行内html嵌套不栈溢出() {
+    big_stack(|| {
     let src = format!("{}x{}", "<u>".repeat(3000), "</u>".repeat(3000));
     let blocks = markdown::parse_blocks(&src);
     assert!(!blocks.is_empty());
     let rt = markdown::serialize_markdown(blocks);
     assert!(rt.contains('x'), "内容不丢: {rt}");
+    });
 }
 
 #[test]
@@ -189,35 +209,42 @@ fn 行首img拆分块偏移不重叠() {
 
 #[test]
 fn 超深链接嵌套不栈溢出() {
+    big_stack(|| {
     // 链接标签经子串全新解析（相互递归）：[[[..](u)](u)](u) 数千层曾栈溢出崩溃
     let n = 5000;
     let src = format!("{}a{}", "[".repeat(n), "](u)".repeat(n));
     let blocks = markdown::parse_blocks(&src);
     let rt = markdown::serialize_markdown(blocks);
     assert!(rt.contains('a'), "内容不丢: 长度 {}", rt.len());
+    });
 }
 
 #[test]
 fn 超深行内a标签嵌套不栈溢出() {
+    big_stack(|| {
     let n = 3000;
     let src = format!("{}x{}", "<a>".repeat(n), "</a>".repeat(n));
     let blocks = markdown::parse_blocks(&src);
     let rt = markdown::serialize_markdown(blocks);
     assert!(rt.contains('x'), "内容不丢");
+    });
 }
 
 #[test]
 fn 超深html块嵌套不栈溢出() {
+    big_stack(|| {
     // html 文档解析器按标签嵌套递归：数万层 <div> 曾栈溢出
     let n = 20000;
     let src = format!("{}x{}", "<div>".repeat(n), "</div>".repeat(n));
     let blocks = markdown::parse_blocks(&src);
     let rt = markdown::serialize_markdown(blocks);
     assert!(rt.contains('x'), "内容不丢");
+    });
 }
 
 #[test]
 fn 脚注引用交替嵌套不栈溢出() {
+    big_stack(|| {
     // 脚注正文整树重解析曾以深度 0 重启：quote → footnote → quote 循环穿透 128 层上限
     let n = 800;
     let mut src = String::from("[^0]:\n");
@@ -228,6 +255,7 @@ fn 脚注引用交替嵌套不栈溢出() {
     let blocks = markdown::parse_blocks(&src);
     let rt = markdown::serialize_markdown(blocks);
     assert!(rt.contains("[^0]:"), "内容不丢");
+    });
 }
 
 #[test]

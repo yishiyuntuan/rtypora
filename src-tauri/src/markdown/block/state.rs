@@ -1,8 +1,10 @@
-//! Block semantic state and block-level Markdown parsing helpers.
+//! 块语义状态与块级 Markdown 解析辅助。
 //!
-//! This module defines the persistent block record that is serialized to and
-//! from Markdown. Block-level parsing stays intentionally narrow: only syntax
-//! that the runtime tree can reconstruct is parsed into structured blocks.
+//! 本模块定义与 Markdown 互序列化的持久化块记录（BlockRecord）。
+//! 块级解析有意保持克制：只有运行时树能够重建的语法才被解析为结构化块，
+//! 其余语法以原文（raw_fallback）保留、可无损往返。
+//!
+//! 移植自 velotype `components/block/state.rs`。
 
 // 部分构造器与判定方法为后续编辑/文档阶段预留。
 #![allow(dead_code)]
@@ -17,19 +19,19 @@ use crate::markdown::inline::image::parse_standalone_image;
 use crate::markdown::inline::tree::InlineTextTree;
 use crate::markdown::table::TableData;
 
-/// Supported callout variants parsed from `[!TYPE]` quote headers.
+/// 从 `[!TYPE]` 引用头解析出的警告框（callout）变体（GitHub 五变体）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum CalloutVariant {
-    /// Informational note callout.
+    /// 信息性备注警告框。
     Note,
-    /// Helpful tip callout.
+    /// 有帮助的提示警告框。
     Tip,
-    /// High-emphasis important callout.
+    /// 高强调的重要警告框。
     Important,
-    /// Warning callout for risky or surprising content.
+    /// 针对有风险或意外内容的警告警告框。
     Warning,
-    /// Caution callout for potentially harmful actions.
+    /// 针对潜在有害操作的当心警告框。
     Caution,
 }
 
@@ -146,60 +148,58 @@ impl CalloutVariant {
     }
 }
 
-/// The semantic type of a block, determining both its Markdown syntax and
-/// visual rendering.
+/// 块的语义类型，同时决定其 Markdown 语法与视觉渲染。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum BlockKind {
-    /// Plain paragraph with inline formatting.
+    /// 带行内格式的普通段落。
     Paragraph,
-    /// Horizontal rule.
+    /// 水平分割线。
     Separator,
-    /// ATX or Setext heading with a CommonMark heading level.
+    /// ATX 或 Setext 标题（带 CommonMark 标题级别）。
     Heading { level: u8 },
-    /// Unordered list item.
+    /// 无序列表项。
     BulletedListItem,
-    /// Task-list item with checked state.
+    /// 任务列表项（带勾选状态）。
     TaskListItem { checked: bool },
-    /// Ordered list item; serialization uses canonical dot markers.
+    /// 有序列表项；序列化使用规范的点标记。
     NumberedListItem,
-    /// Blockquote container.
+    /// 块引用容器。
     Quote,
-    /// GitHub-style alert/callout container.
+    /// GitHub 风格的警告/提示框（callout）容器。
     Callout(CalloutVariant),
-    /// Footnote definition container.
+    /// 脚注定义容器。
     FootnoteDefinition,
-    /// Native pipe-table block.
+    /// 原生管道表格块。
     Table,
-    /// Fenced code block with optional language info string.
+    /// 围栏代码块（带可选语言信息串）。
     CodeBlock { language: Option<String> },
-    /// Visible HTML comment block preserved as raw comment text.
+    /// 可见 HTML 注释块（按原始注释文本保留）。
     Comment,
-    /// Safe raw HTML rendered through native GPUI semantic elements.
+    /// 安全 raw HTML 块（经原生语义元素渲染）。
     HtmlBlock,
-    /// Display math block rendered with the LaTeX pipeline.
+    /// 展示数学块（经 LaTeX 管线渲染）。
     MathBlock,
-    /// Mermaid fenced block rendered as SVG.
+    /// Mermaid 围栏块（渲染为 SVG）。
     MermaidBlock,
-    /// Raw Markdown fallback for syntax outside the native runtime subset.
+    /// 原生运行时子集之外语法的原文 Markdown 回落。
     RawMarkdown,
 }
 
-/// Opening fence parsed from a fenced code block.
+/// 从围栏代码块解析出的起始围栏。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodeFenceOpening {
-    /// Fence character, either backtick or tilde.
+    /// 围栏字符：反引号或波浪号。
     pub ch: char,
-    /// Length of the opening fence run.
+    /// 起始围栏的连续字符数。
     pub len: usize,
-    /// Optional language/info string after the opening fence.
+    /// 起始围栏之后的可选语言/信息串。
     pub language: Option<String>,
 }
 
 impl BlockKind {
-    /// Returns true when blocks of this kind may own child blocks in the
-    /// current runtime tree.
+    /// 该类型的块在当前运行时树中是否可以拥有子块。
     pub fn supports_children(&self) -> bool {
         self.is_list_item() || self.is_quote_container() || self.is_footnote_definition()
     }
@@ -223,10 +223,9 @@ impl BlockKind {
         matches!(self, Self::CodeBlock { .. })
     }
 
-    /// Whether the right-click "Insert Table" affordance makes sense when a
-    /// block of this kind is the target. Atomic/structural blocks (tables,
-    /// code, math, etc.) render as self-contained widgets where inserting a
-    /// table from within them is nonsensical, so they are excluded.
+    /// 以该类型块为目标时，右键「插入表格」入口是否有意义。
+    /// 原子/结构块（表格、代码、公式等）渲染为自包含控件，
+    /// 在其中插入表格没有意义，故排除。
     pub fn allows_context_table_insert(&self) -> bool {
         !matches!(
             self,
@@ -244,10 +243,9 @@ impl BlockKind {
         matches!(self, Self::Quote | Self::Callout(_))
     }
 
-    /// Blocks that render as self-contained widgets with no caret position
-    /// after them. At the end of a rendered document they need a trailing
-    /// paragraph so a rendered-first user can keep typing past the structure
-    /// instead of having to drop to source mode.
+    /// 渲染为自包含控件、其后没有光标位置的块。
+    /// 位于渲染文档末尾时需要在后面补一个尾随段落，
+    /// 让「先渲染」的用户能越过结构继续输入，而不必切到源码模式。
     pub fn is_atomic_structural(&self) -> bool {
         matches!(
             self,
@@ -266,9 +264,9 @@ impl BlockKind {
         matches!(self, Self::Callout(_))
     }
 
-    /// Blocks edited as multi-line raw text that render as self-contained
-    /// widgets (code, math, HTML, mermaid, comment, raw markdown). Exiting one
-    /// downward with `Down` or `Ctrl/Cmd+Enter` needs a line below to land on.
+    /// 以多行原文文本编辑、渲染为自包含控件的块
+    ///（代码、公式、HTML、mermaid、注释、raw markdown）。
+    /// 用 `Down` 或 `Ctrl/Cmd+Enter` 向下退出时需要下方有一行可落。
     pub fn is_multiline_text_block(&self) -> bool {
         self.is_code_block()
             || matches!(
@@ -334,9 +332,8 @@ impl BlockKind {
         }
     }
 
-    /// Live-detects a Markdown prefix from user input and returns the
-    /// corresponding [`BlockKind`] together with the character count of
-    /// the prefix that should be stripped.
+    /// 从用户输入实时检测 Markdown 前缀，返回对应的 [`BlockKind`]
+    /// 以及应剥离的前缀字符数。
     pub fn detect_markdown_shortcut(value: &str) -> Option<(Self, usize)> {
         if value.starts_with("###### ") {
             Some((Self::Heading { level: 6 }, 7))
@@ -473,10 +470,9 @@ impl BlockKind {
         marker_count >= 3
     }
 
-    /// Parses a task-list marker at the start of list-item content.
+    /// 解析列表项内容开头的任务列表标记。
     ///
-    /// Accepted forms are `[ ]`, `[x]`, and `[X]`, optionally followed by a
-    /// space or tab before the item text. An empty title is also valid.
+    /// 接受 `[ ]`、`[x]`、`[X]`，其后可跟一个空格或 tab 再接项文本；空标题同样合法。
     pub fn parse_task_list_item_prefix(value: &str) -> Option<(bool, usize)> {
         let bytes = value.as_bytes();
         if bytes.len() < 3 || bytes[0] != b'[' || bytes[2] != b']' {
@@ -522,10 +518,10 @@ impl BlockKind {
     }
 }
 
-/// Persistent data of a block independent of the editor runtime.
+/// 块的持久化数据（与编辑器运行时无关）。
 ///
-/// Holds the block's identity, kind and inline-formatted title. Raw-preserved
-/// Markdown keeps its original source in `raw_fallback` so it round-trips
+/// 持有块的标识、类型与带行内格式的标题。原文保留的 Markdown 块把
+/// 原始源码存在 `raw_fallback` 中，因此可以无损往返。
 /// through save/load losslessly. 本项目使用嵌套块树表达层级，不再通过
 /// UUID 维护 parent/content 链接。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -626,14 +622,13 @@ impl BlockRecord {
         self.sync_raw_fallback();
     }
 
-    /// Export the block title as Markdown: fragment style flags are
-    /// serialized back to delimiter markers via [`InlineTextTree::serialize_markdown`].
+    /// 把块标题导出为 Markdown：片段样式标志经 [`InlineTextTree::serialize_markdown`]
+    /// 序列化回定界标记。
     pub fn title_markdown(&self) -> String {
         self.title.serialize_markdown()
     }
 
-    /// Returns true for block kinds that keep their original source text
-    /// in `raw_fallback` because they are preserved as opaque Markdown.
+    /// 该块类型是否因按不透明 Markdown 保留而把原始源码存在 `raw_fallback` 中。
     pub fn kind_uses_raw_fallback(&self) -> bool {
         matches!(
             self.kind,
@@ -645,9 +640,8 @@ impl BlockRecord {
         )
     }
 
-    /// Serialize this block back to a single Markdown line, including
-    /// indentation for nested blocks and list ordinal for numbered items.
-    /// Raw-preserved blocks produce their fallback text when at depth 0.
+    /// 把该块序列化回单行 Markdown，含嵌套块的缩进与有序列表项的序号。
+    /// 原文保留块在深度 0 时输出其回落文本。
     pub fn markdown_line(&self, depth: usize, list_ordinal: Option<usize>) -> String {
         let indentation = "  ".repeat(depth);
         let title_markdown = self.title_markdown_for_output();
@@ -772,7 +766,7 @@ fn prefixed_multiline(content: &str, first_prefix: &str, continuation_prefix: &s
     rendered
 }
 
-/// Image payload extracted from a clipboard abstraction.
+/// 从剪贴板抽象中提取的图片载荷。
 ///
 /// File-manager copies are usually represented as local paths; the GPUI 剪贴板
 /// 位图变体（`ClipboardImage`）不随纯数据层移植。
@@ -1021,7 +1015,7 @@ mod tests {
             },
             InlineTextTree::plain("let x = 1;\nprintln!(\"hi\");"),
         );
-        // markdown_line returns bare content; fences are added by persistence layer.
+        // markdown_line 返回裸内容；围栏由序列化层（tree.rs）添加。
         let line = record.markdown_line(0, None);
         assert_eq!(line, "let x = 1;\nprintln!(\"hi\");");
     }

@@ -1,4 +1,6 @@
 <script setup vapor>
+// 公式渲染组件：调 Rust latex 命令把 LaTeX 渲染为自包含 SVG（内嵌字形）；
+// 结果按 源码+主题 缓存，主题切换（themeVersion）时重渲染；渲染开关走偏好。
 import { ref, watch, inject, onMounted } from 'vue';
 import { themeVersion } from '../themes/index.js';
 import { getPref, renderVersion } from '../utils/prefs.js';

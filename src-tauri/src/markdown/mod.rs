@@ -407,20 +407,20 @@ fn count_words(text: &str) -> usize {
 fn is_cjk_char(ch: char) -> bool {
     matches!(
         ch as u32,
-        // CJK Unified Ideographs
+        // CJK 统一表意文字
         0x4E00..=0x9FFF
-        // CJK Unified Ideographs Extension A
+        // CJK 统一表意文字 扩展 A
         | 0x3400..=0x4DBF
-        // CJK Unified Ideographs Extension B
+        // CJK 统一表意文字 扩展 B
         | 0x20000..=0x2A6DF
-        // CJK Compatibility Ideographs
+        // CJK 兼容表意文字
         | 0xF900..=0xFAFF
-        // CJK Radicals Supplement / Kangxi Radicals
+        // CJK 部首补充 / 康熙部首
         | 0x2E80..=0x2EFF
-        // CJK Symbols and Punctuation / Halfwidth & Fullwidth Forms
+        // CJK 符号与标点 / 半角与全角形式
         | 0x3000..=0x303F
         | 0xFF00..=0xFFEF
-        // Hiragana / Katakana
+        // 平假名 / 片假名
         | 0x3040..=0x30FF
     )
 }

@@ -1,4 +1,9 @@
 <script setup vapor>
+// 递归块渲染器：渲染 velotype 移植版块模型（17 种块类型：段落/标题/列表项/引用/
+// callout/脚注/表格/代码块/注释/HTML/section/数学/Mermaid/Raw 等），嵌套子块递归自身渲染。
+// 顶层块的编辑状态由 Editor.vue 管理，本组件只负责渲染与事件转发
+//（点击进编辑、任务勾选、图片缩放等）。列表项在模型中是独立块（嵌套经 children）。
+// 颜色全部走 style.css 语义类（--t-* 主题变量），此处只写布局类。
 import { computed, inject, provide, ref, watch, onMounted } from 'vue';
 import InlineView from './InlineView.vue';
 import MathView from './MathView.vue';
@@ -10,11 +15,6 @@ import { renderMermaid, peekMermaid } from '../utils/mermaid.js';
 import { plantumlUrl, plantumlRenderer, renderPlantumlLocal, peekPlantuml } from '../utils/plantuml.js';
 import { themeVersion } from '../themes/index.js';
 import { getPref, renderVersion } from '../utils/prefs.js';
-
-// 递归块渲染器：渲染 velotype 移植版块模型（17 种块类型）。
-// 顶层块的编辑状态由 Editor.vue 管理，本组件只负责渲染与事件转发。
-// 列表项在模型中是独立块（嵌套经 children），此处逐项渲染标记。
-// 颜色全部走 style.css 语义类（--t-* 主题变量），此处只写布局类。
 const props = defineProps({
   block: { type: Object, required: true },
   // 有序列表序号（由父级按连续 numberedListItem 兄弟计算）

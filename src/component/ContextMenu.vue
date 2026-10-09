@@ -1,4 +1,6 @@
 <script setup vapor>
+// 编辑器右键菜单：Typora 式动作面板（剪贴板/复制粘贴为/格式/段落/插入/字体等）。
+// 纯展示与事件转发——选区暂存/恢复与动作执行都在 Editor 中完成。
 import { ref } from 'vue';
 import { SLASH_ICON, FONT_COLORS, FONT_SIZES } from '../utils/wysiwyg.js';
 import { formatShortcut } from '../utils/platform.js';

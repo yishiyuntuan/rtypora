@@ -1,4 +1,7 @@
 <script setup vapor>
+// 自定义标题栏：拖拽区、菜单按钮（滑出 MenuDrawer）、文件名显示、窗口控制
+//（最小化/最大化/关闭，经 @tauri-apps/api/window）；macOS 下避让原生红绿灯
+//（trafficLightsVisible 驱动留白），红绿灯显隐由 prefs.js 的热区监听控制。
 import { Window } from '@tauri-apps/api/window';
 import { isMac } from '../utils/platform.js';
 import { trafficLightsVisible } from '../utils/prefs.js';

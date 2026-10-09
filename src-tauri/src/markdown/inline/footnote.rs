@@ -1,24 +1,25 @@
-//! Inline footnote references and resolved footnote registry state.
+//! 行内脚注引用（`[^id]`）与解析后的脚注注册表状态。
+//! 移植自 velotype `components/markdown/footnote.rs`（渲染侧已剥离）。
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Inline footnote reference parsed from `[^id]` syntax.
+/// 从 `[^id]` 语法解析出的行内脚注引用。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InlineFootnoteReference {
-    /// Footnote identifier without the `[^` and `]` markers.
+    /// 不含 `[^` 与 `]` 标记的脚注标识符。
     pub id: String,
-    /// Resolved document ordinal, if the referenced definition exists.
+    /// 解析出的文档级序号（被引用的定义存在时才有）。
     pub ordinal: Option<usize>,
-    /// Zero-based occurrence count within the block.
+    /// 同一块内的 0 基出现序号。
     #[serde(default)]
     pub occurrence_index: usize,
 }
 
-/// Hit-test payload for a rendered footnote reference.
+/// 渲染态脚注引用的命中测试载荷。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InlineFootnoteHit {
@@ -41,14 +42,14 @@ impl InlineFootnoteReference {
     }
 }
 
-/// Location of the first resolved inline reference for one footnote id.
+/// 某个脚注 id 首个已解析行内引用的位置。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FootnoteReferenceLocation {
     pub(crate) entity_id: Uuid,
     pub(crate) occurrence_index: usize,
 }
 
-/// Definition block and first-reference metadata for one footnote id.
+/// 某个脚注 id 的定义块与首个引用的元数据绑定。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FootnoteDefinitionBinding {
     pub(crate) ordinal: Option<usize>,
@@ -56,7 +57,7 @@ pub(crate) struct FootnoteDefinitionBinding {
     pub(crate) first_reference: Option<FootnoteReferenceLocation>,
 }
 
-/// Document-wide registry that binds references to definition blocks.
+/// 文档级注册表：把引用绑定到定义块（编号与锚点一一对应）。
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct FootnoteRegistry {
     pub(crate) bindings: HashMap<String, FootnoteDefinitionBinding>,
@@ -80,7 +81,7 @@ impl FootnoteRegistry {
     }
 }
 
-/// Resolved occurrence stored per block for inline rendering.
+/// 按块存储的已解析出现记录（行内渲染用）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct FootnoteResolvedOccurrence {
     pub(crate) id: String,

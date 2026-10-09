@@ -1,9 +1,10 @@
-//! Attribute-based inline Markdown tree for block titles and table cells.
+//! 基于属性的行内 Markdown 树：块标题与表格单元格的行内内容模型。
 //!
-//! The runtime model stores only text fragments and formatting attributes.
-//! Markdown markers are parsed at the I/O boundary and regenerated on save,
-//! which keeps editing operations focused on text ranges instead of raw
-//! delimiter strings.
+//! 运行时模型只存文本片段与格式属性（不存定界符原文）；Markdown 标记在
+//! I/O 边界解析进模型、保存时统一再生，编辑操作因此只面对文本区间而非
+//! 原始定界符字符串。
+//!
+//! 移植自 velotype `components/markdown/tree.rs`。
 
 use std::ops::Range;
 
@@ -19,7 +20,7 @@ use super::html::{
 };
 use super::link::{LinkReferenceDefinition, LinkReferenceDefinitions, parse_link_target};
 
-/// Bitfield of active inline formatting flags for a span of text.
+/// 一段文本上生效的行内格式标志位集合（serde camelCase，与前端 DTO 契约一致）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct InlineStyle {
@@ -33,7 +34,7 @@ pub struct InlineStyle {
     pub script: InlineScript,
 }
 
-/// Vertical script style for simple Markdown extension syntax.
+/// 上下标样式（Markdown 扩展语法 `^x^` / `~x~`，要求标记两侧为 ASCII 字母数字）。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum InlineScript {
@@ -69,7 +70,7 @@ impl InlineStyle {
         }
     }
 
-    /// Highlighted text (`==...==`).
+    /// 高亮文本（`==...==`）。
     pub fn with_highlight(self) -> Self {
         Self {
             highlight: true,
@@ -77,7 +78,7 @@ impl InlineStyle {
         }
     }
 
-    /// Keyboard key style (`<kbd>...</kbd>`).
+    /// 键盘按键样式（`<kbd>...</kbd>`）。
     pub fn with_kbd(self) -> Self {
         Self {
             kbd: true,
@@ -122,10 +123,10 @@ impl InlineStyle {
     }
 }
 
-/// A contiguous run of text with a uniform [`InlineStyle`].
+/// 具有统一 [`InlineStyle`] 的连续文本段。
 ///
-/// The [`InlineTextTree`] is simply a `Vec<InlineFragment>` with
-/// adjacent fragments of equal style merged during normalization.
+/// [`InlineTextTree`] 本质上是 `Vec<InlineFragment>`，
+/// 归一化时相邻同样式片段会被合并。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct InlineFragment {
@@ -137,46 +138,46 @@ pub struct InlineFragment {
     pub math: Option<InlineMath>,
 }
 
-/// Source-preserving inline LaTeX math metadata.
+/// 保留源码的行内 LaTeX 公式元数据。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InlineMath {
-    /// Full Markdown source, including `$...$` or `\(...\)` delimiters.
+    /// 完整 Markdown 源码（含 `$...$` 或 `\(...\)` 定界符）。
     pub source: String,
-    /// LaTeX body between the inline math delimiters.
+    /// 定界符之间的 LaTeX 正文。
     pub body: String,
-    /// Delimiter form used by the source.
+    /// 源码使用的定界符形式。
     pub delimiter: InlineMathDelimiter,
 }
 
-/// Supported inline math delimiter syntaxes.
+/// 支持的行内公式定界符语法。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum InlineMathDelimiter {
-    /// Dollar-delimited inline math: `$...$`.
+    /// 美元符号定界：`$...$`。
     Dollar,
     /// Double-dollar-delimited inline math: `$$...$$`（行内展示公式）。
     DollarDouble,
-    /// Parenthesis-delimited inline math: `\(...\)`.
+    /// 括号定界：`\(...\)`。
     Paren,
 }
 
-/// Link metadata attached to a formatted inline text fragment.
+/// 附加在行内格式文本片段上的链接元数据。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum InlineLink {
-    /// Inline destination and optional title from `[label](destination "title")`.
+    /// 行内目标与可选标题：`[label](destination "title")`。
     Inline {
         destination: String,
         title: Option<String>,
     },
-    /// Reference-style link resolved from `[label][ref]`-style syntax.
+    /// 引用式链接：`[label][ref]` 形式语法解析出的目标。
     Reference { label: String, destination: String },
-    /// Autolink target from `<scheme:target>` or email-like syntax.
+    /// 自动链接目标：`<scheme:target>` 或邮箱形式语法。
     Autolink { target: String },
 }
 
-/// Link target pair used by hit-testing and open-link prompts.
+/// 链接目标对：命中测试与打开链接提示使用（提示文本与实际打开目标可不同）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InlineLinkHit {
@@ -263,10 +264,9 @@ fn escape_link_title(title: &str) -> String {
     escaped
 }
 
-/// A cursor inside the inline text tree.
+/// 行内文本树中的光标。
 ///
-/// `fragment_index` identifies the fragment and `byte_offset` addresses a byte
-/// boundary inside that fragment's text.
+/// `fragment_index` 定位片段，`byte_offset` 指向该片段文本内的字节边界。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TextCursor {
@@ -274,8 +274,7 @@ pub struct TextCursor {
     pub byte_offset: usize,
 }
 
-/// A visible-text range with its associated [`InlineStyle`], used by
-/// the render cache to build styled text runs for the text system.
+/// 可见文本区间及其关联的 [`InlineStyle`]：渲染缓存据此为文本系统构建带样式文本段。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InlineSpan {
@@ -287,7 +286,7 @@ pub struct InlineSpan {
     pub math: Option<InlineMath>,
 }
 
-/// Fragment attributes inherited by inserted text at a caret position.
+/// 光标处插入文本时继承的片段属性（样式/链接/脚注/公式）。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InlineInsertionAttributes {
@@ -298,11 +297,10 @@ pub struct InlineInsertionAttributes {
     pub math: Option<InlineMath>,
 }
 
-/// Pre-computed view of an [`InlineTextTree`] optimized for rendering.
+/// 面向渲染优化的 [`InlineTextTree`] 预计算视图。
 ///
-/// Flattens the fragment tree into a visible text string plus a list of
-/// [`InlineSpan`]s.  Also maintains bidirectional mapping tables between
-/// visible offsets and fragment positions, used by the IME subsystem.
+/// 把片段树拍平为可见文本字符串 + [`InlineSpan`] 列表，并维护
+/// 可见偏移与片段位置之间的双向映射表（IME 子系统使用）。
 #[derive(Clone, Debug, Default)]
 pub struct InlineRenderCache {
     visible_text: String,
@@ -313,7 +311,7 @@ pub struct InlineRenderCache {
     tree_to_visible: Vec<usize>,
 }
 
-/// Bidirectional offset map between source Markdown and visible inline text.
+/// 源码 Markdown 与可见行内文本之间的双向偏移映射。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct InlineMarkdownOffsetMap {
     markdown: String,
@@ -456,16 +454,16 @@ impl InlineRenderCache {
     }
 }
 
-/// A sequence of [`InlineFragment`]s representing inline-formatted text.
+/// 表示行内格式文本的 [`InlineFragment`] 序列。
 ///
-/// This is the core data structure for block titles.  It supports:
-/// - Building from raw Markdown (auto-parsing bold/italic/underline markers)
-/// - Bidirectional Markdown serialization with optimal delimiter choice
-/// - Splitting at arbitrary byte offsets (used for Enter key, paste)
-/// - Toggling inline styles on arbitrary ranges
+/// 这是块标题的核心数据结构，支持：
+/// - 从原始 Markdown 构建（自动解析粗体/斜体/下划线等标记）
+/// - 双向 Markdown 序列化（保存时选择最优定界符）
+/// - 在任意字节偏移处拆分（Enter 键、粘贴使用）
+/// - 在任意区间上切换行内样式
 ///
-/// The serialization uses a Viterbi-like DP optimization to choose between
-/// Markdown and HTML delimiter variants, avoiding ambiguous `****` runs.
+/// 序列化使用类 Viterbi 的动态规划在 Markdown 与 HTML 定界形式之间择优，
+/// 避免出现歧义的 `****` 连排。
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct InlineTextTree {
@@ -485,12 +483,10 @@ impl InlineTextTree {
         }])
     }
 
-    /// Parse marker-based Markdown into the internal fragment representation.
+    /// 把带标记的 Markdown 解析为内部片段表示。
     ///
-    /// Markers (`**`, `*`, `<u>`, `<strong>`, `<em>`) are consumed and
-    /// converted to [`InlineStyle`] flags on adjacent fragments.  The
-    /// markers themselves are never stored — the tree holds only text
-    /// content and style attributes.
+    /// 标记（`**`、`*`、`<u>`、`<strong>`、`<em>`）被消费并转换为相邻片段上的
+    /// [`InlineStyle`] 标志；标记本身从不入树——树中只存文本内容与样式属性。
     pub fn from_markdown(markdown: &str) -> Self {
         Self::from_markdown_with_link_references(markdown, &LinkReferenceDefinitions::default())
     }
@@ -506,11 +502,9 @@ impl InlineTextTree {
         tree
     }
 
-    /// Code-span content normalization:
-    /// - CRLF/CR line endings are normalized to LF so inline code can render
-    ///   across hard lines in the editor.
-    /// - If the content is not entirely spaces and both starts AND ends with
-    ///   a single space, those two spaces are stripped.
+    /// 行内代码内容归一化：
+    /// - CRLF/CR 换行统一为 LF，行内代码可跨硬换行渲染；
+    /// - 内容不全是空格且首尾各有一个空格时，剥掉这两个空格（CommonMark 规则）。
     fn normalize_code_spans(&mut self) {
         for fragment in &mut self.fragments {
             if fragment.style.code && !fragment.text.is_empty() {
@@ -558,10 +552,9 @@ impl InlineTextTree {
         })
     }
 
-    /// Whether any fragment carries an inline `[label](url)` link. Unlike
-    /// reference/autolink links these are not "source preserving", but their
-    /// `[...](...)` markers are still stripped from the fragment text, so an
-    /// edit that re-derives the tree from visible text alone would drop them.
+    /// 是否有片段携带行内 `[label](url)` 链接。与引用式/自动链接不同，
+    /// 行内链接不「保留源码」，但其 `[...](...)` 标记已从片段文本剥离——
+    /// 仅靠可见文本重推树的编辑会丢失它们（调用方据此走原文保留路径）。
     pub(crate) fn has_inline_links(&self) -> bool {
         self.fragments
             .iter()
@@ -605,11 +598,10 @@ impl InlineTextTree {
         InlineRenderCache::from_tree(self)
     }
 
-    /// Serialize fragments back to Markdown text with optimal delimiter choices.
+    /// 把片段序列化回 Markdown 文本（最优定界符选择）。
     ///
-    /// Each fragment's style flags determine which markers surround its text.
-    /// This is the export side of the I/O boundary; the internal fragment
-    /// representation never stores raw marker characters.
+    /// 每个片段的样式标志决定其文本外围的标记。这是 I/O 边界的导出侧；
+    /// 内部片段表示从不存原始标记字符。
     pub fn serialize_markdown(&self) -> String {
         self.markdown_offset_map().markdown
     }
@@ -1067,9 +1059,8 @@ impl InlineTextTree {
                 };
             }
 
-            // Typing at a delimited-fragment boundary should produce plain
-            // text, not extend the span past its visible closing/opening
-            // marker when the caret is outside.
+            // 在带定界符片段的边界处键入应产生纯文本，
+            // 而不是在光标位于标记之外时把样式延伸过可见的闭/开标记。
             if clamped == fragment_end && index + 1 == self.fragments.len() {
                 return if fragment.style.code || fragment.style.strikethrough {
                     InlineInsertionAttributes::default()
@@ -1181,9 +1172,9 @@ impl InlineTextTree {
         temp.normalize_inline_syntax_with_link_references(reference_definitions)
     }
 
-    /// Like `replace_visible_range` but skips marker normalization so
-    /// that backticks, stars, and other delimiters are stored as-is.
-    /// Used for source-mode editing where the text must remain raw.
+    /// 与 `replace_visible_range` 相同，但跳过标记归一化——
+    /// 反引号、星号等定界符按原样存储。
+    /// 用于源码模式编辑：文本必须保持原始形态。
     pub fn replace_visible_range_raw(
         &self,
         range: Range<usize>,
@@ -1215,10 +1206,9 @@ impl InlineTextTree {
         }
     }
 
-    /// Core marker-to-style normalizer: scans the fragment text for
-    /// delimiter sequences (`**`, `*`, `<u>`, etc.), removes them, and
-    /// applies the corresponding [`InlineStyle`] to the text between
-    /// matching pairs.  Unmatched delimiters are emitted as literal text.
+    /// 核心的标记→样式归一化器：扫描片段文本中的定界序列
+    ///（`**`、`*`、`<u>` 等），移除它们，并把对应的 [`InlineStyle`]
+    /// 应用到匹配对之间的文本上；未匹配的定界符按字面量文本输出。
     #[allow(dead_code)]
     pub fn normalize_inline_syntax(&self) -> InlineEditResult {
         self.normalize_inline_syntax_with_link_references(&LinkReferenceDefinitions::default())
@@ -1316,9 +1306,7 @@ impl InlineTextTree {
     }
 }
 
-/// Result of a visible-text replacement operation, containing the
-/// normalized tree and a mapping from pre-edit visible offsets to
-/// post-edit tree offsets.
+/// 可见文本替换操作的结果：归一化后的树 + 编辑前可见偏移到编辑后树偏移的映射。
 #[derive(Clone, Debug)]
 pub struct InlineEditResult {
     pub tree: InlineTextTree,
@@ -1338,42 +1326,40 @@ impl InlineEditResult {
     }
 }
 
-/// Ordered preference of delimiter variants used by the DP serializer.
-/// Lower rank = more preferred.  Markdown delimiters are preferred over HTML
-/// because they are shorter and more idiomatic.
+/// DP 序列化器使用的定界符变体偏好序。
+/// 排名越低越优先：Markdown 定界符优先于 HTML（更短、更地道）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Delimiter {
-    /// Markdown bold marker using either `*` or `_`.
+    /// Markdown 粗体标记（`*` 或 `_` 双写）。
     BoldMarkdown { marker: char },
-    /// Markdown italic marker using either `*` or `_`.
+    /// Markdown 斜体标记（`*` 或 `_`）。
     ItalicMarkdown { marker: char },
-    /// Markdown strikethrough marker `~~`.
+    /// Markdown 删除线标记 `~~`。
     StrikethroughMarkdown,
-    /// Markdown highlight marker `==`.
+    /// Markdown 高亮标记 `==`。
     HighlightMarkdown,
-    /// Markdown superscript marker `^`.
+    /// Markdown 上标标记 `^`。
     SuperscriptMarkdown,
-    /// Markdown subscript marker `~`.
+    /// Markdown 下标标记 `~`。
     SubscriptMarkdown,
-    /// HTML underline marker `<u>`.
+    /// HTML 下划线标记 `<u>`。
     Underline,
-    /// HTML superscript marker `<sup>`.
+    /// HTML 上标标记 `<sup>`。
     SuperscriptHtml,
-    /// HTML subscript marker `<sub>`.
+    /// HTML 下标标记 `<sub>`。
     SubscriptHtml,
-    /// HTML bold marker `<strong>`.
+    /// HTML 粗体标记 `<strong>`。
     BoldHtml,
-    /// HTML italic marker `<em>`.
+    /// HTML 斜体标记 `<em>`。
     ItalicHtml,
-    /// HTML keyboard-key marker `<kbd>`.
+    /// HTML 键盘按键标记 `<kbd>`。
     KbdHtml,
-    /// Markdown code span marker using a selected backtick run length.
+    /// Markdown 代码段标记（按选定的反引号连续长度）。
     CodeMarkdown { run_len: usize },
 }
 
 impl Delimiter {
-    /// Returns the opening marker string.  For code spans this is `run_len`
-    /// backticks; for emphasis it's `**`, `*`, `<u>`, etc.
+    /// 返回开标记字符串：代码段为 `run_len` 个反引号；强调为 `**`、`*`、`<u>` 等。
     fn open(self) -> String {
         match self {
             Self::BoldMarkdown { marker } => marker.to_string().repeat(2),
@@ -1441,27 +1427,27 @@ impl Delimiter {
     }
 }
 
-/// Inline style flag addressable by editing commands.
+/// 编辑命令可寻址的行内样式标志。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StyleFlag {
-    /// Bold text.
+    /// 粗体文本。
     Bold,
-    /// Italic text.
+    /// 斜体文本。
     Italic,
-    /// Underlined text.
+    /// 下划线文本。
     Underline,
-    /// Strikethrough text.
+    /// 删除线文本。
     Strikethrough,
-    /// Inline code text.
+    /// 行内代码文本。
     Code,
-    /// Superscript text.
+    /// 上标文本。
     Superscript,
-    /// Subscript text.
+    /// 下标文本。
     Subscript,
 }
 
-/// Source character plus style and byte range used by inline parsing.
+/// 行内解析使用的源码字符及其样式与字节区间。
 #[derive(Clone)]
 struct CharToken {
     ch: char,
@@ -1470,15 +1456,15 @@ struct CharToken {
     source_range: Range<usize>,
 }
 
-/// Result of parsing a delimited inline region.
+/// 解析一个带定界行内区域的结果。
 struct ParseResult {
     next_index: usize,
     closed: bool,
 }
 
-/// Builds the output fragments during normalization (marker parsing).
-/// Keeps track of the visible-to-normalized offset mapping so that
-/// selections and cursors can be mapped to the normalized tree.
+/// 归一化（标记解析）期间构建输出片段的构建器。
+/// 同时维护「可见 → 归一化」偏移映射，
+/// 使选区与光标能映射到归一化后的树上。
 struct NormalizeBuilder {
     fragments: Vec<InlineFragment>,
     visible_to_normalized: Vec<usize>,
@@ -1617,10 +1603,9 @@ fn flatten_tokens(fragments: &[InlineFragment]) -> Vec<CharToken> {
     tokens
 }
 
-/// Recursive-descent parser that consumes [`CharToken`]s and reconstructs
-/// the normalized inline tree.  Matching delimiters are consumed (dropped);
-/// unmatched ones are emitted as literal text.  Nested styles are handled by
-/// recursive calls that accumulate `extra_style`.
+/// 递归下降解析器：消费 [`CharToken`] 序列并重建归一化的行内树。
+/// 匹配的定界符被消费（丢弃）；未匹配的按字面量文本输出。
+/// 嵌套样式由累积 `extra_style` 的递归调用处理。
 // 行内嵌套深度上限（防栈溢出）：超深分隔符/行内 HTML 嵌套按未闭合处理
 //（开符按字面量保留，不丢文本内容）。链接标签/`<a>` 内文的子串重解析经
 // normalize_inline_syntax_at_depth 与 parse_until 共用同一深度计数
@@ -1676,7 +1661,7 @@ fn parse_until(
     }
     let body_start = index;
     while index < tokens.len() {
-        // Check for closing delimiter.
+        // 检查闭合定界符。
         if let Some(ref end_delim) = end_delimiter {
             let mut closed = match end_delim {
                 Delimiter::CodeMarkdown { run_len } => {
@@ -1694,8 +1679,8 @@ fn parse_until(
                 }
             };
 
-            // Emphasis spans must enclose at least one character; reject a
-            // close at the very start of the body so empty spans stay literal.
+            // 强调区间必须至少包住一个字符；拒绝正文最开头处的闭合，
+            // 使空区间保持字面量。
             if closed && index == body_start && emphasis_requires_body(*end_delim) {
                 closed = false;
             }
@@ -1734,7 +1719,7 @@ fn parse_until(
             }
         }
 
-        // Inside a code span, all text (including markers) is literal.
+        // 代码段内所有文本（含标记）都是字面量。
         if !inside_code {
             if tokens[index].ch == '[' {
                 if let Some(next_index) =
@@ -1814,11 +1799,10 @@ fn parse_until(
                         continue;
                     }
                 } else if delimiter.token_len() > 1 {
-                    // Keep an unclosed multi-character opener (`**`, `__`, `~~`,
-                    // backtick run) literal as one unit. Emitting just its first
-                    // char would let the rest open a shorter span (e.g. `**bold*`
-                    // -> `*` + italic `bold`), which is committed on every
-                    // keystroke and loses the intended bold.
+                    // 未闭合的多字符开符（`**`、`__`、`~~`、反引号连排）作为一个
+                    // 整体保持字面量。只输出其首字符会让剩余字符开启更短的区间
+                    //（如 `**bold*` → `*` + 斜体 `bold`）——每次按键都提交解析，
+                    // 意图中的粗体就丢了。
                     for token in &tokens[index..index + delimiter.token_len()] {
                         builder.emit_token(token, extra_style, extra_html_style.clone());
                     }
@@ -2430,7 +2414,7 @@ fn merge_html_styles(
     (!merged.is_empty()).then_some(merged)
 }
 
-/// Located inline link syntax inside the token stream.
+/// 在 token 流中定位到的行内链接语法。
 #[derive(Clone)]
 struct LocatedInlineLink {
     label_end: usize,
@@ -2496,9 +2480,8 @@ fn locate_inline_link(
                 cursor += 1;
             };
 
-            // An empty destination such as in `[label]()` is a valid link, but the
-            // target parser rejects an empty string. Recognizing it keeps the caret
-            // inside the projected link while the destination is filled in.
+            // `[label]()` 这样的空目标是合法链接，但目标解析器拒绝空字符串。
+            // 识别它可在用户填写目标期间让光标保持在投影出的链接内。
             let (destination, title) = if url_start == url_end {
                 (String::new(), None)
             } else {
@@ -2875,10 +2858,10 @@ fn match_open_delimiter(tokens: &[CharToken], index: usize) -> Option<Delimiter>
     } else if matches_sequence(tokens, index, "_") && can_open_emphasis(tokens, index, 1) {
         Some(Delimiter::ItalicMarkdown { marker: '_' })
     } else if tokens[index].ch == '`' {
-        // Count the run of consecutive backticks.
+        // 数连续反引号的连排长度。
+        // 反引号连排只有在其后【不】紧跟另一个反引号时才是有效开符
+        //（避免重复计数）。
         let run_len = backtick_run_len(tokens, index);
-        // A backtick run is only a valid opener if it is NOT immediately
-        // followed by another backtick (no double-counting).
         if run_len > 0 {
             Some(Delimiter::CodeMarkdown { run_len })
         } else {
@@ -2889,14 +2872,14 @@ fn match_open_delimiter(tokens: &[CharToken], index: usize) -> Option<Delimiter>
     }
 }
 
-/// Returns the length of the consecutive backtick run starting at `index`.
+/// 返回从 `index` 开始的连续反引号连排长度。
 fn backtick_run_len(tokens: &[CharToken], index: usize) -> usize {
     let mut len = 0;
     while index + len < tokens.len() && tokens[index + len].ch == '`' {
         len += 1;
     }
-    // A backtick run is only valid if it's not immediately preceded by an
-    // additional backtick (the run must start at `index`).
+    // 反引号连排只有在其前【不】紧跟另一个反引号时才有效
+    //（连排必须从 `index` 开始）。
     if index > 0 && tokens[index - 1].ch == '`' {
         return 0;
     }
@@ -2907,8 +2890,8 @@ fn has_closing_delimiter(tokens: &[CharToken], index: usize, delimiter: Delimite
     let skip = delimiter.token_len();
     let close_str = delimiter.close();
 
-    // For code spans we look for a matching-length backtick run;
-    // for emphasis we just scan for the close string.
+    // 代码段要找等长的反引号连排作闭合；
+    // 强调则直接扫描闭合字符串。
     if let Delimiter::CodeMarkdown { .. } = delimiter {
         let mut cursor = index + skip;
         while cursor < tokens.len() {
@@ -2958,9 +2941,8 @@ fn has_closing_delimiter(tokens: &[CharToken], index: usize, delimiter: Delimite
         }
 
         if matches_sequence(tokens, cursor, &close_str) {
-            // Emphasis spans must enclose at least one character; a close
-            // sitting immediately after the open (e.g. `**` or `*` `*`) is an
-            // empty span and is treated as literal text instead.
+            // 强调区间必须至少包住一个字符；紧跟在开符之后的闭合
+            //（如 `**` 或 `*` `*`）是空区间，按字面量文本处理。
             if requires_body && cursor == body_start {
                 cursor += 1;
                 continue;
@@ -2974,9 +2956,8 @@ fn has_closing_delimiter(tokens: &[CharToken], index: usize, delimiter: Delimite
     false
 }
 
-/// Whether `delimiter` requires a non-empty body. Emphasis and strikethrough
-/// markers must enclose at least one character; code spans may be empty and
-/// script markers already constrain their bodies elsewhere.
+/// `delimiter` 是否要求非空正文。强调与删除线标记必须至少包住一个字符；
+/// 代码段可以为空；上下标标记的正文约束已在别处处理。
 fn emphasis_requires_body(delimiter: Delimiter) -> bool {
     matches!(
         delimiter,
@@ -3218,14 +3199,13 @@ fn escape_code_span_text_with_offset_map(text: &str) -> InlineMarkdownOffsetMap 
     }
 }
 
-/// Viterbi-like DP that picks the optimal delimiter stack for each fragment.
+/// 类 Viterbi 的动态规划：为每个片段挑选最优定界符栈。
 ///
-/// Each fragment's style can be expressed with either Markdown or HTML
-/// delimiters.  We minimize the total number of delimiter characters written
-/// plus a penalty for HTML variants.  A large penalty is added when a
-/// transition would produce 4+ consecutive `*` characters (Markdown ambiguity).
+/// 每个片段的样式可以用 Markdown 或 HTML 定界符表达。目标是最小化
+/// 写出的定界符字符总数，并对 HTML 变体加惩罚；当某种转换会产生
+/// 4 个以上连续 `*` 字符（Markdown 歧义）时施加一个很大的惩罚。
 fn choose_fragment_stacks(fragments: &[InlineFragment]) -> Vec<Vec<Delimiter>> {
-    // Enumerate the 1-2 possible delimiter stacks for each fragment's style.
+    // 枚举每个片段样式的 1-2 种可能定界符栈。
     let variants = fragments
         .iter()
         .enumerate()
@@ -3237,7 +3217,7 @@ fn choose_fragment_stacks(fragments: &[InlineFragment]) -> Vec<Vec<Delimiter>> {
         })
         .collect::<Vec<_>>();
 
-    // DP table: costs[fragment_index][choice_index]
+    // DP 表：costs[片段下标][选择下标]
     let mut costs: Vec<Vec<usize>> = variants
         .iter()
         .map(|choices| vec![usize::MAX; choices.len()])
@@ -3247,12 +3227,12 @@ fn choose_fragment_stacks(fragments: &[InlineFragment]) -> Vec<Vec<Delimiter>> {
         .map(|choices| vec![None; choices.len()])
         .collect();
 
-    // Initial fragment: cost from empty stack to each variant.
+    // 首个片段：从空栈到各变体的成本。
     for (choice_index, stack) in variants[0].iter().enumerate() {
         costs[0][choice_index] = stack_transition_cost(&[], stack) + stack_variant_penalty(stack);
     }
 
-    // Forward pass: compute minimum cost for each fragment's choices.
+    // 前向递推：为每个片段的每个选择计算最小成本。
     for fragment_index in 1..variants.len() {
         for (choice_index, stack) in variants[fragment_index].iter().enumerate() {
             for (prev_index, prev_stack) in variants[fragment_index - 1].iter().enumerate() {
@@ -3272,7 +3252,7 @@ fn choose_fragment_stacks(fragments: &[InlineFragment]) -> Vec<Vec<Delimiter>> {
         }
     }
 
-    // Backtrack: choose the best final stack and trace back through the DP.
+    // 回溯：选出最优的最终栈并沿 DP 反推整条路径。
     let last_fragment_index = variants.len() - 1;
     let (mut best_choice, _) = variants[last_fragment_index]
         .iter()
@@ -3344,7 +3324,7 @@ fn stack_variants(
     if style.italic {
         markdown_stack.push(Delimiter::ItalicMarkdown { marker: '*' });
     }
-    // Code is always the innermost delimiter so it nests inside emphasis.
+    // 代码段永远是最内层定界符，从而嵌套在强调之内。
     if let Some(run_len) = code_run_len {
         markdown_stack.push(Delimiter::CodeMarkdown { run_len });
     }
@@ -3389,10 +3369,9 @@ pub(crate) fn can_use_markdown_script_delimiters(
     previous_fragment: Option<&InlineFragment>,
     fragment: &InlineFragment,
 ) -> bool {
-    // This guard is shared by serialization and inline projection. Markdown
-    // script markers need a plain ASCII owner immediately before the script
-    // fragment; otherwise we fall back to <sup>/<sub> so the next parse sees
-    // the same style boundary.
+    // 该守卫由序列化与行内投影共用：Markdown 上下标标记要求
+    // 紧贴上下标片段之前有一个纯 ASCII 宿主字符；否则回落到
+    // <sup>/<sub>，让下次解析看到同样的样式边界。
     let Some(previous) = previous_fragment else {
         return false;
     };
@@ -3451,9 +3430,9 @@ fn stack_transition_len(from: &[Delimiter], to: &[Delimiter]) -> usize {
     close_len + open_len
 }
 
-/// Cost of closing `from` delimiters and opening `to` delimiters in sequence.
-/// Adds a heavy penalty if the resulting string would contain 4+ consecutive
-/// `*` characters, which Markdown parsers may interpret ambiguously.
+/// 依次闭合 `from` 定界符再开启 `to` 定界符的成本。
+/// 若结果字符串会含 4 个以上连续 `*` 字符（Markdown 解析器可能歧义解释），
+/// 施加一个很重的惩罚。
 fn stack_transition_cost(from: &[Delimiter], to: &[Delimiter]) -> usize {
     let marker_len = stack_transition_len(from, to);
     let marker_string = stack_transition_string(from, to);
@@ -3645,8 +3624,8 @@ mod tests {
 
     #[test]
     fn empty_emphasis_spans_stay_literal() {
-        // `**`, `* *`, or `**word` must not be swallowed as an empty emphasis
-        // span; the markers stay literal until a non-empty body is closed.
+        // `**`、`* *`、`**word` 不得被吞为空的强调区间；
+        // 在非空正文闭合之前标记保持字面量。
         for input in ["*", "**", "***", "****", "~~~~", "__"] {
             let tree = InlineTextTree::from_markdown(input);
             assert_eq!(tree.visible_text(), input, "input {input:?} lost markers");
@@ -3687,8 +3666,8 @@ mod tests {
 
     #[test]
     fn unclosed_multichar_opener_stays_fully_literal() {
-        // While typing `**bold**`, the intermediate `**bold*` must stay literal;
-        // otherwise the second `*` opens an italic span and the bold is lost.
+        // 键入 `**bold**` 过程中，中间态 `**bold*` 必须保持字面量；
+        // 否则第二个 `*` 会开启斜体区间，粗体丢失。
         let partial = InlineTextTree::from_markdown("**bold*");
         assert_eq!(partial.visible_text(), "**bold*");
         assert!(
@@ -3700,7 +3679,7 @@ mod tests {
             "`**bold*` must be plain literal, not italic"
         );
 
-        // The completed marker still resolves to bold (not italic).
+        // 完整标记仍解析为粗体（而非斜体）。
         let complete = InlineTextTree::from_markdown("**bold**");
         assert_eq!(complete.visible_text(), "bold");
         assert!(
@@ -3712,7 +3691,7 @@ mod tests {
             "`**bold**` must be bold, not italic"
         );
 
-        // A genuine single-`*` italic opener is unaffected by the multi-char rule.
+        // 真正的单 `*` 斜体开符不受多字符规则影响。
         let italic = InlineTextTree::from_markdown("*word*");
         assert_eq!(italic.visible_text(), "word");
         assert!(
@@ -3724,7 +3703,7 @@ mod tests {
             "`*word*` must stay italic"
         );
 
-        // Other unclosed multi-char openers stay literal as a unit too.
+        // 其他未闭合的多字符开符也作为一个整体保持字面量。
         for input in ["__bold_", "~~strike~"] {
             let tree = InlineTextTree::from_markdown(input);
             assert_eq!(tree.visible_text(), input, "input {input:?} lost markers");
@@ -3742,8 +3721,8 @@ mod tests {
 
     #[test]
     fn empty_code_span_is_unaffected_by_emphasis_guard() {
-        // The empty-emphasis guard must not touch code spans. `*` inside a code
-        // span stays literal and the span round-trips.
+        // 空强调守卫不得波及代码段：代码段内的 `*` 保持字面量，
+        // 代码段本身可往返。
         let tree = InlineTextTree::from_markdown("`*`");
         assert_eq!(tree.visible_text(), "*");
         assert_eq!(tree.serialize_markdown(), "`*`");
@@ -4176,30 +4155,6 @@ mod tests {
         );
     }
 
-    // #[test]
-    // fn resolves_reference_link_examples_from_test_markdown() {
-    //     let markdown = include_str!("../../../test.md");
-    //     let definitions = super::super::link::parse_link_reference_definitions(markdown);
-    //     let tree = InlineTextTree::from_markdown_with_link_references(
-    //         "[reference link][ref-link] [collapsed reference][] [shortcut reference]",
-    //         &definitions,
-    //     );
-    //
-    //     assert_eq!(
-    //         tree.visible_text(),
-    //         "reference link collapsed reference shortcut reference"
-    //     );
-    //     assert_eq!(tree.render_cache().link_at(0), Some("https://example.com"));
-    //     assert_eq!(
-    //         tree.render_cache().link_at("reference link ".len()),
-    //         Some("https://example.org")
-    //     );
-    //     assert_eq!(
-    //         tree.render_cache()
-    //             .link_at("reference link collapsed reference ".len()),
-    //         Some("https://example.net")
-    //     );
-    // }
 
     #[test]
     fn unresolved_reference_style_links_remain_literal_text() {
@@ -4311,7 +4266,7 @@ mod tests {
         assert_eq!(reparsed.render_cache().spans(), tree.render_cache().spans());
     }
 
-    // --- inline code tests ---
+    // --- 行内代码测试 ---
 
     #[test]
     fn parses_backtick_as_code_style() {
@@ -4319,7 +4274,7 @@ mod tests {
         let cache = tree.render_cache();
 
         assert_eq!(cache.visible_text(), "a code b");
-        // "code" at offset 2 should have code style
+        // 偏移 2 处的 "code" 应带代码样式
         let style = cache.style_at(2);
         assert!(style.code, "expected code=true at offset 2");
         assert!(!style.bold);
@@ -4327,7 +4282,7 @@ mod tests {
 
     #[test]
     fn backtick_content_preserves_markers_as_literal() {
-        // Inside a code span, ** and * are literal, not parsed as bold/italic.
+        // 代码段内 ** 与 * 都是字面量，不解析为粗体/斜体。
         let tree = InlineTextTree::from_markdown("`**not bold**`");
         let cache = tree.render_cache();
 
@@ -4373,7 +4328,7 @@ mod tests {
 
     #[test]
     fn code_inside_bold_text() {
-        // `**bold `code` more**` — bold wraps around a code span.
+        // `**bold `code` more**`——粗体包住代码段。
         let tree = InlineTextTree::from_markdown("**bold `code` more**");
         let serialized = tree.serialize_markdown();
         let reparsed = InlineTextTree::from_markdown(&serialized);
@@ -4385,22 +4340,21 @@ mod tests {
 
     #[test]
     fn consecutive_backticks_treated_as_literal() {
-        // Per CommonMark: a backtick run that has no matching closing run
-        // is treated as literal text.
+        // 按 CommonMark：没有匹配闭合连排的反引号连排按字面量文本处理。
         let tree = InlineTextTree::from_markdown("``");
-        // Two backticks with no closing -> literal (run_len=2, no matching close).
+        // 两个反引号无闭合 → 字面量（run_len=2，无匹配闭合）。
         assert_eq!(tree.visible_text(), "``");
         assert!(!tree.render_cache().style_at(0).code);
     }
 
     #[test]
     fn variable_length_backtick_run() {
-        // `` `` `x` ``` `` (run_len=1 with 'x', matching close of run_len=1)
+        // `` `` `x` ``` ``（run_len=1 含 'x'，run_len=1 的匹配闭合）
         let tree = InlineTextTree::from_markdown("`x`");
         assert_eq!(tree.visible_text(), "x");
         assert!(tree.render_cache().style_at(0).code);
 
-        // ``` `` `` `` `` (run_len=2, content "a", run_len=2 close)
+        // ``` `` `` `` ``（run_len=2，内容 "a"，run_len=2 闭合）
         let tree2 = InlineTextTree::from_markdown("``a``");
         assert_eq!(tree2.visible_text(), "a");
         assert!(tree2.render_cache().style_at(0).code);
@@ -4408,12 +4362,12 @@ mod tests {
 
     #[test]
     fn code_span_content_normalization() {
-        // Leading/trailing single space is stripped.
+        // 首尾各一个空格会被剥掉。
         let tree = InlineTextTree::from_markdown("` hello `");
         assert_eq!(tree.visible_text(), "hello");
         assert!(tree.render_cache().style_at(0).code);
 
-        // All-space content is preserved (no stripping per spec).
+        // 全空格内容保留（按规范不剥离）。
         let tree2 = InlineTextTree::from_markdown("`   `");
         assert_eq!(tree2.visible_text(), "   ");
     }
@@ -4506,17 +4460,17 @@ mod tests {
 
     #[test]
     fn source_to_rendered_round_trip_preserves_code_span() {
-        // Simulate Source -> Rendered: raw markdown -> from_markdown parses it.
+        // 模拟 源码 → 渲染：原始 markdown 经 from_markdown 解析。
         let raw = "`123`";
         let tree = InlineTextTree::from_markdown(raw);
         assert_eq!(tree.visible_text(), "123");
         assert!(tree.render_cache().style_at(0).code);
 
-        // Serialize back: must produce valid markdown.
+        // 序列化回去：必须产生合法 markdown。
         let serialized = tree.serialize_markdown();
         assert_eq!(serialized, "`123`");
 
-        // Re-parse: must produce same result.
+        // 再解析：必须得到同样结果。
         let reparsed = InlineTextTree::from_markdown(&serialized);
         assert_eq!(reparsed.visible_text(), "123");
         assert!(reparsed.render_cache().style_at(0).code);
@@ -4524,13 +4478,13 @@ mod tests {
 
     #[test]
     fn raw_text_with_backticks_not_double_escaped() {
-        // Simulate the Source block's display_text() path.
+        // 模拟源码块的 display_text() 路径。
         let raw = "`123`";
-        // display_text() returns raw text as-is; from_markdown re-parses.
+        // display_text() 原样返回原文本；from_markdown 重新解析。
         let parsed = InlineTextTree::from_markdown(raw);
         assert_eq!(parsed.visible_text(), "123");
 
-        // A second round-trip should NOT escape or double the backticks.
+        // 第二次往返不得转义或翻倍反引号。
         let serialized = parsed.serialize_markdown();
         assert_eq!(serialized, "`123`");
         let reparsed = InlineTextTree::from_markdown(&serialized);
@@ -4541,7 +4495,7 @@ mod tests {
     fn escaped_backtick_in_code() {
         let tree = InlineTextTree::from_markdown("\\`not code\\`");
         assert_eq!(tree.visible_text(), "`not code`");
-        // Escaped backticks are literal, not code delimiters.
+        // 转义的反引号是字面量，不是代码定界符。
         let cache = tree.render_cache();
         assert!(!cache.style_at(0).code);
         assert_eq!(tree.serialize_markdown(), "\\`not code\\`");

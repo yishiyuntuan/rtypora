@@ -8,6 +8,8 @@ pub mod link;
 pub mod html;
 pub mod footnote;
 pub mod image;
+// 链接/图片引用定义扫描的共享骨架（围栏跟踪、HTML 块抑制、容器前缀剥离等）
+pub(crate) mod refscan;
 
 use std::cell::RefCell;
 

@@ -1,4 +1,6 @@
 <script setup vapor>
+// 一体化菜单（Typora 风格）：左侧深色菜单列 + 右侧内容面板
+//（打开[含最近文件]/导出/主题/偏好设置/关于），动作项选中即直接执行并关闭。
 import { ref, watch } from 'vue';
 import { onMounted, onBeforeUnmount } from 'vue';
 import PrefsDialog from './PrefsDialog.vue';

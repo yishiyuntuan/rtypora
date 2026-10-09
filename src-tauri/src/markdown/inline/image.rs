@@ -1,35 +1,29 @@
-//! Standalone image syntax, references, and source resolution.
+//! 独立图片语法、引用与源解析。
+//! 移植自 velotype `components/markdown/image.rs`（GPUI 图片加载侧已剥离，
+//! 保留语法解析与本地路径/远程 URL 分类）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-/// Active fenced code block while scanning for image reference definitions.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FenceInfo {
-    ch: char,
-    len: usize,
-}
+// 引用定义扫描骨架（围栏跟踪/HTML 块抑制/容器前缀剥离/转义感知查找）集中在 refscan，
+// 与 link.rs 共用单一来源
+use super::refscan::{
+    HtmlBlockStart, find_open_title_quote, find_unescaped_char, is_escaped,
+    is_reference_definition_title_continuation, is_reference_scan_closing_fence,
+    parse_reference_scan_html_block_start, parse_reference_scan_html_close_tag_name,
+    parse_reference_scan_opening_fence, strip_reference_scan_container_prefixes,
+    unescape_ascii_punctuation,
+};
 
-/// HTML block start that suppresses reference-definition scanning.
-enum HtmlBlockStart {
-    /// HTML comment beginning with `<!--`.
-    Comment,
-    /// HTML tag block whose closing behavior depends on the tag.
-    Tag {
-        name: String,
-        self_closing: bool,
-        closes_same_line: bool,
-    },
-}
 
-/// Parsed standalone image expression.
+/// 解析出的独立图片表达式（`![alt](target)` / `![alt][label]`）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ImageSyntax {
     pub alt: String,
     pub target: ImageTarget,
 }
 
-/// Inline image/text segment used only by native table-cell rendering.
+/// 行内图片/文本片段（仅原生表格单元格渲染使用）。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum TableCellInlineImageSegment {
     Text(String),
@@ -39,16 +33,16 @@ pub(crate) enum TableCellInlineImageSegment {
     },
 }
 
-/// Image target form before reference resolution.
+/// 引用解析前的图片目标形式。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ImageTarget {
-    /// Direct image target from `![alt](src "title")`.
+    /// 直接图片目标：`![alt](src "title")`。
     Direct { src: String, title: Option<String> },
-    /// Reference image target from `![alt][label]`.
+    /// 引用图片目标：`![alt][label]`。
     Reference { label: String },
 }
 
-/// Global reference definition for a reference-style image label.
+/// 引用式图片标签的全局引用定义。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ImageReferenceDefinition {
     pub(crate) src: String,
@@ -57,17 +51,17 @@ pub(crate) struct ImageReferenceDefinition {
 
 pub(crate) type ImageReferenceDefinitions = HashMap<String, ImageReferenceDefinition>;
 
-/// Resolved image target ready for path or URL loading.
+/// 已解析的图片目标，可用于路径或 URL 加载。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ResolvedImageTarget {
     pub(crate) src: String,
     pub(crate) title: Option<String>,
 }
 
-/// Concrete image source after local-path or remote-URL classification.
+/// 本地路径 / 远程 URL 分类后的具体图片源。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ImageResolvedSource {
-    /// Filesystem path resolved relative to the current document, when possible.
+    /// 文件系统路径（尽可能相对于当前文档解析）。
     Local(PathBuf),
     /// HTTP(S) image URL，由上层（前端）负责加载。
     Remote(String),
@@ -396,10 +390,9 @@ pub(crate) fn parse_image_reference_definitions(markdown: &str) -> ImageReferenc
 }
 
 pub(crate) fn normalize_reference_label(label: &str) -> Option<String> {
-    // Single-pass concat: walk the words once, push to the output with a
-    // leading separator on all but the first. Avoids the intermediate
-    // Vec<&str> allocation that split_whitespace().collect::<Vec<_>>()
-    // produces before .join("") copies again.
+    // 单趟拼接：只遍历单词一次，除首个外带前导分隔符推入输出，
+    // 避免 split_whitespace().collect::<Vec<_>>() 的中间 Vec<&str> 分配
+    //（随后 .join("") 还会再拷贝一次）。
     let mut normalized = String::with_capacity(label.len());
     for word in label.split_whitespace() {
         if !normalized.is_empty() {
@@ -453,150 +446,6 @@ fn parse_image_reference_definition(
     Some((label, ImageReferenceDefinition { src, title }, consumed))
 }
 
-fn strip_reference_scan_container_prefixes(mut line: &str) -> &str {
-    loop {
-        let original = line;
-        if let Some(rest) = strip_reference_scan_quote_prefix(line) {
-            line = rest;
-            continue;
-        }
-        if let Some(rest) = strip_reference_scan_list_marker(line) {
-            line = rest;
-            continue;
-        }
-        if line == original {
-            return line;
-        }
-    }
-}
-
-fn strip_reference_scan_quote_prefix(line: &str) -> Option<&str> {
-    let leading_spaces = line.bytes().take_while(|b| *b == b' ').count();
-    if leading_spaces > 3 {
-        return None;
-    }
-
-    let rest = &line[leading_spaces..];
-    if !rest.starts_with('>') {
-        return None;
-    }
-
-    Some(rest[1..].strip_prefix(' ').unwrap_or(&rest[1..]))
-}
-
-fn strip_reference_scan_list_marker(line: &str) -> Option<&str> {
-    let indent_bytes = line
-        .chars()
-        .take_while(|ch| matches!(ch, ' ' | '\t'))
-        .map(char::len_utf8)
-        .sum::<usize>();
-    let rest = &line[indent_bytes..];
-
-    if let Some(marker @ ('-' | '*' | '+')) = rest.chars().next() {
-        let after_marker = &rest[marker.len_utf8()..];
-        return after_marker
-            .strip_prefix(' ')
-            .or_else(|| after_marker.strip_prefix('\t'));
-    }
-
-    let digit_len = rest.bytes().take_while(|b| b.is_ascii_digit()).count();
-    if !(1..=9).contains(&digit_len) {
-        return None;
-    }
-
-    let marker = *rest.as_bytes().get(digit_len)?;
-    if !matches!(marker, b'.' | b')') {
-        return None;
-    }
-
-    let separator = *rest.as_bytes().get(digit_len + 1)?;
-    if !matches!(separator, b' ' | b'\t') {
-        return None;
-    }
-
-    Some(&rest[digit_len + 2..])
-}
-
-fn parse_reference_scan_opening_fence(line: &str) -> Option<FenceInfo> {
-    let trimmed = line.trim_end();
-    let ch = trimmed.chars().next()?;
-    if !matches!(ch, '`' | '~') {
-        return None;
-    }
-    let len = trimmed.chars().take_while(|current| *current == ch).count();
-    let rest = &trimmed[ch.len_utf8() * len..];
-    if ch == '`' && rest.contains('`') {
-        return None;
-    }
-    (len >= 3).then_some(FenceInfo { ch, len })
-}
-
-fn is_reference_scan_closing_fence(line: &str, opener: FenceInfo) -> bool {
-    let trimmed = line.trim_end();
-    if !trimmed.starts_with(opener.ch) {
-        return false;
-    }
-
-    let run_len = trimmed
-        .chars()
-        .take_while(|current| *current == opener.ch)
-        .count();
-    run_len >= opener.len && trimmed[opener.ch.len_utf8() * run_len..].trim().is_empty()
-}
-
-fn parse_reference_scan_html_block_start(line: &str) -> Option<HtmlBlockStart> {
-    let rest = line.trim_start().trim_end();
-    if rest.starts_with("<!--") {
-        return Some(HtmlBlockStart::Comment);
-    }
-
-    let tagged = rest.strip_prefix('<')?;
-    if tagged.starts_with('/') {
-        return None;
-    }
-
-    let name_len = tagged
-        .chars()
-        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
-        .count();
-    if name_len == 0 {
-        return None;
-    }
-
-    let name = &tagged[..name_len];
-    let suffix = &tagged[name_len..];
-    let next = suffix.chars().next()?;
-    if !matches!(next, '>' | ' ' | '\t' | '/') {
-        return None;
-    }
-
-    Some(HtmlBlockStart::Tag {
-        name: name.to_string(),
-        self_closing: rest.ends_with("/>"),
-        closes_same_line: rest.contains(&format!("</{name}>")),
-    })
-}
-
-fn parse_reference_scan_html_close_tag_name(line: &str) -> Option<String> {
-    let rest = line.trim_start().trim_end();
-    let tagged = rest.strip_prefix("</")?;
-    let name_len = tagged
-        .chars()
-        .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-')
-        .count();
-    if name_len == 0 {
-        return None;
-    }
-
-    let name = &tagged[..name_len];
-    let suffix = &tagged[name_len..];
-    let next = suffix.chars().next()?;
-    if !matches!(next, '>' | ' ' | '\t') {
-        return None;
-    }
-
-    Some(name.to_string())
-}
 
 fn parse_image_target(inner: &str) -> Option<(String, Option<String>)> {
     if inner.is_empty() {
@@ -620,31 +469,6 @@ fn parse_image_target(inner: &str) -> Option<(String, Option<String>)> {
     Some((normalize_image_source(inner), None))
 }
 
-fn is_reference_definition_title_continuation(line: &str) -> bool {
-    let indent_bytes = line
-        .chars()
-        .take_while(|ch| matches!(ch, ' ' | '\t'))
-        .map(char::len_utf8)
-        .sum::<usize>();
-    if indent_bytes == 0 {
-        return false;
-    }
-
-    let trimmed = line[indent_bytes..].trim();
-    (trimmed.starts_with('"') && trimmed.ends_with('"'))
-        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
-        || (trimmed.starts_with('(') && trimmed.ends_with(')'))
-}
-
-fn find_open_title_quote(input: &str, close_quote: usize) -> Option<usize> {
-    let bytes = input.as_bytes();
-    (0..close_quote).rev().find(|&index| {
-        bytes[index] == b'"'
-            && !is_escaped(input, index)
-            && index > 0
-            && bytes[index - 1].is_ascii_whitespace()
-    })
-}
 
 fn normalize_image_source(source: &str) -> String {
     let source = unescape_ascii_punctuation(source);
@@ -662,42 +486,6 @@ fn normalize_image_source(source: &str) -> String {
     source
 }
 
-fn unescape_ascii_punctuation(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut chars = input.chars().peekable();
-    while let Some(ch) = chars.next() {
-        if ch == '\\' && chars.peek().is_some_and(|next| next.is_ascii_punctuation()) {
-            output.push(chars.next().expect("peeked punctuation must exist"));
-        } else {
-            output.push(ch);
-        }
-    }
-    output
-}
-
-fn find_unescaped_char(input: &str, start: usize, target: u8) -> Option<usize> {
-    let bytes = input.as_bytes();
-    (start..bytes.len()).find(|&index| bytes[index] == target && !is_escaped(input, index))
-}
-
-fn is_escaped(input: &str, index: usize) -> bool {
-    if index == 0 {
-        return false;
-    }
-
-    let bytes = input.as_bytes();
-    let mut backslashes = 0usize;
-    let mut cursor = index;
-    while cursor > 0 {
-        cursor -= 1;
-        if bytes[cursor] == b'\\' {
-            backslashes += 1;
-        } else {
-            break;
-        }
-    }
-    backslashes % 2 == 1
-}
 
 #[cfg(test)]
 mod tests {

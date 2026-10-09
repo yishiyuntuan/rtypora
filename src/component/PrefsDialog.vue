@@ -1,4 +1,8 @@
 <script setup vapor>
+// 偏好设置整页层（覆盖整个窗口，同窗非对话框）：编辑器排版（字号/行高/列宽/
+// 内边距/首行缩进/拼写检查/打字机模式）、图像粘贴行为、Markdown 渲染开关、
+// 外观（主题/跟随系统/红绿灯自动隐藏）。写入走 prefs.js（localStorage 持久化 +
+// prefsVersion/renderVersion/structureVersion 三级版本号驱动精确重渲染）。
 import { reactive, ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { getPrefs, setPref } from '../utils/prefs.js';

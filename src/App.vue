@@ -1,4 +1,8 @@
 <script setup vapor>
+// 根组件：组合侧边栏/标题栏/编辑器/状态栏四大区域与菜单、偏好、关于等对话框；
+// 持有当前文件路径、工作目录、文档块树（Editor 上报）等全局状态；
+// 负责文件操作（新建/打开/保存/另存）、导出 HTML、自动保存、未保存更改守卫
+// 与全局快捷键（Ctrl/Cmd+N/O/S/W、Ctrl+/ 切换源码模式）。
 import { computed, onMounted, onUnmounted, provide, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { openPath } from "@tauri-apps/plugin-opener";

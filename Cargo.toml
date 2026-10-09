@@ -1,0 +1,20 @@
+# 工作区根（成员仅 src-tauri 一个 crate；为后续多 crate 演进预留）。
+# 注意：cargo 只在工作区根读取 [profile.*]，成员清单中的 profile 段会被忽略——
+# 因此 release/dev 优化配置在此重复一份（src-tauri/Cargo.toml 中的同名段在
+# 「无根工作区、直接进入 src-tauri 构建」的旧布局下生效；两份内容须保持一致，
+# 体积优化约定见 AGENTS.md，勿删）。resolver = "3" 与 edition 2024 匹配。
+[workspace]
+members = ["src-tauri"]
+resolver = "3"
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+[profile.dev]
+# 裁剪符号，大幅减少导出数量
+strip = true
+opt-level = 1

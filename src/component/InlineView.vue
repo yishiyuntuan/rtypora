@@ -1,4 +1,6 @@
 <script setup vapor>
+// 行内渲染器：按 fragment 样式标志递归包裹渲染（粗体/斜体/删除线/下划线/
+// 行内代码/上下标/链接/脚注引用/行内公式占位），叶子为 MathView 或纯文本。
 import { computed, inject } from 'vue';
 import MathView from './MathView.vue';
 import { htmlStyleCss } from '../utils/wysiwyg.js';
