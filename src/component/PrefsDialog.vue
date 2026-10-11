@@ -59,6 +59,7 @@ const imageBehaviors = [
   { value: 'off', label: '关闭（忽略粘贴的图片）' },
   { value: 'document', label: '复制到文档所在文件夹' },
   { value: 'assets', label: '复制到 assets 子文件夹' },
+  { value: 'assets-per-document', label: '复制到 assets 子文件夹，按文档名分开（assets/<文档名>）' },
 ];
 
 function update(key, value) {
@@ -269,6 +270,38 @@ async function onImportTheme() {
                 />
                 <span>打字机模式（输入时光标保持视口垂直居中）</span>
               </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.change_review"
+                  @change="update('change_review', $event.target.checked)"
+                />
+                <span>改动审阅（以上次保存为基线，块侧条纹 + 右缘概览标尺标记增删改）</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.wrap_selection"
+                  @change="update('wrap_selection', $event.target.checked)"
+                />
+                <span>选区符号包裹（选中文字后输入括号/引号/*_~$ 等直接包裹）</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.reading_position_restore"
+                  @change="update('reading_position_restore', $event.target.checked)"
+                />
+                <span>阅读位置记忆（重新打开文件时恢复上次滚动位置）</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.source_line_numbers"
+                  @change="update('source_line_numbers', $event.target.checked)"
+                />
+                <span>源码模式行号栏（Ctrl+G 跳行不受影响）</span>
+              </label>
               <p class="t-dim text-[12px]">仅对普通段落生效；引用、列表、表格等容器内的段落不缩进。</p>
 
               <div>
@@ -394,6 +427,22 @@ async function onImportTheme() {
                   @change="update('render_html_block', $event.target.checked)"
                 />
                 <span>&lt;section&gt; 图文排版渲染</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.render_color_swatch"
+                  @change="update('render_color_swatch', $event.target.checked)"
+                />
+                <span>行内 hex 色值预览（#rrggbb 后显示色块）</span>
+              </label>
+              <label class="flex cursor-pointer items-center gap-2">
+                <input
+                  type="checkbox"
+                  :checked="form.render_comments"
+                  @change="update('render_comments', $event.target.checked)"
+                />
+                <span>显示 HTML 注释块（关闭时折叠为占位条）</span>
               </label>
               <label class="flex cursor-pointer items-center gap-2">
                 <input

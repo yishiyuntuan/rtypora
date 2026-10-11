@@ -7,10 +7,11 @@ fn main() {
     // 这里把同一份资源补链到测试目标。
     #[cfg(windows)]
     {
-        let out_dir = std::env::var("OUT_DIR").unwrap();
-        let resource = std::path::Path::new(&out_dir).join("libresource.a");
-        if resource.exists() {
-            println!("cargo:rustc-link-arg-tests={}", resource.display());
+        if let Ok(out_dir) = std::env::var("OUT_DIR") {
+            let resource = std::path::Path::new(&out_dir).join("libresource.a");
+            if resource.exists() {
+                println!("cargo:rustc-link-arg-tests={}", resource.display());
+            }
         }
     }
 }

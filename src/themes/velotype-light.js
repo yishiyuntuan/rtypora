@@ -90,6 +90,10 @@ export default {
       find_highlight_bg: '#ffef3b80',
       find_highlight_current_bg: '#ffff00',
       find_highlight_current_text: '#1c1f24',
+      // 改动审阅条纹/概览尺/删除徽标（与暗色同色系，亮底上同样可辨识）
+      change_added: '#03b736',
+      change_modified: '#3e69d7',
+      change_deleted: '#e30f2e',
     },
     typography: { ...dark.theme.typography },
     dimensions: { ...dark.theme.dimensions },

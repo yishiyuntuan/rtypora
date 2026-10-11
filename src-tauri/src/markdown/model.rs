@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::block::document::BlockNode;
-use super::block::state::{BlockKind, BlockRecord, CalloutVariant};
+use super::block::state::{BlockKind, BlockRecord, CalloutVariant, ConflictData};
 use super::inline::html;
 use super::inline::image::parse_standalone_image;
 use super::inline::tree::InlineTextTree;
@@ -37,6 +37,8 @@ pub enum BlockKindDto {
     SectionBlock,
     MathBlock,
     MermaidBlock,
+    /// Git 合并冲突块（两侧原文与标签在 BlockDto.conflict 顶层字段）
+    ConflictBlock,
     RawMarkdown,
 }
 
@@ -93,6 +95,7 @@ impl From<BlockKind> for BlockKindDto {
             BlockKind::HtmlBlock => Self::HtmlBlock,
             BlockKind::MathBlock => Self::MathBlock,
             BlockKind::MermaidBlock => Self::MermaidBlock,
+            BlockKind::ConflictBlock => Self::ConflictBlock,
             BlockKind::RawMarkdown => Self::RawMarkdown,
         }
     }
@@ -117,6 +120,7 @@ impl From<BlockKindDto> for BlockKind {
             BlockKindDto::SectionBlock => Self::RawMarkdown,
             BlockKindDto::MathBlock => Self::MathBlock,
             BlockKindDto::MermaidBlock => Self::MermaidBlock,
+            BlockKindDto::ConflictBlock => Self::ConflictBlock,
             BlockKindDto::RawMarkdown => Self::RawMarkdown,
         }
     }
@@ -147,6 +151,9 @@ pub struct BlockDto {
     pub start: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end: Option<usize>,
+    /// Git 合并冲突块载荷（仅 conflictBlock 有值）：两侧原始行文本与可选标签。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<ConflictData>,
     /// 行内内容（代码块为代码文本，脚注定义为脚注 id）。
     pub title: InlineTextTree,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,6 +225,7 @@ impl BlockDto {
             kind,
             start: range.map(|range| range.0),
             end: range.map(|range| range.1),
+            conflict: node.record.conflict.clone(),
             title: node.record.title.clone(),
             table: node.record.table.clone(),
             image,
@@ -245,6 +253,7 @@ impl BlockDto {
                 html: None,
                 raw_fallback: self.raw_fallback,
                 list_start: self.list_start,
+                conflict: self.conflict,
             },
             children: self
                 .children

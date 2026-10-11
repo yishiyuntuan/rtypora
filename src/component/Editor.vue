@@ -1,7 +1,6 @@
 <script setup vapor>
 import { ref, computed, watch, nextTick, inject, provide, onMounted, onBeforeUnmount, markRaw } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import BlockView from './BlockView.vue';
 import VRow from './VRow.vue';
 import SlashMenu from './SlashMenu.vue';
@@ -17,14 +16,6 @@ import {
   applyHtmlAutoclose,
   expandHtmlTagAtCaret,
   skipHtmlClosingTag,
-  SLASH_ITEMS,
-  SLASH_TEXT_GROUPS,
-  CALLOUT_TYPES,
-  FONT_COLORS,
-  FONT_SIZES,
-  LANG_BADGES,
-  htmlStyleCss,
-  applySlashCommand,
   placeCursorAtEnd,
   placeCursorAtStart,
   placeCursorInEmptyWrapper,
@@ -57,8 +48,22 @@ import { highlightCodeHtml } from '../utils/highlight.js';
 import { renderMermaid } from '../utils/mermaid.js';
 import { renderPlantumlLocal } from '../utils/plantuml.js';
 import { formatShortcut } from '../utils/platform.js';
-import { getPref, prefsVersion, structureVersion } from '../utils/prefs.js';
-import { themeVersion } from '../themes/index.js';
+import { getPref, setPref, prefsVersion, structureVersion } from '../utils/prefs.js';
+import { shouldWrapSelection, wrapSelectionWithSymbol } from '../utils/selectionWrap.js';
+import { useUndoHistory } from '../composables/useUndoHistory.js';
+import { useFindReplace } from '../composables/useFindReplace.js';
+import { useVirtualScroll, INITIAL_ROW_QUOTA } from '../composables/useVirtualScroll.js';
+import { useCompletion } from '../composables/useCompletion.js';
+import { useTableEditing } from '../composables/useTableEditing.js';
+import { useSlashMenu } from '../composables/useSlashMenu.js';
+import { useContextMenu } from '../composables/useContextMenu.js';
+import { useOutlineScroll } from '../composables/useOutlineScroll.js';
+import { useChangeReview } from '../composables/useChangeReview.js';
+import { useInlineSourceReveal } from '../composables/useInlineSourceReveal.js';
+import { useReadingPosition } from '../composables/useReadingPosition.js';
+import { useSourceLineNumbers } from '../composables/useSourceLineNumbers.js';
+
+
 
 // 双模式编辑器：sourceMode 为 Markdown 原文编辑，否则为所见即所得（Typora 式就地编辑）。
 // 全文 Markdown 字符串是唯一数据源；块树由 Rust 命令 parse_markdown 解析得到。
@@ -66,20 +71,20 @@ import { themeVersion } from '../themes/index.js';
 // 全部由 Rust 命令完成（parse_markdown / parse_blocks / serialize_markdown /
 // toggle_task_markdown / text_stats / detect_block_shortcut）。
 //
-// 本文件较长，按下方章节导航（各节以 `// ---------- 标题 ----------` 分隔）：
-//   撤销/重做历史        快照栈（watch(content) 自动记录，1s 合并窗口，上限 200）
-//   查找/替换            Ctrl+F/Ctrl+H；高亮走 CSS Custom Highlight API
-//   虚拟滚动与渐进挂载    VRow 占位 + IntersectionObserver 按需挂载，大文件秒开
-//   表格编辑              就地编辑 + 悬停工具栏/四边 + 按钮/尺寸网格面板
-//   斜杠命令菜单          / 召唤语法菜单（任意位置触发），含字体色板与 RGB 输入
-//   右键菜单              选区暂存/恢复（WKWebView 右键会塌陷选区），格式化动作
-//   围栏语言/图片路径补全  共用 SlashMenu 面板的两套自动补全
-//   编辑提交链路          commitEdit/拆分/合并/增量重解析（parse_blocks 原位替换）
-//   编辑态事件            input/keydown/paste/dblclick/blur 等 contenteditable 交互
-//   大纲联动与滚动        scrollToBlock/滚动位置恢复/标题位置测量
-//   文档加载与导出        loadDocument（渐进首屏）/getContent/打印
-//   选区与剪贴板          跨块框选删除、复制为 Markdown（domRangeToMarkdown）
-//   行内源码显现          光标进入样式元素时显现 .md-src 标记层（Esc 经 FEFF 哨兵退出）
+// 本文件为编辑器核心：文档数据（content/blocks）、编辑提交链路（commitEdit/拆分/合并/增量重解析）、
+// 编辑态事件（input/keydown/paste/blur）、列表组编辑、滚动锚点（源码/WYSIWYG 切换）、
+// 文档加载/打印、选区与剪贴板、生命周期。
+// 外围功能区已拆分为 src/composables/ 下的组合式函数，经共享上下文 ctx 装配（见下文「组合式函数装配」）：
+//   composables/useUndoHistory.js        撤销/重做历史（快照栈，watch(content) 自动记录，1s 合并窗口，上限 200）
+//   composables/useFindReplace.js        查找/替换（Ctrl+F/Ctrl+H；高亮走 CSS Custom Highlight API）
+//   composables/useVirtualScroll.js      虚拟滚动与渐进挂载（VRow 占位 + IntersectionObserver，大文件秒开）
+//   composables/useCompletion.js         围栏语言/图片路径补全（共用 SlashMenu 面板的两套自动补全）
+//   composables/useTableEditing.js       表格编辑（就地编辑 + 悬停工具栏/四边 + 按钮/尺寸网格面板）
+//   composables/useSlashMenu.js          斜杠命令菜单（任意位置触发），含字体色板与 RGB 输入
+//   composables/useContextMenu.js        右键菜单（选区暂存/恢复，WKWebView 右键会塌陷选区），格式化动作
+//   composables/useOutlineScroll.js      大纲联动与滚动定位（scrollToBlock/标题位置测量/滚动条悬停揭示）
+//   composables/useInlineSourceReveal.js 行内源码显现（.md-src 标记层；链接/字体模板展开折叠）
+// 本文件保留章节以 `// ---------- 标题 ----------` 分隔。
 const props = defineProps({
   sourceMode: { type: Boolean, default: false },
 });
@@ -91,257 +96,11 @@ const content = ref('');
 const savedContent = ref('');
 const isDirty = computed(() => content.value !== savedContent.value);
 
-// ---------- 撤销/重做历史（正文快照；1s 内的连续变化合并为一站） ----------// 快照在 watch(content) 里自动记录（覆盖全部编辑路径：提交/拆分/粘贴/删除/勾选等），
-// 历史回放与文档加载期间不写历史。Ctrl+Z 撤销，Ctrl+Shift+Z / Ctrl+Y 重做
-const undoStack = [];
-const redoStack = [];
-const HISTORY_LIMIT = 200;
-let applyingHistory = false; // 历史回放期间不写历史
-let loadingDoc = false;      // loadDocument 期间不写历史
-let lastPushAt = 0;
 
-// 当前光标的文档近似偏移（块源起点 + 块内纯文本前缀；格式化文本为近似值，仅用于回放落点）
-function captureCaretOffset() {
-  const el = currentEditable();
-  if (!el || editingId.value === null) return null;
-  const block = blocks.value.find((b) => b.id === editingId.value);
-  if (!block || block.start == null) return null;
-  const probed = textBeforeCaretIn(el);
-  return block.start + (probed ? probed.text.length : 0);
-}
-
-watch(content, (next, prev) => {
-  if (applyingHistory || loadingDoc || prev === next) return;
-  const now = Date.now();
-  // 1s 内的连续变化合并为一站（上一站快照已覆盖爆发前状态）
-  if (now - lastPushAt < 1000) {
-    lastPushAt = now;
-    return;
-  }
-  undoStack.push({ content: prev, caret: captureCaretOffset() });
-  if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
-  redoStack.length = 0;
-  lastPushAt = now;
-});
-
-// 历史回放：替换正文并全文重解析，光标落到快照记录的块（近似偏移）
-async function applyHistorySnapshot(snap) {
-  applyingHistory = true;
-  editableEl = null;
-  editingId.value = null;
-  content.value = snap.content;
-  try {
-    await reparse();
-  } finally {
-    applyingHistory = false;
-  }
-  if (snap.caret != null) {
-    const block =
-      blocks.value.find((b) => b.start != null && b.end != null && snap.caret >= b.start && snap.caret <= b.end) ??
-      blocks.value[blocks.value.length - 1];
-    if (block) {
-      suppressBlurCommit = true;
-      pendingCaretOffset = Math.max(0, snap.caret - block.start);
-      editingId.value = block.id;
-    }
-  }
-}
-
-// 撤销：编辑中先提交当前编辑（进入历史）再回退；覆盖 contenteditable 原生撤销
-async function undoHistory() {
-  if (editingId.value !== null && currentEditable()) await commitEdit();
-  const snap = undoStack.pop();
-  if (!snap) return;
-  redoStack.push({ content: content.value, caret: captureCaretOffset() });
-  await applyHistorySnapshot(snap);
-}
-
-// 重做：与撤销对称
-async function redoHistory() {
-  if (editingId.value !== null && currentEditable()) await commitEdit();
-  const snap = redoStack.pop();
-  if (!snap) return;
-  undoStack.push({ content: content.value, caret: captureCaretOffset() });
-  await applyHistorySnapshot(snap);
-}
-
-// 打开查找/替换浮动条（菜单入口；withReplace 决定是否展开替换行）
-function openFind(withReplace = false) {
-  findWithReplace.value = withReplace;
-  findVisible.value = true;
-}
-
-// 关闭查找条：清掉高亮组
-function closeFind() {
-  findVisible.value = false;
-  clearTimeout(findHlTimer);
-  clearTimeout(findSearchTimer);
-  CSS.highlights.delete('find-all');
-  CSS.highlights.delete('find-current');
-}
-
-// ---------- 文档内查找/替换（Ctrl+F 查找 / Ctrl+H 替换；FindBar 浮动条） ----------
-// 匹配在正文源码上做（大小写不敏感），滚动+闪烁定位到所在块；替换走 content → reparse，
-// 历史 watch 自动记录（撤销/重做可回退替换）；
-// 已挂载内容经 CSS Custom Highlight API 高亮全部匹配 + 当前匹配（不改 DOM）
-const findVisible = ref(false);
-const findWithReplace = ref(false);
-const findMatch = ref({ index: 0, total: 0 });
-let findMatches = []; // 匹配起点偏移（升序）
-let findIndex = 0;
-let lastKeyword = '';
-// 当前匹配定位：findIndex 是源码 Markdown 中的匹配序号，与渲染 DOM 中的 Range 序号
-// 并不一致（源码含语法字符、行未挂载、标记节点被过滤），直接用同一序号索引会指错匹配。
-// 改用「目标块 id + 块内第几处匹配」定位当前高亮（块内源码匹配与 DOM 匹配一一对应，
-// 命中语法字符的极少数情况按块内末处钳制）。
-let findCurrentBlockId = null;
-let findCurrentOrdinalInBlock = 0;
-
-// 查找高亮：已挂载行的文本节点逐段建 Range，注册 find-all/find-current 两个高亮组
-function applyFindHighlights() {
-  CSS.highlights.delete('find-all');
-  CSS.highlights.delete('find-current');
-  if (!lastKeyword || !findVisible.value) return;
-  const root = scrollRoot.value;
-  if (!root) return;
-  const kw = lastKeyword.toLowerCase();
-  const all = [];
-  // 目标块内的匹配单独收集，按块内序号取当前高亮
-  const inCurrentBlock = [];
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (n) =>
-    n.parentElement?.closest('input, [contenteditable="true"], .md-code-lang-badge, .md-callout-label, .md-link-mark, .md-font-mark')
-      ? NodeFilter.FILTER_REJECT
-      : NodeFilter.FILTER_ACCEPT);
-  let node;
-  while ((node = walker.nextNode())) {
-    const inTarget = node.parentElement?.closest('[data-block-id]')?.getAttribute('data-block-id') === findCurrentBlockId;
-    const text = node.textContent.toLowerCase();
-    let i = text.indexOf(kw);
-    while (i >= 0) {
-      const r = new Range();
-      r.setStart(node, i);
-      r.setEnd(node, i + kw.length);
-      all.push(r);
-      if (inTarget) inCurrentBlock.push(r);
-      i = text.indexOf(kw, i + kw.length);
-    }
-  }
-  if (all.length) CSS.highlights.set('find-all', new Highlight(...all));
-  const cur = inCurrentBlock.length
-    ? inCurrentBlock[Math.min(findCurrentOrdinalInBlock, inCurrentBlock.length - 1)]
-    : null;
-  if (cur) CSS.highlights.set('find-current', new Highlight(cur));
-}
-
-let findHlTimer = null;
-function scheduleFindHighlights() {
-  clearTimeout(findHlTimer);
-  findHlTimer = setTimeout(applyFindHighlights, 120);
-}
-
-// 查找输入防抖：每键都全量复制文档 + 扫描，大文档下输入卡顿——150ms 合帧
-//（替换后重扫（replace 链路）仍直接调 searchInDocument 保持即时）
-let findSearchTimer = null;
-function onFindSearchInput(keyword) {
-  clearTimeout(findSearchTimer);
-  findSearchTimer = setTimeout(() => searchInDocument(keyword), 150);
-}
-
-function searchInDocument(keyword) {
-  lastKeyword = keyword;
-  findMatches = [];
-  findIndex = 0;
-  findMatch.value = { index: 0, total: 0 };
-  findCurrentBlockId = null;
-  findCurrentOrdinalInBlock = 0;
-  if (!keyword) return;
-  const lower = content.value.toLowerCase();
-  const kw = keyword.toLowerCase();
-  let i = 0;
-  while (i <= lower.length - kw.length) {
-    const hit = lower.indexOf(kw, i);
-    if (hit < 0) break;
-    findMatches.push(hit);
-    i = hit + kw.length;
-  }
-  if (findMatches.length) {
-    findMatch.value = { index: 1, total: findMatches.length };
-    scrollToMatch(0);
-  } else {
-    applyFindHighlights(); // 无匹配也要清掉旧高亮
-  }
-}
-
-// 定位到第 i 个匹配（循环）：滚动到所在块并短暂闪烁
-function scrollToMatch(i) {
-  if (!findMatches.length) return;
-  findIndex = ((i % findMatches.length) + findMatches.length) % findMatches.length;
-  findMatch.value = { index: findIndex + 1, total: findMatches.length };
-  const offset = findMatches[findIndex];
-  const block = blocks.value.find((b) => b.start != null && b.end != null && offset >= b.start && offset < b.end);
-  // 当前高亮按「块 id + 块内第几处」定位（先于 applyFindHighlights 设置）
-  findCurrentBlockId = block?.id ?? null;
-  findCurrentOrdinalInBlock = block
-    ? findMatches.reduce((n, m) => (m >= block.start && m < offset ? n + 1 : n), 0)
-    : 0;
-  applyFindHighlights();
-  if (block) {
-    scrollToBlock(block.id);
-    flashId.value = block.id;
-    setTimeout(() => {
-      if (flashId.value === block.id) flashId.value = null;
-    }, 1200);
-  }
-}
-
-function navFind(step) {
-  scrollToMatch(findIndex + step);
-}
-
-// 替换当前匹配项，替换后重搜刷新计数（同一槽位即下一处匹配）
-async function replaceInDocument(text) {
-  if (!findMatches.length || !lastKeyword) return;
-  const offset = findMatches[findIndex];
-  content.value = content.value.slice(0, offset) + text + content.value.slice(offset + lastKeyword.length);
-  if (editingId.value !== null) {
-    editingId.value = null;
-    editableEl = null;
-  }
-  await reparse();
-  searchInDocument(lastKeyword);
-  if (findMatches.length) scrollToMatch(Math.min(findIndex, findMatches.length - 1));
-}
-
-// 全部替换（大小写不敏感，与搜索一致；正则转义后全局替换）
-async function replaceAllInDocument(text) {
-  if (!lastKeyword || !findMatches.length) return;
-  const re = new RegExp(lastKeyword.replace(/[.*+?^${}()[\]\\]/g, '\\$&'), 'gi');
-  content.value = content.value.replace(re, text);
-  if (editingId.value !== null) {
-    editingId.value = null;
-    editableEl = null;
-  }
-  await reparse();
-  searchInDocument(lastKeyword);
-}
 
 const blocks = ref([]);
 // 全部正文块（不含脚注定义；脚注集中渲染在文末）
 const allBlocks = computed(() => blocks.value.filter((b) => b.type !== 'footnoteDefinition'));
-// 虚拟滚动：全部行都渲染 VRow 占位（总高正确），内容按视口余量挂载（见 VRow.vue）；
-// 包装对象按块身份记忆化（WeakMap）：提交编辑时未变化的块不再每次全量分配
-// {block, estimate} 包装数组（主题切换时随估计缓存一并失效）
-let rowWrapperCache = new WeakMap();
-const renderedBlocks = computed(() =>
-  allBlocks.value.map((block) => {
-    let w = rowWrapperCache.get(block);
-    if (!w) {
-      w = { block, estimate: estimateBlockHeight(block) };
-      rowWrapperCache.set(block, w);
-    }
-    return w;
-  }),
-);
 const footnotes = computed(() => blocks.value.filter((b) => b.type === 'footnoteDefinition'));
 // 拼写检查开关（偏好设置 spellcheck，默认关闭；prefsVersion 驱动响应）
 const spellcheckOn = computed(() => {
@@ -388,145 +147,6 @@ provide('getFootnoteRefIndex', (id, occurrenceIndex, blockId) => {
   return idx >= 0 ? idx + 1 : 0;
 });
 
-// ---------- 长文档优化：虚拟滚动 + 重活懒执行 ----------
-// 虚拟滚动行观察器：行进入视口余量时通知 VRow 挂载/卸载内容。
-// 余量按窗口高度的 150%（rootMargin 百分比随窗口缩放动态生效），
-// 加大提前量，避免滚动加载时内容闪烁
-const rowCallbacks = new WeakMap();
-let rowObserver = null;
-function getRowObserver() {
-  if (!rowObserver) {
-    rowObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          rowCallbacks.get(entry.target)?.(entry.isIntersecting);
-        }
-      },
-      { root: null, rootMargin: '450% 0px' },
-    );
-  }
-  return rowObserver;
-}
-provide('observeRow', (el, cb) => {
-  rowCallbacks.set(el, cb);
-  getRowObserver().observe(el);
-});
-provide('unobserveRow', (el) => {
-  rowCallbacks.delete(el);
-  // el 可能为 null（键控重建时 ref 已卸载），unobserve 非 Element 会抛 TypeError
-  if (el) rowObserver?.unobserve(el);
-});
-
-// 虚拟行高估计：按源码行数 × 主题实际行高（首次渲染后由实测高度取代）。
-// 按块 id 记忆化：提交编辑时未变化的块 id 稳定，估算不必随 renderedBlocks
-// 全量重算（超长文档每次提交的 O(全文字符) 扫描是卡顿主因之一）
-const estimateCache = new Map();
-function estimateBlockHeight(block) {
-  const hit = estimateCache.get(block.id);
-  if (hit != null) return hit;
-  let est;
-  if (block.start == null || block.end == null) {
-    est = 40;
-  } else {
-    // 只数换行符（不 slice/split 分配子串与数组）
-    let lines = 1;
-    for (let i = block.start; i < block.end; i++) {
-      if (content.value.charCodeAt(i) === 10) lines++;
-    }
-    est = Math.max(1, lines) * lineHeightPx() + 16;
-  }
-  if (estimateCache.size > 50000) estimateCache.clear(); // 防跨文档/长期编辑膨胀
-  estimateCache.set(block.id, est);
-  return est;
-}
-let cachedLineHeightPx = 0;
-function lineHeightPx() {
-  if (cachedLineHeightPx) return cachedLineHeightPx;
-  const style = getComputedStyle(document.documentElement);
-  const size = parseFloat(style.getPropertyValue('--t-text-size')) || 17;
-  const ratio = parseFloat(style.getPropertyValue('--t-text-line-height')) || 1.6;
-  cachedLineHeightPx = Math.round(size * ratio);
-  return cachedLineHeightPx;
-}
-// 主题/排版变化使缓存行高失效（估计缓存与行包装缓存一并清空）
-watch(themeVersion, () => {
-  cachedLineHeightPx = 0;
-  estimateCache.clear();
-  rowWrapperCache = new WeakMap();
-});
-
-// ---------- 大文档渐进挂载：首屏只创建前 INITIAL_ROW_QUOTA 个行组件，
-// 其余行以「估计高度占位条」代替，空闲帧按步长扩配额直至全覆盖。
-// 首屏 DOM/组件规模恒定（与文档大小无关），是超大文件秒开的关键
-const INITIAL_ROW_QUOTA = 160;
-const ROW_QUOTA_STEP = 500;
-const rowQuota = ref(INITIAL_ROW_QUOTA);
-let quotaScheduled = false;
-function growRowQuota() {
-  if (quotaScheduled) return;
-  quotaScheduled = true;
-  const step = () => {
-    quotaScheduled = false;
-    const total = renderedBlocks.value.length;
-    if (rowQuota.value >= total) return;
-    rowQuota.value = Math.min(total, rowQuota.value + ROW_QUOTA_STEP);
-    if (rowQuota.value < total) growRowQuota();
-  };
-  if ('requestIdleCallback' in window) requestIdleCallback(step, { timeout: 200 });
-  else setTimeout(step, 0);
-}
-// 配额内可见行与配额外尾部占位高度（估计高度和，保证滚动条总高近似正确）
-const visibleRows = computed(() => renderedBlocks.value.slice(0, rowQuota.value));
-const tailPadHeight = computed(() => {
-  let h = 0;
-  const rows = renderedBlocks.value;
-  for (let i = rowQuota.value; i < rows.length; i++) h += rows[i].estimate;
-  return h;
-});
-watch(
-  () => renderedBlocks.value.length,
-  (len) => {
-    if (len > rowQuota.value) growRowQuota();
-  },
-);
-// 配额增长后新挂载的行需要补测标题位置（防抖，避免逐批 querySelector）
-watch(
-  () => visibleRows.value.length,
-  () => {
-    clearTimeout(headingRebuildTimer);
-    headingRebuildTimer = setTimeout(rebuildHeadingPositions, 300);
-  },
-);
-
-// 重活懒执行：共享 IntersectionObserver，块进入视口（含 60% 窗口高度余量）才回调
-//（语法高亮/公式/Mermaid 渲染经此延后，长文档挂载不再一次性打满 IPC；
-// 余量随窗口缩放动态生效）
-const visibilityCallbacks = new WeakMap();
-let blockObserver = null;
-function getBlockObserver() {
-  if (!blockObserver) {
-    blockObserver = new IntersectionObserver(
-      (entries) => {
-        for (const entry of entries) {
-          if (!entry.isIntersecting) continue;
-          const cb = visibilityCallbacks.get(entry.target);
-          if (cb) {
-            visibilityCallbacks.delete(entry.target);
-            blockObserver.unobserve(entry.target);
-            cb();
-          }
-        }
-      },
-      { root: null, rootMargin: '200% 0px' },
-    );
-  }
-  return blockObserver;
-}
-provide('onBlockVisible', (el, cb) => {
-  if (!el) return cb();
-  visibilityCallbacks.set(el, cb);
-  getBlockObserver().observe(el);
-});
 
 // 展示公式编号表（块 id -> 1 基序号）：AMS 编号环境判定在 Rust（mathNumbered 字段），
 // 编号序列按偏好 math_numbering（off/ams/all）生成（视图层），经 provide 供块渲染层取用
@@ -546,1673 +166,15 @@ const mathNumbers = computed(() => {
 });
 provide('mathNumbers', mathNumbers);
 
-// ---------- 表格编辑（Typora 式：就地编辑 + 尺寸/对齐/更多操作工具栏） ----------
 
-// 光标所在表格单元格（不在表格单元格内返回 null）
-function caretTableCell() {
-  const el = currentEditable();
-  if (!el) return null;
-  const sel = window.getSelection();
-  if (!sel.rangeCount) return null;
-  const node = sel.anchorNode;
-  const anchor = node?.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-  const cell = anchor?.closest('td, th');
-  return cell && el.contains(cell) ? cell : null;
-}
 
-// 光标所在列的对齐（'' 默认 / left / center / right），工具栏对齐按钮高亮用；
-// 由 document selectionchange 跟踪（见文件末尾 onMounted）
-const tableCaretAlign = ref('');
-function updateTableCaretAlign() {
-  const cell = caretTableCell();
-  tableCaretAlign.value = cell?.style.textAlign || '';
-}
 
-// 生成与表头同列数、对齐一致的空数据行
-function emptyBodyRow(table) {
-  const heads = [...(table.querySelector('thead tr')?.children || [])];
-  const tr = document.createElement('tr');
-  for (const th of heads.length ? heads : [null]) {
-    const td = document.createElement('td');
-    if (th?.style.textAlign) td.style.textAlign = th.style.textAlign;
-    td.innerHTML = '<br>';
-    tr.append(td);
-  }
-  return tr;
-}
-
-// 表格行列操作（纯编辑态 DOM 操作；提交时经 tableToBlock 提取 + Rust 序列化落源）
-function tableOp(op, arg) {
-  const el = currentEditable();
-  const table = el?.querySelector('table');
-  if (!table) return;
-  // 单元格上下文：显式指定（边框 + 按钮）优先，否则取光标所在单元格
-  const cell = arg?.cell ?? caretTableCell();
-  const row = cell?.closest('tr');
-  const inBody = row?.parentElement?.tagName === 'TBODY';
-  const colIndex = cell ? [...row.children].indexOf(cell) : -1;
-  const tbody = table.querySelector('tbody');
-
-  // 插入行：相对光标行（表头行则插到首个数据行位置）；无光标插到末尾
-  if (op === 'addRow' || op === 'insertRowAbove' || op === 'insertRowBelow') {
-    const above = op === 'insertRowAbove';
-    let ref;
-    let where;
-    if (inBody && row) {
-      ref = row;
-      where = above ? 'before' : 'after';
-    } else if (row) {
-      ref = tbody?.querySelector('tr:first-child');
-      where = 'before';
-    } else {
-      ref = tbody?.querySelector('tr:last-child');
-      where = 'after';
-    }
-    if (!ref) return;
-    const clone = ref.cloneNode(true);
-    clone.querySelectorAll('td, th').forEach((c) => {
-      c.innerHTML = '<br>';
-    });
-    ref[where](clone);
-    const target = clone.children[Math.max(0, colIndex)] || clone.firstElementChild;
-    if (target) placeCursorAtStart(target);
-    return;
-  }
-  if (op === 'delRow') {
-    const target = inBody && row ? row : tbody?.querySelector('tr:last-child');
-    if (!tbody || !target) return;
-    target.remove();
-    // 至少保留一个数据行
-    if (!tbody.querySelector('tr')) tbody.append(emptyBodyRow(table));
-    const fallback = tbody.querySelector('tr:last-child td');
-    if (fallback) placeCursorAtStart(fallback);
-    return;
-  }
-  // 行移动：仅数据行参与（表头固定为首行）
-  if (op === 'moveRowUp' || op === 'moveRowDown') {
-    if (!inBody || !row) return;
-    const sibling = op === 'moveRowUp' ? row.previousElementSibling : row.nextElementSibling;
-    if (!sibling) return;
-    if (op === 'moveRowUp') tbody.insertBefore(row, sibling);
-    else tbody.insertBefore(sibling, row);
-    const target = row.children[Math.max(0, colIndex)] || row.firstElementChild;
-    if (target) placeCursorAtStart(target);
-    return;
-  }
-
-  const rows = [...table.querySelectorAll('tr')];
-  const index = colIndex >= 0 ? colIndex : (rows[0]?.children.length ?? 1) - 1;
-  // 插入列：相对光标列（无光标则在末尾右侧插入）
-  if (op === 'addCol' || op === 'insertColLeft' || op === 'insertColRight') {
-    const right = op !== 'insertColLeft';
-    rows.forEach((r) => {
-      const ref = r.children[index] || null;
-      const next = document.createElement(ref ? ref.tagName.toLowerCase() : 'td');
-      if (ref?.style.textAlign) next.style.textAlign = ref.style.textAlign;
-      next.innerHTML = '<br>';
-      if (!ref) r.append(next);
-      else if (right) ref.after(next);
-      else ref.before(next);
-    });
-    const focusIndex = right ? index + 1 : index;
-    const target = table.querySelector('tbody tr')?.children[focusIndex];
-    if (target) placeCursorAtStart(target);
-    return;
-  }
-  if (op === 'delCol') {
-    if ((rows[0]?.children.length ?? 0) <= 1) return; // 保留至少一列
-    rows.forEach((r) => r.children[index]?.remove());
-    const target = table.querySelector('tbody tr')?.children[Math.max(0, index - 1)];
-    if (target) placeCursorAtStart(target);
-    return;
-  }
-  // 列移动：整列（表头 + 数据行）与相邻列交换
-  if (op === 'moveColLeft' || op === 'moveColRight') {
-    const to = index + (op === 'moveColLeft' ? -1 : 1);
-    if (to < 0 || to >= (rows[0]?.children.length ?? 0)) return;
-    rows.forEach((r) => {
-      const a = r.children[index];
-      const b = r.children[to];
-      if (!a || !b) return;
-      if (op === 'moveColLeft') r.insertBefore(a, b);
-      else r.insertBefore(b, a);
-    });
-    const target = (inBody ? row : table.querySelector('tbody tr'))?.children[to];
-    if (target) placeCursorAtStart(target);
-    return;
-  }
-  // 对齐：整列设置 textAlign（提交时 tableToBlock 提取为对齐列）；
-  // 悬停工具栏触发（arg.all）或无光标单元格时作用于整个表格
-  const align = { alignLeft: 'left', alignCenter: 'center', alignRight: 'right' }[op];
-  if (align) {
-    const allCols = arg?.all || colIndex < 0;
-    rows.forEach((r) => {
-      if (allCols) {
-        [...r.children].forEach((c) => {
-          c.style.textAlign = align;
-        });
-      } else {
-        const c = r.children[index];
-        if (c) c.style.textAlign = align;
-      }
-    });
-    updateTableCaretAlign();
-    return;
-  }
-  // 调整尺寸：数据行数/列数尾部增删（网格选择器），内容与对齐尽量保留
-  if (op === 'resize' && arg) {
-    const targetCols = Math.max(1, arg.cols);
-    let current = rows[0]?.children.length ?? 0;
-    while (current < targetCols) {
-      [...table.querySelectorAll('tr')].forEach((r) => {
-        const tag = r.parentElement.tagName === 'THEAD' ? 'th' : 'td';
-        const cell = document.createElement(tag);
-        cell.innerHTML = '<br>';
-        r.append(cell);
-      });
-      current += 1;
-    }
-    while (current > targetCols && current > 1) {
-      [...table.querySelectorAll('tr')].forEach((r) => r.lastElementChild?.remove());
-      current -= 1;
-    }
-    if (tbody) {
-      while (tbody.children.length < arg.rows) tbody.append(emptyBodyRow(table));
-      while (tbody.children.length > Math.max(1, arg.rows)) tbody.lastElementChild.remove();
-    }
-    // 光标尽量留在原单元格（缩小后钳制到新范围内）
-    const bodyRows = [...(tbody?.children || [])];
-    const target =
-      bodyRows[Math.min(inBody ? [...tbody.children].indexOf(row) : 0, bodyRows.length - 1)]
-        ?.children[Math.min(Math.max(0, colIndex), targetCols - 1)];
-    if (target) placeCursorAtStart(target);
-  }
-}
-
-// Tab/Shift+Tab 在单元格间移动（跨行时到下一行首格/上一行末格）
-function moveTableCaret(cell, dir) {
-  const row = cell.closest('tr');
-  const cells = [...row.children];
-  const next = cells[cells.indexOf(cell) + dir];
-  if (next) {
-    placeCursorAtStart(next);
-    return;
-  }
-  const sibling = dir > 0 ? row.nextElementSibling : row.previousElementSibling;
-  const target = sibling?.children[dir > 0 ? 0 : sibling.children.length - 1];
-  if (target) placeCursorAtStart(target);
-}
-
-// 单元格内 Enter：光标移到下一行同列单元格（末行则插入新行并进入）
-function moveTableRowDown(cell) {
-  const row = cell.closest('tr');
-  const index = [...row.children].indexOf(cell);
-  const nextRow = row.nextElementSibling;
-  if (nextRow) {
-    const target = nextRow.children[index] || nextRow.firstElementChild;
-    if (target) placeCursorAtStart(target);
-    return;
-  }
-  tableOp('addRow');
-}
-
-// ---------- 表格工具栏弹出层（尺寸网格 / 更多操作菜单） ----------
-const tablePanel = ref(null); // 'grid' | 'more' | null
-const tablePanelPos = ref({ left: 0, top: 0 });
-// 表格块悬停跟踪：鼠标滑过表格（未编辑）时以浮层显示顶部工具栏
-const hoverTableId = ref(null);
-// 悬停工具栏动作：先进入编辑（pendingTableFocus 使光标落首个数据单元格），容器挂载后执行
-let pendingTableAction = null;
-
-function onTableBlockHover(block) {
-  hoverTableId.value = block.id;
-}
-function onTableBlockLeave(block) {
-  if (hoverTableId.value === block.id) hoverTableId.value = null;
-  if (tableEdgeBtn.value?.blockId === block.id) tableEdgeBtn.value = null;
-}
-
-// 工具栏点击统一入口：编辑中直接执行；未编辑则排队动作并进入该表编辑
-// （另一块在编辑时先提交再换块，避免未提交内容被丢弃）。
-// 光标默认落表格末尾单元格：插行/列、删行/列等相对操作即「在末尾增删」
-function tableToolbarClick(block, run) {
-  if (editingId.value === block.id) {
-    run();
-    return;
-  }
-  pendingTableAction = run;
-  suppressBlurCommit = true;
-  if (editingId.value !== null && editableEl) {
-    clearTimeout(blurCommitTimer);
-    blurCommitTimer = null;
-    commitEdit().finally(() => {
-      editingId.value = block.id;
-    });
-    return;
-  }
-  editingId.value = block.id;
-}
-// 对齐操作：悬停触发（未选单元格）时作用于整个表格
-function onToolbarOp(block, op) {
-  const fromHover = editingId.value !== block.id;
-  tableToolbarClick(block, () => tableOp(op, fromHover ? { all: true } : undefined));
-}
-function onToolbarDelete(block) {
-  tableToolbarClick(block, () => deleteCurrentTableBlock());
-}
-// 面板类动作：弹出位置依赖按钮矩形，点击时先行捕获（排队到挂载后执行时事件对象已失效）
-function onToolbarPanel(block, kind, e) {
-  const rect = e.currentTarget.getBoundingClientRect();
-  tableToolbarClick(block, () =>
-    openTablePanel(kind, { currentTarget: { getBoundingClientRect: () => rect } }),
-  );
-}
-
-// ---------- 表格单元格四边 + 按钮（行/列快速添加） ----------
-// 鼠标靠近任意单元格的某条边（12px 内，取最近边）即浮现 +：
-// 上边→上方插入行、下边→下方插入行、左边→左侧插入列、右边→右侧插入列
-const tableEdgeBtn = ref(null); // { blockId, kind: 'rowAbove'|'rowBelow'|'colLeft'|'colRight', rowIndex, colIndex, top, left }
-
-function onTableEdgeMove(block, e) {
-  // 悬停在 + 按钮自身上：保持显示（移开按钮即隐藏会抖动）
-  if (e.target.closest?.('.md-table-edge-btn')) return;
-  const cell = e.target.closest?.('td, th');
-  if (!cell) {
-    if (tableEdgeBtn.value?.blockId === block.id) tableEdgeBtn.value = null;
-    return;
-  }
-  const table = cell.closest('table');
-  const hostRect = e.currentTarget.getBoundingClientRect();
-  const r = cell.getBoundingClientRect();
-  // 最近边判定（阈值 12px）
-  const EDGE = 12;
-  const dists = [
-    ['top', e.clientY - r.top],
-    ['bottom', r.bottom - e.clientY],
-    ['left', e.clientX - r.left],
-    ['right', r.right - e.clientX],
-  ];
-  const [edge, dist] = dists.reduce((a, b) => (b[1] < a[1] ? b : a));
-  if (dist > EDGE) {
-    if (tableEdgeBtn.value?.blockId === block.id) tableEdgeBtn.value = null;
-    return;
-  }
-  const rows = [...table.querySelectorAll('tr')];
-  const row = cell.closest('tr');
-  const BTN = 18;
-  let top;
-  let left;
-  let kind;
-  if (edge === 'top' || edge === 'bottom') {
-    kind = edge === 'top' ? 'rowAbove' : 'rowBelow';
-    top = (edge === 'top' ? r.top : r.bottom) - hostRect.top - BTN / 2;
-    left = r.left - hostRect.left + r.width / 2 - BTN / 2;
-  } else {
-    kind = edge === 'left' ? 'colLeft' : 'colRight';
-    top = r.top - hostRect.top + r.height / 2 - BTN / 2;
-    left = (edge === 'left' ? r.left : r.right) - hostRect.left - BTN / 2;
-  }
-  // 防被滚动容器横向/顶部裁切（最左列左边、首行上边的按钮会贴到容器边缘）
-  tableEdgeBtn.value = {
-    blockId: block.id,
-    kind,
-    rowIndex: rows.indexOf(row),
-    colIndex: [...row.children].indexOf(cell),
-    top: Math.max(2, top),
-    left: Math.max(2, left),
-  };
-}
-
-// 点击 +：未编辑时先进入编辑（复用工具栏点击链路），再对目标单元格执行对应插入
-function onTableEdgeAdd() {
-  const btn = tableEdgeBtn.value;
-  if (!btn) return;
-  const block = blocks.value.find((b) => b.id === btn.blockId);
-  tableEdgeBtn.value = null;
-  if (!block) return;
-  tableToolbarClick(block, () => {
-    const table = currentEditable()?.querySelector('table');
-    if (!table) return;
-    const rows = [...table.querySelectorAll('tr')];
-    const row = rows[Math.min(Math.max(0, btn.rowIndex), rows.length - 1)];
-    const cell = row?.children[Math.max(0, btn.colIndex)] ?? row?.firstElementChild ?? null;
-    const op = {
-      rowAbove: 'insertRowAbove',
-      rowBelow: 'insertRowBelow',
-      colLeft: 'insertColLeft',
-      colRight: 'insertColRight',
-    }[btn.kind];
-    if (op) tableOp(op, { cell });
-  });
-}
-// 尺寸网格行列上限与当前悬停的 N×M（1 基）
-const TABLE_GRID_COLS = 10;
-const TABLE_GRID_ROWS = 8;
-const tableGridHover = ref({ rows: 1, cols: 1 });
-// 打开尺寸选择器时的当前表格尺寸快照（网格初始高亮）
-const tableGridSize = ref({ rows: 1, cols: 1 });
-
-// 「更多操作」菜单项（顺序与 Typora 一致；'sep' 为分隔线）
-const TABLE_MORE_ITEMS = [
-  { id: 'insertRowAbove', label: '上方插入行' },
-  { id: 'insertRowBelow', label: '下方插入行', shortcut: 'Ctrl+Enter' },
-  { id: 'insertColLeft', label: '左侧插入列' },
-  { id: 'insertColRight', label: '右侧插入列' },
-  'sep',
-  { id: 'moveRowUp', label: '上移该行', shortcut: 'Alt+↑' },
-  { id: 'moveRowDown', label: '下移该行', shortcut: 'Alt+↓' },
-  { id: 'moveColLeft', label: '左移该列', shortcut: 'Alt+←' },
-  { id: 'moveColRight', label: '右移该列', shortcut: 'Alt+→' },
-  'sep',
-  { id: 'delRow', label: '删除行' },
-  { id: 'delCol', label: '删除列' },
-  'sep',
-  { id: 'copyTable', label: '复制表格' },
-  { id: 'formatTable', label: '格式化表格源码' },
-  'sep',
-  { id: 'deleteTable', label: '删除表格' },
-];
-
-function openTablePanel(kind, e) {
-  if (tablePanel.value === kind) {
-    tablePanel.value = null;
-    return;
-  }
-  const rect = e.currentTarget.getBoundingClientRect();
-  // 底部空间不足时向上翻；左右防溢出（估算：网格 ~200x290，菜单 ~210x430）
-  const estH = kind === 'grid' ? 300 : 440;
-  const estW = 220;
-  const top =
-    rect.bottom + estH > window.innerHeight ? Math.max(8, rect.top - estH) : rect.bottom + 4;
-  const left = Math.max(8, Math.min(rect.left, window.innerWidth - estW - 8));
-  tablePanelPos.value = { left, top };
-  if (kind === 'grid') {
-    const table = currentEditable()?.querySelector('table');
-    tableGridSize.value = {
-      rows: Math.max(1, table?.querySelectorAll('tbody tr').length || 1),
-      cols: Math.max(1, table?.querySelector('thead tr')?.children.length || 1),
-    };
-    tableGridHover.value = { ...tableGridSize.value };
-  }
-  tablePanel.value = kind;
-}
-
-// 点击尺寸格子：调整表格为悬停的 N×M（N 数据行 × M 列）
-function applyTableGrid() {
-  const { rows, cols } = tableGridHover.value;
-  tablePanel.value = null;
-  tableOp('resize', { rows, cols });
-}
-
-function runTableMore(item) {
-  tablePanel.value = null;
-  if (item.id === 'copyTable') return copyTableMarkdown();
-  if (item.id === 'formatTable') return formatTableSource();
-  if (item.id === 'deleteTable') return deleteCurrentTableBlock();
-  tableOp(item.id);
-}
-
-// 复制表格：当前编辑内容经 Rust 序列化为 Markdown 写入剪贴板（不打断编辑）
-async function copyTableMarkdown() {
-  const el = currentEditable();
-  if (!el) return;
-  const md = await invoke('serialize_markdown', { blocks: domToBlockDtos(el) }).catch(() => '');
-  const text = md.trim();
-  if (text) await navigator.clipboard.writeText(text).catch(() => {});
-}
-
-// 格式化表格源码：提交当前编辑 → Rust 按列宽对齐管道 → 原位替换并保持编辑
-async function formatTableSource() {
-  const el = currentEditable();
-  if (!el || editingId.value === null || editingId.value === '__append__') return;
-  syncing.value = true;
-  try {
-    const md = await invoke('serialize_markdown', { blocks: domToBlockDtos(el) }).catch(() => null);
-    if (md == null) return; // 序列化失败：不动正文、保持编辑态
-    const padded = await invoke('format_table_source', { markdown: md }).catch(() => null);
-    if (!padded || padded === md) return;
-    const index = blocks.value.findIndex((b) => b.id === editingId.value);
-    const block = blocks.value[index];
-    if (!block) return;
-    content.value = content.value.slice(0, block.start) + padded + content.value.slice(block.end);
-    const replacements = await parseAnchoredBlocks(padded, block.start).catch(() => null);
-    const delta = padded.length - (block.end - block.start);
-    editableEl = null;
-    suppressBlurCommit = true;
-    if (!replacements) {
-      // 解析失败：全文重解析自愈
-      editingId.value = null;
-      suppressBlurCommit = false;
-      await reparse();
-      return;
-    }
-    blocks.value.splice(index, 1, ...replacements);
-    shiftBlockOffsets(index + replacements.length, delta);
-    publishBlocks();
-    // 重解析后块 id 随内容变化：重建编辑容器，光标落到首个数据单元格
-    pendingTableFocus = true;
-    editingId.value = replacements[0]?.id ?? null;
-    if (!replacements[0]) suppressBlurCommit = false;
-  } finally {
-    syncing.value = false;
-  }
-}
-
-// 删除整个表格块（含源码区间与相邻换行），光标移到上一块末尾（与空块退格删除同规则）
-async function deleteCurrentTableBlock() {
-  if (editingId.value === null || editingId.value === '__append__') return;
-  syncing.value = true;
-  try {
-    const index = blocks.value.findIndex((b) => b.id === editingId.value);
-    const oldBlock = blocks.value[index];
-    editableEl = null;
-    if (!oldBlock) {
-      editingId.value = null;
-      return;
-    }
-    let removeStart = oldBlock.start;
-    let removeEnd = oldBlock.end;
-    if (content.value[removeEnd] === '\n') removeEnd += 1;
-    else if (removeStart > 0 && content.value[removeStart - 1] === '\n') removeStart -= 1;
-    const removedLen = removeEnd - removeStart;
-    content.value = content.value.slice(0, removeStart) + content.value.slice(removeEnd);
-    blocks.value.splice(index, 1);
-    shiftBlockOffsets(index, -removedLen);
-    renumberOrderedMarkers(index);
-    publishBlocks();
-    const prev = blocks.value[index - 1];
-    suppressBlurCommit = true;
-    editingId.value = prev ? prev.id : (blocks.value[0]?.id ?? '__append__');
-    cursorAtStart = !prev && blocks.value.length > 0;
-    if (!prev && !blocks.value.length) suppressBlurCommit = false;
-  } finally {
-    syncing.value = false;
-  }
-}
-
-// ---------- 斜杠命令菜单（/ 召唤 Markdown 语法菜单） ----------
-const slashOpen = ref(false);
-const slashQuery = ref('');
-const slashIndex = ref(0);
-// 文本行当前徽章行列（三行：行内格式 / 标题 / 列表；←/→ 移列、↑/↓ 移行、悬停徽章同步）
-const slashTextRow = ref(0);
-const slashTextCol = ref(0);
-// 表格行行列数量与当前调节字段（'item' 表格项本身 / 'rows' 行数 / 'cols' 列数；
-// 'item' 时 ↑/↓ 为菜单导航，←/→ 在 项→行→列 间循环，进入字段后 ↑/↓ 增减）
-const slashTableRows = ref(2);
-const slashTableCols = ref(2);
-const slashTableField = ref('item');
-// 警告框当前类型（CALLOUT_TYPES 下标；警告框菜单项 ←/→ 切换、Enter 应用、悬停徽章同步）
-const slashCalloutType = ref(0);
-const slashPos = ref({ left: 0, top: 0 });
-
-// ---------- 字体（/ 菜单「字体」行内色板 + RGB 输入 + 字号行） ----------
-// 色板/字号当前行列（row 0=颜色、1=字号；←/→ 移列、↑/↓ 换行、悬停同步）
-const slashFontRow = ref(0);
-const slashFontColorIndex = ref(0);
-const slashFontSizeIndex = ref(0);
-// RGB 输入非法值标记（菜单内输入框红框提示）
-const rgbError = ref(false);
-
-// 应用字体样式（{ color } 或 { fontSize }）。支持多选：首次删除 / 触发文本并插入样式 span，
-// 菜单保持打开，再次选择直接在当前样式 span 上按字段合并（颜色与字号可叠加）
-let fontMenuSession = false;
-watch(slashOpen, (open) => {
-  if (!open) fontMenuSession = false;
-});
-
-// 光标所在的字体样式 span（无则 null）
-function caretFontSpan(el) {
-  const sel = window.getSelection();
-  if (!sel.rangeCount || !el.contains(sel.anchorNode)) return null;
-  const node =
-    sel.anchorNode.nodeType === Node.TEXT_NODE ? sel.anchorNode.parentElement : sel.anchorNode;
-  return node?.closest?.('span[data-html-style]') ?? null;
-}
-
-// 在既有样式 span 上按字段合并（color/fontSize 各自独立覆盖）
-function mergeStyleIntoSpan(span, style) {
-  let current = {};
-  try {
-    current = JSON.parse(span.getAttribute('data-html-style') || '{}');
-  } catch {
-    current = {};
-  }
-  const merged = { ...current, ...style };
-  span.setAttribute('data-html-style', JSON.stringify(merged));
-  span.setAttribute('style', htmlStyleCss(merged));
-}
-
-function applyFontStyle(style) {
-  const el = currentEditable();
-  if (!el) return;
-  let midBlockSlash = false; // / 在块中触发（触发段前有正文）：仅插入模板，不整段套用
-  suppressBlurCommit = true;
-  try {
-    if (fontMenuSession) {
-      // 多选会话：直接在当前样式 span 上合并（不重复删除触发符/重建结构）
-      const existing = caretFontSpan(el);
-      if (existing) {
-        mergeStyleIntoSpan(existing, style);
-        // 同步模板的开标签显示文本（颜色/字号变化后标签内容与样式一致）
-        const openMark = existing.previousSibling;
-        if (openMark?.nodeType === Node.ELEMENT_NODE && openMark.classList.contains('md-font-mark')) {
-          openMark.textContent = `<font style="${existing.getAttribute('style')}">`;
-        }
-        slashOpen.value = true; // 菜单保持打开，可继续选择
-        return;
-      }
-      // 光标不在样式 span 内（如整段套用后移出）：按新样式插入
-    } else {
-      // 首次：删除触发文本——光标在编辑器内时只删 /query 触发段（块中触发保留前文）；
-      // 焦点在菜单输入框（RGB）时按块首的 /query 删除
-      const sel = window.getSelection();
-      if (sel.rangeCount && el.contains(sel.anchorNode)) {
-        const caret = sel.getRangeAt(0);
-        const slashIdx = textBeforePoint(el, caret.startContainer, caret.startOffset).lastIndexOf('/');
-        const point = slashIdx > 0 ? textOffsetPoint(el, slashIdx) : null;
-        const trigger = document.createRange();
-        if (point) trigger.setStart(point.node, point.offset);
-        else trigger.selectNodeContents(el);
-        trigger.setEnd(caret.startContainer, caret.startOffset);
-        trigger.deleteContents();
-        midBlockSlash = slashIdx > 0;
-      } else {
-        const query = '/' + slashQuery.value;
-        const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-        const firstText = walker.nextNode();
-        if (firstText && query.length > 1 && firstText.textContent.startsWith(query)) {
-          firstText.textContent = firstText.textContent.slice(query.length);
-        } else if (firstText?.textContent.startsWith('/')) {
-          firstText.textContent = firstText.textContent.slice(1);
-        }
-      }
-    }
-    const span = buildFontSpan(style);
-    const sel2 = window.getSelection();
-    // 目标容器：块的首个块级子元素（p/h1-h6 等）——样式 span 只能包块「内容」，
-    // 把块级元素本身包进内联 span 是非法嵌套（浏览器会拆散，样式丢失、光标异常）
-    const target = el.firstElementChild || el;
-    if (sel2.rangeCount && !sel2.isCollapsed && el.contains(sel2.anchorNode)) {
-      // 有选区：选区内容上色
-      const range = sel2.getRangeAt(0);
-      span.append(range.extractContents());
-      range.insertNode(span);
-      placeCursorAtEnd(span);
-    } else if (midBlockSlash) {
-      // 块中触发：光标处插入字体模板（前文保留，不整段套用）
-      const { frag, zwsp } = buildFontTemplate(style);
-      const r = sel2.rangeCount && el.contains(sel2.anchorNode) ? sel2.getRangeAt(0) : null;
-      if (r) r.insertNode(frag);
-      else target.append(frag);
-      placeCaretInFontTemplate(zwsp);
-    } else if (target.textContent.trim()) {
-      // 块内已有文字：整段套用
-      while (target.firstChild) span.append(target.firstChild);
-      target.append(span);
-      placeCursorAtEnd(span);
-    } else {
-      // 空块：插入字体模板（淡灰 <font> 标签 + 样式 span），光标在标签内文字位，
-      // 输入即带选择的颜色/字号；Esc 退出该样式（光标移到模板之后）
-      target.innerHTML = '';
-      const { frag, zwsp } = buildFontTemplate(style);
-      target.append(frag);
-      placeCaretInFontTemplate(zwsp);
-    }
-    fontMenuSession = true;
-    slashOpen.value = true; // 菜单保持打开，颜色与字号可叠加选择
-  } finally {
-    suppressBlurCommit = false;
-  }
-  if (document.activeElement !== el) el.focus({ preventScroll: true });
-}
-
-function applyFontColor(color) {
-  applyFontStyle({ color });
-}
-function applyFontSize(fontSize) {
-  applyFontStyle({ fontSize });
-}
-
-// RGB 输入应用：Rust 解析色值，有效则应用并回编辑器输入（带样式）；
-// 颜色值错误：按默认普通文本处理——清掉 / 触发文本，焦点回编辑器继续普通输入
-async function applyRgbInput(text) {
-  const color = await invoke('parse_html_color', { text: (text || '').trim() }).catch(() => null);
-  rgbError.value = false;
-  if (!color) {
-    slashOpen.value = false;
-    if (fontMenuSession) {
-      // 已应用过样式（多选会话）：不删除任何内容，直接回编辑器
-      currentEditable()?.focus({ preventScroll: true });
-    } else {
-      clearSlashTriggerAndFocus();
-    }
-    return;
-  }
-  applyFontColor(color);
-}
-
-// 无效 RGB 输入的回落：清掉 / 触发文本并聚焦编辑器（普通文本输入）
-function clearSlashTriggerAndFocus() {
-  const el = currentEditable();
-  if (!el) return;
-  suppressBlurCommit = true;
-  try {
-    const sel = window.getSelection();
-    if (sel.rangeCount && el.contains(sel.anchorNode)) {
-      const caret = sel.getRangeAt(0);
-      rangeBeforePoint(el, caret.startContainer, caret.startOffset).deleteContents();
-    } else {
-      // 焦点在菜单输入框（RGB）：按块首 /query 删除
-      const query = '/' + slashQuery.value;
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
-      const firstText = walker.nextNode();
-      if (firstText && query.length > 1 && firstText.textContent.startsWith(query)) {
-        firstText.textContent = firstText.textContent.slice(query.length);
-      } else if (firstText?.textContent.startsWith('/')) {
-        firstText.textContent = firstText.textContent.slice(1);
-      }
-    }
-  } finally {
-    suppressBlurCommit = false;
-  }
-  el.focus({ preventScroll: true });
-}
-
-// 菜单内 RGB 输入框获得焦点：编辑容器 blur 的提交需抑制（/ 触发文本保持未提交态）
-function onRgbFocus() {
-  suppressBlurCommit = true;
-}
-// RGB 输入框 Esc：关闭菜单并恢复编辑焦点与提交通路
-function onRgbCancel() {
-  slashOpen.value = false;
-  suppressBlurCommit = false;
-  currentEditable()?.focus({ preventScroll: true });
-}
-
-// RGB 输入框内 ↑/↓：↑ 回字号区下行（列保持），↓ 进到下一菜单项
-function onRgbNav(dir) {
-  if (dir < 0) {
-    slashFontRow.value = 1;
-    if (slashFontSizeIndex.value < 5) slashFontSizeIndex.value += 5;
-  } else {
-    slashFontRow.value = 0;
-    slashIndex.value = (slashIndex.value + 1) % slashItems.value.length;
-  }
-  suppressBlurCommit = false;
-  currentEditable()?.focus({ preventScroll: true });
-}
-
-// ---------- 右键菜单（Typora 式：剪贴板 / 复制粘贴为 / 格式 / 段落 / 插入） ----------
-const ctxMenu = ref(null); // { x, y }
-
-function onContextMenu(e) {
-  if (props.sourceMode) return;
-  e.preventDefault();
-  // 已处于编辑态：保留当前选区；否则进入被点击块的编辑
-  const el = currentEditable();
-  if (!(el && el.contains(e.target))) {
-    const blockEl = e.target.closest?.('[data-block-id]');
-    const block = blocks.value.find((b) => b.id === blockEl?.getAttribute('data-block-id'));
-    if (!block) return;
-    // 有非空选区时 startEdit 会拒入编辑（避免替换 DOM 销毁选区）；此处选区已按
-    // 纯文本偏移暂存（mousedown/contextmenu 时），直接进入编辑，动作应用时按偏移重建选区
-    if (editingId.value === null) editingId.value = block.id;
-    else startEdit(block);
-  }
-  // 此处仅尝试覆盖暂存：若 WKWebView 已在右键 mousedown 后塌陷选区，
-  // 本次 stash 无效，保留 mousedown 时的暂存（不得先行清空）
-  stashCtxSelection();
-  // 编辑态下平台默认行为可能已塌陷选区：立即恢复，保持菜单打开期间高亮连续
-  if (el) restoreCtxSelection(el);
-  ctxMenu.value = { x: e.clientX, y: e.clientY };
-}
-
-// 右键菜单选区暂存：WKWebView 中右键 mousedown 的默认行为会把选区塌陷为光标，
-// 在默认行为发生前的 mousedown/contextmenu 里暂存选区，菜单动作应用前恢复。
-// 注意：动作处理以 closeCtxMenu 开头，暂存不得随菜单关闭清理；
-// 以时间戳防陈旧（仅菜单打开后短时间内的动作才允许恢复）
-let ctxSavedRange = null;
-
-// 暂存/重建选区时要跳过的非内容文本（渲染态列表标记、代码块语言角标、callout 标签等；
-// 可编辑容器内无这些元素或为 contenteditable=false 的非内容标签，两侧按同一规则跳过保证偏移一致）
-const CTX_SKIP_SEL = '.md-marker, .md-code-lang-badge, .md-callout-label';
-
-// 子树内 (node, offset) 的纯文本偏移（Range 探针 - 被跳过子树的文本长度）
-function domTextOffset(root, node, offset) {
-  const probe = rangeBeforePoint(root, node, offset);
-  let len = probe.toString().length;
-  for (const skip of root.querySelectorAll(CTX_SKIP_SEL)) {
-    if (probe.intersectsNode(skip)) len -= skip.textContent.length;
-  }
-  return len;
-}
-
-// 纯文本偏移 → DOM Range（在可编辑容器内按同一跳过规则逐文本节点累计）
-function rangeFromTextOffsets(root, start, end) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (n) =>
-    n.parentElement?.closest(CTX_SKIP_SEL) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT);
-  let acc = 0;
-  let s = null;
-  let e = null;
-  let cur;
-  while ((cur = walker.nextNode())) {
-    const len = cur.textContent.length;
-    if (!s && start <= acc + len) s = { node: cur, offset: start - acc };
-    if (!e && end <= acc + len) {
-      e = { node: cur, offset: end - acc };
-      break;
-    }
-    acc += len;
-  }
-  if (!s || !e) return null;
-  const r = document.createRange();
-  r.setStart(s.node, s.offset);
-  r.setEnd(e.node, e.offset);
-  return r;
-}
-
-// 渲染态暂存 → 可编辑容器 Range：先按偏移换算并用暂存原文校验
-//（公式 SVG/脚注引用等载体两侧文本可能不一致），不一致时退化为在容器纯文本中
-// 搜索暂存原文定位；都找不到则尽力返回偏移结果
-function reifyCtxRange(root, saved) {
-  const byOffset = rangeFromTextOffsets(root, saved.start, saved.end);
-  if (!saved.text || (byOffset && byOffset.toString() === saved.text)) return byOffset;
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, (n) =>
-    n.parentElement?.closest(CTX_SKIP_SEL) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT);
-  const parts = [];
-  let cur;
-  while ((cur = walker.nextNode())) parts.push(cur.textContent);
-  const idx = parts.join('').indexOf(saved.text);
-  if (idx < 0) return byOffset;
-  return rangeFromTextOffsets(root, idx, idx + saved.text.length) || byOffset;
-}
-
-function stashCtxSelection() {
-  const el = currentEditable();
-  const sel = window.getSelection();
-  if (!sel.rangeCount) return;
-  const r = sel.getRangeAt(0);
-  if (r.collapsed) return;
-  // 编辑态：DOM 结构在提交前保持稳定，直接暂存 Range
-  if (el && el.contains(r.startContainer)) {
-    ctxSavedRange = { range: r.cloneRange(), at: Date.now() };
-    return;
-  }
-  // 非编辑态（无光标直接框选渲染态文字）：渲染 DOM 将随进入编辑被替换，
-  // 选区按「块内纯文本偏移」暂存（渲染态与编辑态行内文本一致——同一 InlineTextTree 数据源）；
-  // 同时暂存选区原文，重建时校验/搜索回退（公式 SVG 等载体两侧文本可能不一致）
-  const anchorEl = r.startContainer.nodeType === Node.ELEMENT_NODE ? r.startContainer : r.startContainer.parentElement;
-  const row = anchorEl?.closest('[data-block-id]');
-  if (!row || !row.contains(r.endContainer)) return; // 跨块选区不在此转移
-  const start = domTextOffset(row, r.startContainer, r.startOffset);
-  const end = domTextOffset(row, r.endContainer, r.endOffset);
-  if (end <= start) return;
-  ctxSavedRange = { blockId: row.getAttribute('data-block-id'), start, end, text: r.toString(), at: Date.now() };
-}
-
-// 编辑区 mousedown：右键（button 2）按下时抢先暂存选区
-function onEditorMouseDown(e) {
-  if (e.button === 2) stashCtxSelection();
-}
-
-// Ctrl/Cmd+点击链接：系统默认浏览器打开（Typora 式）。仅放行 http(s)/mailto 协议
-//（相对路径/锚点/危险协议如 javascript: 不处理）；脚注引用（javascript:void(0)）排除。
-// mousedown 拦截：阻止落光标/焦点变化；click 拦截：阻止进编辑/展开等后续分发
-function ctrlLinkTarget(e) {
-  if (!(e.ctrlKey || e.metaKey) || e.button !== 0) return null;
-  const a = e.target.closest?.('a[href]');
-  if (!a || a.hasAttribute('data-footnote-ref') || a.classList.contains('md-footnote-ref')) return null;
-  const href = a.getAttribute('href') || '';
-  return /^(https?:|mailto:)/i.test(href) ? href : null;
-}
-function onCtrlLinkMousedown(e) {
-  if (!ctrlLinkTarget(e)) return;
-  e.preventDefault();
-  e.stopPropagation();
-}
-function onCtrlLinkClick(e) {
-  const href = ctrlLinkTarget(e);
-  if (!href) return;
-  e.preventDefault();
-  e.stopPropagation();
-  openUrl(href).catch(() => {});
-}
-
-// 菜单动作应用前恢复暂存选区（当前选区仍在编辑区内且未塌陷则无需恢复）
-function restoreCtxSelection(el) {
-  const saved = ctxSavedRange;
-  if (!saved || !el) return;
-  if (Date.now() - saved.at > 5000) return; // 陈旧暂存不恢复
-  const sel = window.getSelection();
-  if (sel.rangeCount) {
-    const cur = sel.getRangeAt(0);
-    if (!cur.collapsed && el.contains(cur.startContainer)) return;
-  }
-  // 编辑态暂存：DOM Range 直接恢复
-  if (saved.range) {
-    const r = saved.range;
-    if (!r.startContainer.isConnected || !el.contains(r.startContainer)) return;
-    sel.removeAllRanges();
-    sel.addRange(r);
-    return;
-  }
-  // 渲染态暂存（纯文本偏移 + 原文校验/搜索回退）：块须与当前编辑块一致
-  if (saved.blockId && saved.blockId !== editingId.value) return;
-  const r = reifyCtxRange(el, saved);
-  if (!r) return;
-  sel.removeAllRanges();
-  sel.addRange(r);
-}
-
-function closeCtxMenu() {
-  ctxMenu.value = null;
-}
-
-// 右键进入编辑携带的渲染态框选：可编辑容器挂载后立即按暂存的纯文本偏移重建选区，
-// 保持高亮视觉连续（否则第一次右键时选区高亮随 DOM 替换消失）
-function restoreCtxSelectionOnMount(el) {
-  const saved = ctxSavedRange;
-  if (!saved || saved.range || !saved.blockId) return false;
-  if (saved.blockId !== editingId.value) return false;
-  if (Date.now() - saved.at > 5000) return false;
-  const r = reifyCtxRange(el, saved);
-  if (!r) return false;
-  const sel = window.getSelection();
-  sel.removeAllRanges();
-  sel.addRange(r);
-  return true;
-}
-
-// 段落子菜单勾选态（heading 块映射为 h1-h6）
-const ctxCurrentType = computed(() => {
-  const b = editingBlock.value;
-  if (!b) return 'paragraph';
-  return b.type === 'heading' ? `h${b.level}` : b.type;
-});
-
-async function onMenuAction(id, payload) {
-  closeCtxMenu();
-  const el = currentEditable();
-  switch (id) {
-    // 撤销/重做/查找替换（右键菜单顶部项）
-    case 'undo':
-      return undoHistory();
-    case 'redo':
-      return redoHistory();
-    case 'find':
-      return openFind(true);
-    case 'cut':
-      el?.focus({ preventScroll: true });
-      document.execCommand('cut');
-      return;
-    case 'copy':
-      document.execCommand('copy');
-      return;
-    case 'delete':
-      document.execCommand('delete');
-      return;
-    case 'paste':
-    case 'pastePlain':
-      return pastePlainText();
-    case 'copyMarkdown':
-      return copySelection('markdown');
-    case 'copyHtml':
-      return copySelection('html');
-    case 'copySimplified':
-      return copySelection('simplified');
-    case 'copyPlain':
-      return copySelection('plain');
-    // 行内格式：统一走 insertInlineWrapper（有选区包选区，无选区插空元素光标入内）
-    case 'bold':
-    case 'italic':
-    case 'underline':
-    case 'strikethrough':
-    case 'highlight':
-    case 'inlineCode':
-    case 'link':
-      if (el) {
-        suppressBlurCommit = true;
-        try {
-          restoreCtxSelection(el);
-          insertInlineWrapper(el, id);
-        } finally {
-          suppressBlurCommit = false;
-        }
-        if (document.activeElement !== el) el.focus({ preventScroll: true });
-      }
-      return;
-    // 文字颜色/字号：色板与字号行选择（payload 为 htmlStyle 的 color/fontSize JSON）
-    case 'fontColor':
-      return ctxApplyFontStyle({ color: payload });
-    case 'fontSize':
-      return ctxApplyFontStyle({ fontSize: payload });
-    case 'quote':
-    case 'bulletedListItem':
-    case 'numberedListItem':
-    case 'taskListItem':
-    case 'paragraph':
-    case 'h1':
-    case 'h2':
-    case 'h3':
-    case 'h4':
-    case 'h5':
-    case 'h6':
-      return convertBlockType(id);
-    case 'image':
-    case 'separator':
-    case 'table':
-    case 'codeBlock':
-    case 'mathBlock':
-    case 'linkRef':
-    case 'toc':
-      return insertBlockFromMenu(id);
-    case 'footnote':
-      return insertFootnote();
-    case 'yamlFrontMatter':
-      return insertYamlFrontMatter();
-    case 'paraAbove':
-      return insertParagraphSibling(true);
-    case 'paraBelow':
-      return insertParagraphSibling(false);
-  }
-}
-
-// 字体样式 span 构建（slash 与右键菜单共用；htmlStyle JSON 落 data 属性无损往返）
-function buildFontSpan(style) {
-  const span = document.createElement('span');
-  span.setAttribute('style', htmlStyleCss(style));
-  span.setAttribute('data-html-style', JSON.stringify(style));
-  return span;
-}
-
-// 字体样式模板：淡灰 <font> 标签 + 中间样式 span（FEFF 哨兵光标位）——源码形态编辑，
-// 标签仅作显示且不可编辑（contenteditable=false：否则光标可落入标签文本内，
-// 输入被当作标签装饰、提交提取时剔除——表现为「标签后输入的文字被吞」）
-function buildFontTemplate(style) {
-  const open = document.createElement('span');
-  open.className = 'md-font-mark';
-  open.setAttribute('contenteditable', 'false');
-  open.textContent = `<font style="${htmlStyleCss(style)}">`;
-  const inner = buildFontSpan(style);
-  const zwsp = document.createTextNode('\uFEFF');
-  inner.append(zwsp);
-  const close = document.createElement('span');
-  close.className = 'md-font-mark';
-  close.setAttribute('contenteditable', 'false');
-  close.textContent = '</font>';
-  const frag = document.createDocumentFragment();
-  frag.append(open, inner, close);
-  return { frag, zwsp };
-}
-
-// 光标放入字体模板的文字位（哨兵之后）
-function placeCaretInFontTemplate(zwsp) {
-  const sel = window.getSelection();
-  const range = document.createRange();
-  range.setStart(zwsp, 1);
-  range.collapse(true);
-  sel.removeAllRanges();
-  sel.addRange(range);
-}
-
-// 右键菜单字体样式：有选区包选区；光标在既有字体 span 内则叠加更新（换色/换号）；
-// 否则插入空 span 光标入内（\uFEFF 哨兵占位），输入即带样式文字，Esc 退出该样式
-function ctxApplyFontStyle(style) {
-  const el = currentEditable();
-  if (!el || !style) return;
-  suppressBlurCommit = true;
-  try {
-    restoreCtxSelection(el);
-    const sel = window.getSelection();
-    if (sel.rangeCount && !sel.isCollapsed && el.contains(sel.anchorNode)) {
-      // 有选区：选区内容套用样式
-      const span = buildFontSpan(style);
-      const range = sel.getRangeAt(0);
-      span.append(range.extractContents());
-      range.insertNode(span);
-      placeCursorAtEnd(span);
-    } else if (sel.rangeCount && el.contains(sel.anchorNode) && caretFontSpan(el)) {
-      // 光标在既有字体 span 内：叠加更新该 span（color/fontSize 独立覆盖），不嵌套新 span
-      const existing = caretFontSpan(el);
-      mergeStyleIntoSpan(existing, style);
-      // 同步模板的开标签显示文本
-      const openMark = existing.previousSibling;
-      if (openMark?.nodeType === Node.ELEMENT_NODE && openMark.classList.contains('md-font-mark')) {
-        openMark.textContent = `<font style="${existing.getAttribute('style')}">`;
-      }
-    } else {
-      // 无选区：插入字体模板（淡灰 <font> 标签 + 样式 span），光标在标签内文字位，
-      // 输入即带选择的颜色/字号；Esc 退出该样式（光标移到模板之后）
-      const { frag, zwsp } = buildFontTemplate(style);
-      const range = sel.rangeCount && el.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
-      if (range) {
-        range.insertNode(frag);
-      } else {
-        // 无光标：放入块的首个块级子元素内（模板不能包块级元素）
-        (el.firstElementChild || el).append(frag);
-      }
-      placeCaretInFontTemplate(zwsp);
-    }
-  } finally {
-    suppressBlurCommit = false;
-  }
-  if (document.activeElement !== el) el.focus({ preventScroll: true });
-}
-
-// 插入 YAML Front Matter：文档头插入（已有则不重复）；模板由 Rust block_template 生成
-async function insertYamlFrontMatter() {
-  if (content.value.startsWith('---\n')) return;
-  const tpl = await invoke('block_template', { kind: 'yamlFrontMatter' }).catch(() => null);
-  if (!tpl) return;
-  if (editingId.value !== null) await commitEdit();
-  syncing.value = true;
-  try {
-    content.value = tpl.markdown + '\n' + content.value;
-    await reparse();
-    const target = blocks.value[0];
-    suppressBlurCommit = true;
-    pendingCaretOffset = tpl.caretOffset; // 光标落 title: 之后
-    editingId.value = target ? target.id : null;
-    if (!target) {
-      suppressBlurCommit = false;
-      pendingCaretOffset = null;
-    }
-  } finally {
-    syncing.value = false;
-  }
-}
-
-// 粘贴为纯文本（剪贴板 → 光标处；浏览器 insertText 自动处理多行分段，换行符先统一为 LF）
-async function pastePlainText() {
-  const text = await navigator.clipboard.readText().catch(() => null);
-  const el = currentEditable();
-  if (text == null || !el) return;
-  el.focus({ preventScroll: true });
-  document.execCommand('insertText', false, text.replace(/\r\n?/g, '\n'));
-}
-
-// 复制选区（无选区取当前整块）：markdown=Rust 序列化 / html=DOM HTML /
-// simplified=按块分段的纯文本 / plain=纯文本
-async function copySelection(kind) {
-  const el = currentEditable();
-  if (!el) return;
-  const sel = window.getSelection();
-  const div = document.createElement('div');
-  if (sel.rangeCount && !sel.isCollapsed && el.contains(sel.anchorNode)) {
-    div.append(sel.getRangeAt(0).cloneContents());
-  } else {
-    div.innerHTML = el.innerHTML;
-  }
-  let text = '';
-  if (kind === 'markdown') {
-    text = await invoke('serialize_markdown', { blocks: domToBlockDtos(div) }).catch(() => '');
-  } else if (kind === 'html') {
-    text = div.innerHTML;
-  } else if (kind === 'simplified') {
-    text = [...div.childNodes]
-      .map((n) => n.textContent)
-      .filter((t) => t.trim())
-      .join('\n\n');
-  } else {
-    text = sel.rangeCount && !sel.isCollapsed ? sel.toString() : div.textContent;
-  }
-  if (text) await navigator.clipboard.writeText(text).catch(() => {});
-}
-
-// 段落/块类型转换：保留行内结构（节点迁移而非纯文本——粗斜体/链接/颜色等格式不丢）
-async function convertBlockType(id) {
-  const el = currentEditable();
-  if (!el) return;
-  // 先取出块内容：单块时取其内部行内容（避免块套块），多块时取全部子节点
-  const sourceChildren =
-    el.firstElementChild && el.childElementCount === 1
-      ? [...el.firstElementChild.childNodes]
-      : [...el.childNodes];
-  const fragment = document.createDocumentFragment();
-  for (const node of sourceChildren) fragment.append(node);
-  const hasContent = fragment.textContent.trim() !== '';
-  suppressBlurCommit = true;
-  try {
-    await applySlashCommand(el, id);
-    if (hasContent) {
-      // applySlashCommand 已把光标放在内容槽位（h1-h6/li/quote p 内）：原内容节点插回
-      const sel = window.getSelection();
-      if (sel.rangeCount && el.contains(sel.anchorNode)) {
-        sel.getRangeAt(0).insertNode(fragment);
-        placeCursorAtEnd(el.lastElementChild || el);
-      }
-    }
-  } finally {
-    suppressBlurCommit = false;
-  }
-  if (document.activeElement !== el) el.focus({ preventScroll: true });
-}
-
-// 插入类块（图像/分割线/表格/代码块/公式块/链接引用）：
-// 当前块有内容时先在末尾拆出新空块（保住原内容），再按斜杠模板插入
-async function insertBlockFromMenu(id) {
-  let el = currentEditable();
-  if (!el) return;
-  if (el.textContent.trim()) {
-    placeCursorAtEnd(el);
-    await splitAndCommit();
-    el = currentEditable();
-    if (!el) return;
-  }
-  if (id === 'table') {
-    await applyTableTemplate(el, { rows: 2, cols: 2 });
-    return;
-  }
-  suppressBlurCommit = true;
-  try {
-    await applySlashCommand(el, id);
-  } finally {
-    suppressBlurCommit = false;
-  }
-  if (document.activeElement !== el) el.focus({ preventScroll: true });
-  // 代码块：围栏已插入（```），立即弹出语言补全，先编辑语言
-  if (id === 'codeBlock') updateLangMenu();
-}
-
-// 插入脚注：光标处插入 [^n] 引用（编号 = 现有最大编号 +1），提交后在文末追加定义块并进入编辑
-async function insertFootnote() {
-  const el = currentEditable();
-  if (!el) return;
-  let max = 0;
-  for (const b of footnotes.value) {
-    const n = parseInt(plainText(b.title), 10);
-    if (!Number.isNaN(n)) max = Math.max(max, n);
-  }
-  const id = max + 1;
-  insertTextAtCursor(`[^${id}]`);
-  await commitEdit();
-  // 模板（含脚注 id）由 Rust 生成，前端不做 Markdown 文本拼接
-  const tpl = await invoke('block_template', { kind: 'footnoteDef', footnoteId: String(id) }).catch(() => null);
-  if (!tpl) return;
-  const def = tpl.markdown;
-  syncing.value = true;
-  try {
-    // 解析失败：全文重解析自愈（appendBlocksAtEnd 内处理）
-    const parsed = await appendBlocksAtEnd(def);
-    if (!parsed) return;
-    publishBlocks();
-    const target = parsed[parsed.length - 1];
-    suppressBlurCommit = true;
-    cursorAtStart = false; // 光标落块尾（定义文本后）
-    editingId.value = target ? target.id : null;
-    if (!target) suppressBlurCommit = false;
-  } finally {
-    syncing.value = false;
-  }
-}
-
-// 段落（上方/下方）：上方 = 块首拆分后进入前一个空段落；下方 = 块尾拆分（默认进入新空段落）
-async function insertParagraphSibling(above) {
-  const el = currentEditable();
-  if (!el || !editingBlock.value) return;
-  if (above) {
-    placeCursorAtStart(el);
-    await splitAndCommit();
-    const idx = blocks.value.findIndex((b) => b.id === editingId.value);
-    const prev = blocks.value[idx - 1];
-    if (prev) {
-      suppressBlurCommit = true;
-      cursorAtStart = true;
-      editingId.value = prev.id;
-    }
-  } else {
-    placeCursorAtEnd(el);
-    await splitAndCommit();
-  }
-}
-
-// 按查询串过滤菜单项（匹配中文名 / 拼音与英文别名 / id）
-const slashItems = computed(() => {
-  const q = slashQuery.value.trim().toLowerCase();
-  if (!q) return SLASH_ITEMS;
-  return SLASH_ITEMS.filter(
-    (item) =>
-      item.label.toLowerCase().includes(q) || item.keywords.includes(q) || item.id.toLowerCase().includes(q),
-  );
-});
-
-// 编辑容器内光标前的纯文本（Range 探针；slashContext/fenceContext 等共用）
-function textBeforeCaretIn(el) {
-  const sel = window.getSelection();
-  if (!sel.rangeCount || !sel.isCollapsed) return null;
-  const caret = sel.getRangeAt(0);
-  if (!el.contains(caret.startContainer)) return null;
-  return { text: textBeforePoint(el, caret.startContainer, caret.startOffset), caret };
-}
-
-// 光标处的斜杠上下文：光标前文本中最后一个 / 位于块首或空白/换行/哨兵字符之后时，
-// 返回查询串与菜单位置（避免路径、URL、分数等误触发）；代码/原文 pre 编辑内不触发
-function slashContext() {
-  const el = currentEditable();
-  if (!el || editingId.value === null) return null;
-  const probed = textBeforeCaretIn(el);
-  if (!probed) return null;
-  const { text, caret } = probed;
-  const anchorEl = caret.startContainer.nodeType === Node.TEXT_NODE ? caret.startContainer.parentElement : caret.startContainer;
-  if (anchorEl?.closest('pre')) return null;
-  const idx = text.lastIndexOf('/');
-  if (idx < 0) return null;
-  if (idx > 0 && !/[\s\u00A0\uFEFF]/.test(text[idx - 1])) return null;
-  const rect = caret.getBoundingClientRect();
-  // 视口底部空间不足时向上翻（菜单最大高度 264 + 间隙）；文本行徽章较宽，左侧防溢出
-  const estimatedHeight = 270;
-  const top = rect.bottom + estimatedHeight > window.innerHeight
-    ? Math.max(8, rect.top - estimatedHeight)
-    : rect.bottom + 6;
-  const left = Math.max(8, Math.min(rect.left, window.innerWidth - 380));
-  return { query: text.slice(idx + 1), pos: { left, top } };
-}
-
-// 输入后刷新菜单：触发文本被删改（不再是 / 开头、含空格/换行）则关闭
-function updateSlashMenu() {
-  const ctx = slashContext();
-  if (!ctx || ctx.query.includes('\n') || ctx.query.includes(' ')) {
-    slashOpen.value = false;
-    return;
-  }
-  slashQuery.value = ctx.query;
-  if (slashIndex.value >= slashItems.value.length) slashIndex.value = 0;
-  slashTextRow.value = 0;
-  slashTextCol.value = 0;
-  slashTableField.value = 'item';
-  slashCalloutType.value = 0;
-  slashFontRow.value = 0;
-  slashFontColorIndex.value = 0;
-  slashFontSizeIndex.value = 0;
-  rgbError.value = false;
-  slashPos.value = ctx.pos;
-  slashOpen.value = true;
-}
-
-async function applySlashItem(item, option) {
-  const el = currentEditable();
-  if (!el || !item) return;
-  slashOpen.value = false;
-  // 文本行按当前/点选徽章应用；表格带行列数量；其余项直接应用
-  let id = item.id;
-  let opts;
-  if (id === 'text') {
-    const cell = option ?? { row: slashTextRow.value, col: slashTextCol.value };
-    id = SLASH_TEXT_GROUPS[cell.row][cell.col].id;
-  } else if (id === 'table') opts = { rows: slashTableRows.value, cols: slashTableCols.value };
-  else if (id === 'callout') {
-    // 警告框类型：徽章点选带类型，Enter 应用当前类型（←/→ 或悬停切换）
-    opts = { variant: option?.calloutVariant ?? CALLOUT_TYPES[slashCalloutType.value].id };
-  }
-  // 字体：色板/字号点选带样式，Enter 应用当前行列（←/→ 区内循环、↑/↓ 网格移动）
-  if (item.id === 'fontColor') {
-    if (option?.fontColor) applyFontColor(option.fontColor);
-    else if (option?.fontSize) applyFontSize(option.fontSize);
-    else if (slashFontRow.value === 1) applyFontSize(FONT_SIZES[slashFontSizeIndex.value].fontSize);
-    else if (slashFontRow.value === 2) return; // RGB 输入框行：Enter 由输入框自身处理
-    else applyFontColor(FONT_COLORS[slashFontColorIndex.value].color);
-    return;
-  }
-  // 表格：模板即时提交渲染，不进入原文编辑（随后聚焦首个数据单元格）
-  if (id === 'table') {
-    await applyTableTemplate(el, opts);
-    return;
-  }
-  // 任意位置 / 触发：先把 /query 触发段前后的内容摘出（应用时容器会被清空重建），
-  // 应用完成后放回原处——前文不丢
-  const frags = extractSlashFrags(el);
-  // 替换 DOM 期间抑制 blur 误提交：清空聚焦中的容器可能触发同步 blur，
-  // 不抑制则 onEditableBlur 抢先提交空内容（块被删，新内容插到已卸载节点上）
-  suppressBlurCommit = true;
-  try {
-    await applySlashCommand(el, id, opts);
-  } finally {
-    suppressBlurCommit = false;
-  }
-  if (frags) spliceSlashFrags(el, frags, id);
-  // 替换导致失焦时恢复焦点（光标已由构建函数放置）
-  if (document.activeElement !== el) el.focus({ preventScroll: true });
-  // 代码块：围栏已插入（```），立即弹出语言补全，先编辑语言
-  if (id === 'codeBlock') updateLangMenu();
-}
-
-// 摘出 /query 触发段的前后内容（任意位置 / 触发时调用；/ 在块首返回 null——无前文需保留）。
-// 返回 DocumentFragment 对（before/after），触发段本身被移除
-// 容器内纯文本偏移 → DOM 点（{node, offset}）
-function textOffsetPoint(root, target) {
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let acc = 0;
-  let cur;
-  while ((cur = walker.nextNode())) {
-    const len = cur.textContent.length;
-    if (target <= acc + len) return { node: cur, offset: target - acc };
-    acc += len;
-  }
-  return null;
-}
-
-function extractSlashFrags(el) {
-  const probed = textBeforeCaretIn(el);
-  if (!probed) return null;
-  const { text, caret } = probed;
-  const slashIdx = text.lastIndexOf('/');
-  if (slashIdx <= 0) return null;
-  // 文本偏移 → DOM 点
-  const point = textOffsetPoint(el, slashIdx);
-  if (!point) return null;
-  const beforeFrag = rangeBeforePoint(el, point.node, point.offset).extractContents();
-  const after = document.createRange();
-  after.selectNodeContents(el);
-  after.setStart(caret.startContainer, caret.startOffset);
-  const afterFrag = after.extractContents();
-  return { before: beforeFrag, after: afterFrag };
-}
-
-// 应用完成后把摘除的前后内容放回：模板类（data-raw pre/p）放回容器首尾（不混入模板原文），
-// 行内格式放回样式元素两侧，块级转换放回新结构文本宿主的首尾（光标落末尾）
-
-// 摘录片段 → 行内内容：extractContents 从容器起点摘录会克隆部分选中的块级外壳
-//（p/h1-h6/li/ul/…），直接插进行内上下文会形成块套块——样式元素（及 md-src 源标记）
-// 被挤到下一行。递归展开块级克隆，剔除 contenteditable=false 的交互控件
-//（任务勾选框/callout 标签等），相邻块内容之间补 <br> 保住换行
-function slashFragInline(frag) {
-  const BLOCK_SHELLS = new Set([
-    'P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6',
-    'LI', 'UL', 'OL', 'BLOCKQUOTE', 'DIV', 'PRE', 'TABLE', 'SECTION',
-  ]);
-  const out = document.createDocumentFragment();
-  const walk = (node) => {
-    for (const child of [...node.childNodes]) {
-      if (child.nodeType !== Node.ELEMENT_NODE) {
-        out.append(child);
-        continue;
-      }
-      if (child.getAttribute('contenteditable') === 'false') continue;
-      if (BLOCK_SHELLS.has(child.tagName)) {
-        // 与已有内容之间补换行（首块、或前导已是 <br> 时不补）
-        if (out.childNodes.length && out.lastChild.nodeName !== 'BR') {
-          out.append(document.createElement('br'));
-        }
-        walk(child);
-      } else {
-        out.append(child);
-      }
-    }
-  };
-  walk(frag);
-  return out;
-}
-
-function spliceSlashFrags(el, frags, id) {
-  const TEMPLATE_IDS = new Set([
-    'link', 'image', 'inlineMath', 'mathBlock', 'mermaidBlock', 'callout', 'sectionBlock',
-    'codeBlock', 'footnoteDef', 'linkRef', 'toc',
-  ]);
-  if (TEMPLATE_IDS.has(id)) {
-    el.prepend(frags.before);
-    el.append(frags.after);
-    return;
-  }
-  const INLINE_IDS = new Set(['bold', 'italic', 'underline', 'strikethrough', 'highlight', 'inlineCode']);
-  if (INLINE_IDS.has(id)) {
-    const wrap = el.querySelector('strong, em, u, s, mark, code');
-    if (wrap) {
-      // 片段含块级外壳克隆，须展开为行内内容，否则样式元素被挤到下一行
-      wrap.parentNode.insertBefore(slashFragInline(frags.before), wrap);
-      wrap.parentNode.insertBefore(slashFragInline(frags.after), wrap.nextSibling);
-    }
-    return;
-  }
-  const host = el.querySelector('p, h1, h2, h3, h4, h5, h6, li');
-  if (!host) return;
-  // 空结构占位 br 先移除（避免夹在前后文之间产生换行）
-  if (host.childNodes.length === 1 && host.firstChild.tagName === 'BR') host.innerHTML = '';
-  host.prepend(slashFragInline(frags.before));
-  host.append(slashFragInline(frags.after));
-  placeCursorAtEnd(host);
-}
-
-// 斜杠表格：取 Rust block_template 模板后立即提交渲染为表格块，并进入首个数据单元格编辑
-async function applyTableTemplate(el, opts) {
-  const tpl = await invoke('block_template', { kind: 'table', rows: opts?.rows, cols: opts?.cols }).catch((e) => {
-    console.error('block_template 调用失败:', e);
-    return null;
-  });
-  if (!tpl) return;
-  syncing.value = true;
-  try {
-    // 聚焦新表格块的首个数据单元格（reparse 后旧 id 已失效，取替换位首块）
-    const isAppend = editingId.value === '__append__';
-    let tableBlock = null;
-    if (isAppend) {
-      const anchored = await appendBlocksAtEnd(tpl.markdown);
-      if (!anchored) return; // 解析失败：全文重解析自愈（appendBlocksAtEnd 内处理）
-      publishBlocks();
-      tableBlock = anchored[0] ?? null;
-    } else {
-      const index = blocks.value.findIndex((b) => b.id === editingId.value);
-      const block = blocks.value[index];
-      if (block) {
-        content.value = content.value.slice(0, block.start) + tpl.markdown + content.value.slice(block.end);
-        await reparseRegion(index, block, tpl.markdown);
-        tableBlock = blocks.value[index] ?? null;
-      }
-    }
-    editableEl = null;
-    suppressBlurCommit = true;
-    pendingTableFocus = true;
-    editingId.value = tableBlock ? tableBlock.id : null;
-    if (!tableBlock) suppressBlurCommit = false;
-  } finally {
-    syncing.value = false;
-  }
-}
 // 下一次挂载聚焦表格首个数据单元格（斜杠表格即时渲染）
 let pendingTableFocus = false;
 
-// ---------- 围栏语言自动补全（``` 后弹出语言菜单，含 mermaid/math） ----------
-const langOpen = ref(false);
-const langQuery = ref('');
-const langIndex = ref(0);
-const langPos = ref({ left: 0, top: 0 });
-// 语言清单（Rust code_languages：mermaid/math + tree-sitter 高亮语言），首次打开时拉取
-const langList = ref([]);
 
-// 前缀匹配过滤（清单由 Rust code_languages 按字典序返回）
-const langItems = computed(() => {
-  const q = langQuery.value.trim().toLowerCase();
-  if (!q) return langList.value;
-  return langList.value.filter((lang) => lang.toLowerCase().startsWith(q));
-});
-
-// 菜单展示项（每语言专属缩写徽章 + 品牌色）
-const langMenuItems = computed(() =>
-  langItems.value.map((lang) => {
-    const badge = LANG_BADGES[lang] || { text: lang.slice(0, 2), color: 'currentColor' };
-    return { id: lang, label: lang, icon: `<span class="md-lang-badge" style="color:${badge.color}">${badge.text}</span>` };
-  }),
-);
-
-// 光标前文本为 ```/~~~ 加部分语言名（无空格无换行）时返回补全上下文；否则 null
-function fenceContext() {
-  const el = currentEditable();
-  if (!el || editingId.value === null) return null;
-  const probed = textBeforeCaretIn(el);
-  if (!probed) return null;
-  const { text, caret } = probed;
-  const anchorEl = caret.startContainer.nodeType === Node.TEXT_NODE ? caret.startContainer.parentElement : caret.startContainer;
-  if (anchorEl?.closest('pre')) return null;
-  const match = /^(`{3,}|~{3,})([a-zA-Z0-9#+_-]*)$/.exec(text);
-  if (!match) return null;
-  const rect = caret.getBoundingClientRect();
-  const estimatedHeight = 270;
-  const top = rect.bottom + estimatedHeight > window.innerHeight
-    ? Math.max(8, rect.top - estimatedHeight)
-    : rect.bottom + 6;
-  return { fence: match[1], query: match[2], pos: { left: rect.left, top } };
-}
-
-async function updateLangMenu() {
-  const ctx = fenceContext();
-  if (!ctx) {
-    langOpen.value = false;
-    return;
-  }
-  if (!langList.value.length) {
-    langList.value = await invoke('code_languages').catch(() => []);
-  }
-  langMenuInput = null;
-  langQuery.value = ctx.query;
-  if (langIndex.value >= langItems.value.length) langIndex.value = 0;
-  langPos.value = ctx.pos;
-  langOpen.value = true;
-}
-
-// 语言输入框（代码块右上角）补全：与围栏补全共用菜单；
-// langMenuInput 非空表示菜单来自输入框（应用时写回输入框而非围栏文本）
-let langMenuInput = null;
-async function updateLangInputMenu(input) {
-  if (!langList.value.length) {
-    langList.value = await invoke('code_languages').catch(() => []);
-  }
-  langMenuInput = input;
-  langQuery.value = input.value.trim();
-  if (langIndex.value >= langItems.value.length) langIndex.value = 0;
-  const rect = input.getBoundingClientRect();
-  const estimatedHeight = 270;
-  langPos.value = {
-    // 右缘钳制（语言框在代码块右上角，菜单默认向左伸出会溢出视口）
-    left: Math.max(8, Math.min(rect.left, window.innerWidth - 340)),
-    top:
-      rect.bottom + estimatedHeight > window.innerHeight
-        ? Math.max(8, rect.top - estimatedHeight)
-        : rect.bottom + 6,
-  };
-  langOpen.value = true;
-}
-
-// 应用语言补全：围栏后的查询文本替换为所选语言，光标落在语言之后
-//（此时仍是普通文本行，继续输入或 Enter 经既有流程转为代码块）；
-// 来自语言输入框时：写回输入框并同步到 pre，焦点回代码区开头
-function applyLangItem(lang) {
-  if (langMenuInput) {
-    const input = langMenuInput;
-    langMenuInput = null;
-    langOpen.value = false;
-    if (!lang || !input.isConnected) return;
-    input.value = lang;
-    const pre = input.closest('pre');
-    pre?.setAttribute('data-language', lang);
-    scheduleCodeHighlight(); // 语言补全应用后重排高亮
-    const code = pre?.querySelector('code');
-    if (code) placeCursorAtStart(code);
-    pre?.closest('[contenteditable]')?.focus({ preventScroll: true });
-    return;
-  }
-  const el = currentEditable();
-  const ctx = fenceContext();
-  if (!el || !ctx || !lang) return;
-  langOpen.value = false;
-  const after = el.textContent.slice((ctx.fence + ctx.query).length);
-  const p = el.querySelector('p') || el;
-  p.textContent = ctx.fence + lang + after;
-  placeCaretAtTextOffset(p, (ctx.fence + lang).length);
-}
-
-// ---------- 图片 () 内 ./ 路径补全（与语言补全共用 SlashMenu 面板） ----------
-const pathOpen = ref(false);
-const pathIndex = ref(0);
-const pathPos = ref({ left: 0, top: 0 });
-const pathCandidates = ref([]);
-let pathCtx = null; // { node, offset, prefix }：应用时据此替换前缀文本
-
-// 光标位于图片 () 内的 ./ 路径中时返回补全上下文；否则 null。
-// 按「段落整体文本 + 光标偏移」判定（图片模板/图片段落再编辑均为 data-raw 单段），
-// 与光标落在哪个节点（标记 span / 文本节点）无关
-function imagePathContext() {
-  const el = currentEditable();
-  if (!el || editingId.value === null) return null;
-  const sel = window.getSelection();
-  if (!sel.rangeCount || !sel.isCollapsed) return null;
-  const anchor = sel.anchorNode;
-  const anchorEl = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
-  const p = anchorEl?.closest?.('p');
-  if (!p || !el.contains(p) || !p.hasAttribute('data-raw')) return null;
-  // 光标在段落内的纯文本偏移（探针 range；\uFEFF 哨兵不计入）
-  const before = textBeforePoint(p, anchor, sel.anchorOffset).replace(/\uFEFF/g, '');
-  const m = /^!\[[^\]]*\]\((\.\/[^)\s]*)$/.exec(before);
-  if (!m) return null;
-  const rect = sel.getRangeAt(0).getBoundingClientRect();
-  const estimatedHeight = 240;
-  const top = rect.bottom + estimatedHeight > window.innerHeight
-    ? Math.max(8, rect.top - estimatedHeight)
-    : rect.bottom + 6;
-  return { p, prefix: m[1], pos: { left: Math.max(8, rect.left), top } };
-}
-
-async function updatePathMenu() {
-  const ctx = imagePathContext();
-  if (!ctx || !documentDir.value) {
-    pathOpen.value = false;
-    pathCtx = null;
-    return;
-  }
-  const list = await invoke('complete_path', { baseDir: documentDir.value, prefix: ctx.prefix }).catch(() => []);
-  // 等待期间光标/文本变化则放弃（下次输入再触发）
-  const cur = imagePathContext();
-  if (!cur || cur.p !== ctx.p || cur.prefix !== ctx.prefix) return;
-  if (!list.length) {
-    pathOpen.value = false;
-    pathCtx = null;
-    return;
-  }
-  pathCtx = ctx;
-  pathCandidates.value = list;
-  if (pathIndex.value >= list.length) pathIndex.value = 0;
-  pathPos.value = ctx.pos;
-  pathOpen.value = true;
-}
-
-// 菜单展示项：目录带 📁、图片带 🖼
-const pathMenuItems = computed(() =>
-  pathCandidates.value.map((p) => ({
-    id: p,
-    label: p,
-    icon: p.endsWith('/') ? '<span>📁</span>' : '<span>🖼</span>',
-  })),
-);
-
-// 应用路径补全：重建图片模板段落为所选路径（保留 alt 与标记结构），光标落在路径之后；
-// 选中目录（尾随 /）时下次输入会自动重新触发补全（列出该目录内容）
-function applyPathItem(path) {
-  const ctx = pathCtx;
-  pathCtx = null;
-  pathOpen.value = false;
-  if (!ctx || !path || !ctx.p.isConnected) return;
-  const p = ctx.p;
-  const text = p.textContent.replace(/\uFEFF/g, '');
-  const alt = /^!\[([^\]]*)\]/.exec(text)?.[1] ?? '';
-  const mark = markSpanFactory('md-link-mark');
-  const altSpan = document.createElement('span');
-  altSpan.className = 'md-link-text';
-  altSpan.textContent = alt;
-  // 路径用 md-link-url span 包裹（浅蓝显示，与链接文字同色）
-  const pathSpan = document.createElement('span');
-  pathSpan.className = 'md-link-url';
-  pathSpan.textContent = path;
-  const pathNode = pathSpan.firstChild;
-  p.innerHTML = '';
-  p.append(mark('!'), mark('['), altSpan, mark(']'), mark('('), pathSpan, mark(')'));
-  const sel = window.getSelection();
-  sel.collapse(pathNode, pathNode.textContent.length);
-  currentEditable()?.focus({ preventScroll: true });
-  // 选中目录（尾随 /）：立即列出其内容继续补全，直至选中图片（无需再敲字符）
-  if (path.endsWith('/')) updatePathMenu();
-}
-// 滚动定位闪烁的块 id / 当前滚动位置对应的标题 id（供大纲高亮）
+// 滚动定位闪烁的块 id（当前标题 id 由 useOutlineScroll 内部维护并直接 emit）
 const flashId = ref(null);
-const activeHeadingId = ref(null);
 // WYSIWYG 滚动容器（大纲定位用）
 const scrollRoot = ref(null);
 // 源码模式滚动容器
@@ -2224,6 +186,10 @@ let savedTopMargin = 0;
 let restoreCaretAdjustment = null;
 // 文档所在目录（粘贴图片的保存基准，App provide）
 const documentDir = inject('documentDir', { value: null });
+// 当前文档主名（不含扩展名）：粘贴图片「按文档名分目录」的子目录名
+const currentFileStem = inject('currentFileStem', { value: null });
+// 当前文件完整路径（阅读位置记忆按路径键控；null = 未保存新文档）
+const currentFilePath = inject('currentFilePath', { value: null });
 // 正在编辑的块 id；'__append__' 表示在文末追加新块
 const editingId = ref(null);
 // 当前编辑块（表格编辑工具栏显隐用）
@@ -2285,9 +251,6 @@ const {
   onThumbPointerDown: sbOnThumbPointerDown,
   onTrackPointerDown: sbOnTrackPointerDown,
 } = useOverlayScrollbar(() => scrollRoot.value, scrollbarAutoHide);
-// 内容高度变化（块树发布/初次挂载）后重算滑轨
-watch(renderedBlocks, () => nextTick(updateSbThumb), { flush: 'post' });
-onMounted(() => nextTick(updateSbThumb));
 // 换块/提交时关闭斜杠命令菜单与语言补全菜单、表格弹出层、右键菜单
 watch(editingId, () => {
   slashOpen.value = false;
@@ -2315,6 +278,88 @@ function currentEditable() {
   if (el) editableEl = el;
   return editableEl;
 }
+
+// ---------- 组合式函数装配（撤销历史 / 查找替换 / 虚拟滚动，见 src/composables/） ----------
+// 共享上下文 ctx：核心响应式状态（ref）按引用共享；可变原始值（let）经 get/set 访问器共享；
+// 跨模块函数一律经 ctx 在运行时解析（函数声明提升，无初始化顺序依赖）
+const ctx = {
+  content, blocks, allBlocks, footnotes, scrollRoot, sourceRoot, editingId, flashId, documentDir, syncing, savedContent, currentFilePath,
+  get editableEl() { return editableEl; },
+  set editableEl(v) { editableEl = v; },
+  get pendingCaretOffset() { return pendingCaretOffset; },
+  set pendingCaretOffset(v) { pendingCaretOffset = v; },
+  get suppressBlurCommit() { return suppressBlurCommit; },
+  set suppressBlurCommit(v) { suppressBlurCommit = v; },
+  get pendingTableFocus() { return pendingTableFocus; },
+  set pendingTableFocus(v) { pendingTableFocus = v; },
+  get cursorAtStart() { return cursorAtStart; },
+  set cursorAtStart(v) { cursorAtStart = v; },
+  get blurCommitTimer() { return blurCommitTimer; },
+  set blurCommitTimer(v) { blurCommitTimer = v; },
+  currentEditable, reparse, commitEdit, scheduleCodeHighlight,
+  parseAnchoredBlocks, shiftBlockOffsets, publishBlocks, renumberOrderedMarkers,
+  editingBlock, isSourceMode: () => props.sourceMode, startEdit, splitAndCommit, appendBlocksAtEnd, reparseRegion,
+  emit, footnoteRefList, sbOnScroll, sbOnMouseMove, sbOnMouseLeave,
+};
+Object.assign(ctx, useUndoHistory(ctx));
+Object.assign(ctx, useFindReplace(ctx));
+Object.assign(ctx, useVirtualScroll(ctx));
+Object.assign(ctx, useCompletion(ctx));
+Object.assign(ctx, useTableEditing(ctx));
+Object.assign(ctx, useSlashMenu(ctx));
+Object.assign(ctx, useContextMenu(ctx));
+Object.assign(ctx, useOutlineScroll(ctx));
+Object.assign(ctx, useChangeReview(ctx));
+Object.assign(ctx, useInlineSourceReveal(ctx));
+Object.assign(ctx, useReadingPosition(ctx));
+Object.assign(ctx, useSourceLineNumbers(ctx));
+const {
+  undoHistory, redoHistory, setHistoryLoading, resetHistory,
+  findVisible, findWithReplace, findMatch,
+  openFind, closeFind, onFindSearchInput, navFind, replaceInDocument, replaceAllInDocument,
+  scheduleFindHighlights, hasKeyword: hasFindKeyword,
+  renderedBlocks, visibleRows, tailPadHeight, rowQuota,
+  langOpen, langIndex, langPos, langItems, langMenuItems,
+  pathOpen, pathIndex, pathPos, pathCandidates, pathMenuItems,
+  updateLangMenu, updateLangInputMenu, applyLangItem, dismissLangInput, updatePathMenu, applyPathItem,
+  tableCaretAlign, tablePanel, tablePanelPos, hoverTableId, tableEdgeBtn,
+  tableGridHover, tableGridSize, TABLE_GRID_COLS, TABLE_GRID_ROWS, TABLE_MORE_ITEMS,
+  onTableBlockHover, onTableBlockLeave, onTableEdgeMove, onTableEdgeAdd,
+  onToolbarOp, onToolbarDelete, onToolbarPanel, applyTableGrid, runTableMore,
+  caretTableCell, moveTableCaret, moveTableRowDown, updateTableCaretAlign, takePendingTableAction, tableOp, pasteTableMatrix,
+  slashOpen, slashIndex, slashPos, slashItems, slashTextRow, slashTextCol,
+  slashTableRows, slashTableCols, slashTableField, slashCalloutType,
+  slashFontRow, slashFontColorIndex, slashFontSizeIndex, rgbError,
+  updateSlashMenu, applySlashItem, applyRgbInput, onRgbFocus, onRgbCancel, onRgbNav, routeSlashKeys,
+  ctxMenu, ctxCurrentType, onContextMenu, onEditorMouseDown, onCtrlLinkMousedown, onCtrlLinkClick,
+  onMenuAction, closeCtxMenu, restoreCtxSelectionOnMount,
+  copySelection, pastePlainText, insertBlockFromMenu, convertBlockType, domTextOffset,
+  scrollToBlock, onEditorScroll, onEditorMouseMove, onEditorMouseLeave,
+  rulerTicks, counts: changeCounts, reviewEnabled,
+  menuOpen: chgMenuOpen, baselineKind, baselineTitle, gitState, manualTimeLabel, manualSnapshotAvailable,
+  showOld: showOldContent, setBaseline, closeReview, captureManualSnapshot, probeGit,
+  updateInlineSourceReveal, expandLinkAtCaretInUrl,
+  backTopVisible, scrollToTop,
+  gutterRoot, gutterLines, lineNumbersOn, jumpInput, jumpOpen, jumpText, routeSourceKeys, onJumpKeydown,
+} = ctx;
+// ---------- 改动审阅基线菜单（MEO 式 ±按钮 + 下拉） ----------
+const chgReviewOn = computed(() => {
+  prefsVersion.value;
+  return !!getPref('change_review');
+});
+// 打开菜单时探测 Git 基线可用性（非 Git 仓库/未跟踪 → 禁用项带说明）
+function toggleChgMenu() {
+  chgMenuOpen.value = !chgMenuOpen.value;
+  if (chgMenuOpen.value && gitState.value === 'unknown') probeGit();
+}
+const gitSuffix = computed(() => {
+  if (!currentFilePath.value) return ' · 未保存文档';
+  return gitState.value === 'unavailable' ? ' · 非 Git 仓库/未跟踪' : '';
+});
+const gitDisabled = computed(() => !currentFilePath.value || gitState.value === 'unavailable');
+// 内容高度变化（块树发布/初次挂载）后重算滑轨
+watch(renderedBlocks, () => nextTick(updateSbThumb), { flush: 'post' });
+onMounted(() => nextTick(updateSbThumb));
 
 // 行/词/字符统计由 Rust text_stats 命令完成（CJK 感知词数、UTF-16 字符数），
 // 内容变化后防抖更新，避免每次按键都跨进程调用；
@@ -2608,6 +653,7 @@ function onInput(e) {
 // 源码模式 Tab：插入制表符而非默认移焦（否则光标跳到下一控件丢失）；
 // 支持选区替换，光标落在插入内容之后
 function onSourceKeydown(e) {
+  if (routeSourceKeys(e)) return; // Ctrl+G 跳行 / Esc 关闭跳行框（F-G）
   if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
   e.preventDefault();
   const ta = sourceRoot.value;
@@ -2707,10 +753,9 @@ function setEditableEl(el) {
       placeCursorAtEnd(el);
     }
     // 悬停工具栏排队的动作（对齐/插行列/删除/打开面板）：编辑容器就绪、光标落位后执行
-    if (pendingTableAction) {
-      const action = pendingTableAction;
-      pendingTableAction = null;
-      action();
+    const queuedTableAction = takePendingTableAction();
+    if (queuedTableAction) {
+      queuedTableAction();
       // 收起自动放置的光标：后续工具栏操作按「无单元格上下文」处理
       // （对齐=整表、插/删行列=末尾）；用户点进单元格后恢复行/列上下文
       window.getSelection()?.removeAllRanges();
@@ -3224,7 +1269,7 @@ function onEditableInput(e) {
     nextTick(() => requestAnimationFrame(adjustCaretToViewportCenter));
   }
   // 查找条打开时：输入会重渲染行内容，防抖重扫高亮
-  if (findVisible.value && lastKeyword) scheduleFindHighlights();
+  if (findVisible.value && hasFindKeyword()) scheduleFindHighlights();
   // 输入到底部时：光标若被压到窗口底部（状态栏上方不可见），滚到窗口首行
   nextTick(keepCaretAboveStatusBar);
 }
@@ -3336,6 +1381,26 @@ function keepCaretAboveStatusBar() {
   }
 }
 
+// 选区符号包裹（偏好 wrap_selection）：beforeinput 拦截符号输入，包裹后内部文字保持选中；
+// 不包裹的情形（IME 组合中/塌陷光标/pre 内/跨容器/纯空白）走原生输入
+function onEditableBeforeInput(e) {
+  if (e.inputType !== 'insertText' || !e.data || e.data.length !== 1) return;
+  if (!getPref('wrap_selection')) return;
+  const el = currentEditable();
+  if (!el || !shouldWrapSelection(el, e.data, e)) return;
+  e.preventDefault();
+  // 包裹内部已派发 input 事件，onEditableInput 的既有后处理自动接力
+  wrapSelectionWithSymbol(el, e.data);
+}
+
+// 粘贴/拖放图片的落盘子目录：'assets' → assets；'assets-per-document' → assets/<文档主名>
+//（未保存文档无文档名时回落 assets）；其余（'document'）保存到文档目录本身（null）
+function imageSubDir(behavior) {
+  if (behavior === 'assets') return 'assets';
+  if (behavior === 'assets-per-document') return `assets/${currentFileStem.value || 'images'}`;
+  return null;
+}
+
 // 粘贴图片：按偏好保存到文档目录/assets 子目录并插入相对路径引用（未保存文档跳过）
 async function onEditablePaste(e) {
   // 代码块语言输入框内粘贴：原生文本粘贴（不走 Markdown 通道/图片落盘）
@@ -3348,7 +1413,19 @@ async function onEditablePaste(e) {
     const text = (e.clipboardData?.getData('text/plain') || '').replace(/\r\n?/g, '\n');
     const el = currentEditable();
     const rawMode = !!el?.querySelector('pre') || editingBlock.value?.type === 'table';
-    if (rawMode) return;
+    // 表格矩阵覆盖粘贴：光标在表格单元格且文本含制表符时，同步阻止默认插入，
+    // 经 Rust 判定为 TSV 矩阵则从光标单元格起覆盖写入；否则回退手动纯文本插入
+    //（必须同步 preventDefault：IPC 是异步的，await 回来浏览器已执行默认插入会双份）
+    if (rawMode) {
+      const cell = editingBlock.value?.type === 'table' ? caretTableCell() : null;
+      if (cell && text.includes('\t')) {
+        e.preventDefault();
+        const matrix = await invoke('table_matrix_from_text', { text }).catch(() => null);
+        if (matrix && pasteTableMatrix(cell, matrix)) return;
+        document.execCommand('insertText', false, text);
+      }
+      return;
+    }
     // 必须同步 preventDefault：Rust 嗅探判定是异步的，若先 await 再 preventDefault，
     // 浏览器已执行默认粘贴插入一份，Markdown 通道再插一份，内容重复（双份粘贴 bug）。
     // 改为统一手动插入：Markdown 走解析通道，纯文本走 insertText
@@ -3365,6 +1442,22 @@ async function onEditablePaste(e) {
       }
     }
     if (!text) return;
+    // 表格粘贴转换（偏好 paste_table_convert）：Excel/TSV/HTML 表格 → Markdown 表格。
+    // 同步预过滤（无 <table 且无制表符必非表格），避免每次粘贴一次 IPC；
+    // 应用内 data-md-fragment 已在上方优先处理，此处只见外部剪贴板
+    if (
+      getPref('paste_table_convert') &&
+      (html.toLowerCase().includes('<table') || text.includes('\t'))
+    ) {
+      const mdTable = await invoke('table_markdown_from_clipboard', {
+        text: text || null,
+        html: html || null,
+      }).catch(() => null);
+      if (mdTable) {
+        await pasteMarkdownAtCaret(mdTable);
+        return;
+      }
+    }
     if (await looksLikeMarkdown(text)) {
       await pasteMarkdownAtCaret(text);
     } else {
@@ -3388,7 +1481,7 @@ async function onEditablePaste(e) {
   }
   const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
   const ext = imageItem.type.split('/')[1] || 'png';
-  const subDir = behavior === 'assets' ? 'assets' : null;
+  const subDir = imageSubDir(behavior);
   const relPath = await invoke('save_pasted_image', { bytes, baseDir, subDir, extension: ext }).catch(() => null);
   if (relPath) insertTextAtCursor(`![](${relPath})`);
 }
@@ -3546,131 +1639,7 @@ function onEditableKeydown(e) {
     }
   }
   // 斜杠菜单打开时优先路由：上下选择、Enter 应用、Esc 关闭
-  if (slashOpen.value) {
-    const items = slashItems.value;
-    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-      e.preventDefault();
-      const item = items[slashIndex.value];
-      // 表格行且已进入行/列字段：↑/↓ 增减数量；字段为表格项本身时照常菜单导航
-      if (item?.id === 'table' && slashTableField.value !== 'item') {
-        const delta = e.key === 'ArrowUp' ? 1 : -1;
-        if (slashTableField.value === 'rows') {
-          slashTableRows.value = Math.min(50, Math.max(1, slashTableRows.value + delta));
-        } else {
-          slashTableCols.value = Math.min(20, Math.max(1, slashTableCols.value + delta));
-        }
-        return;
-      }
-      // 文本行：↑/↓ 在徽章子行间移动（行内格式→标题→列表），边缘行再进出菜单导航
-      if (item?.id === 'text') {
-        const lastRow = SLASH_TEXT_GROUPS.length - 1;
-        const down = e.key === 'ArrowDown';
-        if (down && slashTextRow.value < lastRow) {
-          slashTextRow.value += 1;
-        } else if (!down && slashTextRow.value > 0) {
-          slashTextRow.value -= 1;
-        } else {
-          slashIndex.value = down
-            ? (slashIndex.value + 1) % items.length
-            : (slashIndex.value - 1 + items.length) % items.length;
-        }
-        slashTextCol.value = Math.min(slashTextCol.value, SLASH_TEXT_GROUPS[slashTextRow.value].length - 1);
-        return;
-      }
-      // 字体行：↑/↓ 网格内上下移动（色板 6 列两行、字号 5 列两行），边界换区/回菜单导航
-      if (item?.id === 'fontColor') {
-        const down = e.key === 'ArrowDown';
-        if (slashFontRow.value === 0) {
-          // 色板区（12 格，6 列两行）：↓ 上行→下行，下行→字号区；↑ 下行→上行，上行→菜单上一项
-          const idx = slashFontColorIndex.value;
-          if (down) {
-            if (idx < 6) slashFontColorIndex.value = idx + 6;
-            else {
-              slashFontRow.value = 1;
-              slashFontSizeIndex.value = Math.min(idx - 6, 4);
-            }
-          } else if (idx >= 6) {
-            slashFontColorIndex.value = idx - 6;
-          } else {
-            slashIndex.value = (slashIndex.value - 1 + items.length) % items.length;
-          }
-        } else {
-          // 字号区（10 格，5 列两行）：↑ 下行→上行，上行→色板下行；↓ 上行→下行，下行→RGB 输入框
-          const idx = slashFontSizeIndex.value;
-          if (down) {
-            if (idx < 5) slashFontSizeIndex.value = idx + 5;
-            else slashFontRow.value = 2;
-          } else if (idx >= 5) {
-            slashFontSizeIndex.value = idx - 5;
-          } else {
-            slashFontRow.value = 0;
-            slashFontColorIndex.value = 6 + Math.min(idx, 5);
-          }
-        }
-        return;
-      }
-      if (items.length) {
-        // 循环导航（到底/到顶回绕），滚动跟随由菜单面板负责
-        slashIndex.value =
-          e.key === 'ArrowDown'
-            ? (slashIndex.value + 1) % items.length
-            : (slashIndex.value - 1 + items.length) % items.length;
-      }
-      return;
-    }
-    // 行内 ←/→：文本行移动徽章列 / 表格在 项→行→列 字段间循环
-    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-      const item = items[slashIndex.value];
-      if (item?.id === 'text') {
-        e.preventDefault();
-        const cols = SLASH_TEXT_GROUPS[slashTextRow.value].length;
-        slashTextCol.value =
-          e.key === 'ArrowRight'
-            ? Math.min(cols - 1, slashTextCol.value + 1)
-            : Math.max(0, slashTextCol.value - 1);
-        return;
-      }
-      if (item?.id === 'table') {
-        e.preventDefault();
-        const fields = ['item', 'rows', 'cols'];
-        const step = e.key === 'ArrowRight' ? 1 : -1;
-        const next = (fields.indexOf(slashTableField.value) + step + fields.length) % fields.length;
-        slashTableField.value = fields[next];
-        return;
-      }
-      // 警告框行：←/→ 循环切换类型（Enter 应用当前类型）
-      if (item?.id === 'callout') {
-        e.preventDefault();
-        const step = e.key === 'ArrowRight' ? 1 : -1;
-        slashCalloutType.value =
-          (slashCalloutType.value + step + CALLOUT_TYPES.length) % CALLOUT_TYPES.length;
-        return;
-      }
-      // 字体行：←/→ 在当前区内循环（色板区 12 格 / 字号区 10 格；RGB 输入框聚焦时按键在框内）
-      if (item?.id === 'fontColor') {
-        e.preventDefault();
-        const step = e.key === 'ArrowRight' ? 1 : -1;
-        if (slashFontRow.value === 1) {
-          slashFontSizeIndex.value =
-            (slashFontSizeIndex.value + step + FONT_SIZES.length) % FONT_SIZES.length;
-        } else if (slashFontRow.value === 0) {
-          slashFontColorIndex.value =
-            (slashFontColorIndex.value + step + FONT_COLORS.length) % FONT_COLORS.length;
-        }
-        return;
-      }
-    }
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      applySlashItem(items[slashIndex.value]);
-      return;
-    }
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      slashOpen.value = false;
-      return;
-    }
-  }
+  if (routeSlashKeys(e)) return;
   // 围栏语言补全打开时：↑/↓ 选择（循环回绕）、Enter/Tab 补全、Esc 关闭
   if (routeCompletionKeys(e, langOpen, langItems.value, langIndex, applyLangItem)) return;
   // 图片路径补全打开时：↑/↓ 选择（循环回绕）、Enter/Tab 补全、Esc 关闭（与语言补全同交互）
@@ -3694,7 +1663,7 @@ function onEditableKeydown(e) {
       const a = prev?.nodeType === Node.ELEMENT_NODE && prev.tagName === 'A' ? prev : null;
       if (a && el.contains(a) && !a.closest('pre')) {
         e.preventDefault();
-        expandLinkAtCaret(a, true);
+        expandLinkAtCaretInUrl(a);
         return;
       }
     }
@@ -3704,7 +1673,7 @@ function onEditableKeydown(e) {
   if (e.target?.closest?.('[data-lang-input]')) {
     if (e.key === 'Enter' || e.key === 'Tab' || e.key === 'Escape') {
       e.preventDefault();
-      langMenuInput = null;
+      dismissLangInput();
       const pre = e.target.closest('pre');
       const code = pre?.querySelector('code');
       if (code) placeCursorAtStart(code);
@@ -4040,6 +2009,24 @@ async function toggleTask(block) {
   await reparseRegion(index, rootBlock, next);
 }
 
+// 合并冲突块三向接受：把冲突块源码区间替换为所选侧内容（current/incoming/both=先后拼接），
+// 走与 toggleTask 相同的「区间替换 + 增量重解析」链路（竞态守卫一致：await 期间内容变了就放弃）
+async function resolveConflict({ block, choice }) {
+  if (block.type !== 'conflictBlock' || block.start == null) return;
+  const index = blocks.value.findIndex((b) => b.id === block.id);
+  if (index < 0) return;
+  const c = block.conflict;
+  if (!c) return;
+  const chosen =
+    choice === 'current' ? c.current
+    : choice === 'incoming' ? c.incoming
+    : [c.current, c.incoming].filter(Boolean).join('\n');
+  const source = content.value.slice(block.start, block.end);
+  if (!source.includes('<<<<<<<')) return; // 已非冲突块（防御）
+  content.value = content.value.slice(0, block.start) + chosen + content.value.slice(block.end);
+  await reparseRegion(index, block, chosen);
+}
+
 // 在根块树中定位任务项：返回其根块与 DFS 前序序号（目标为第 occurrence 个任务标记）
 function locateTaskInRoot(id) {
   for (const root of blocks.value) {
@@ -4062,49 +2049,6 @@ function locateTaskInRoot(id) {
   return null;
 }
 
-// ---------- 大纲联动 ----------
-
-// 滚动到指定脚注定义（底部集中区域）并短暂闪烁高亮
-function scrollToFootnote(id) {
-  const root = scrollRoot.value;
-  if (!root) return;
-  const el = root.querySelector(`[data-footnote-def="${id}"]`);
-  if (!el) return;
-  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  flashId.value = `fn-def-${id}`;
-  setTimeout(() => {
-    if (flashId.value === `fn-def-${id}`) flashId.value = null;
-  }, 1200);
-}
-
-// 从脚注定义返回对应引用位置
-function scrollToFootnoteRef(refIndex) {
-  const root = scrollRoot.value;
-  if (!root) return;
-  // 引用所在块可能被虚拟滚动卸载/尚在配额外：经 footnoteRefList 反查块 id，
-  // 先扩配额（与 scrollToBlock 同批），再把行滚入视口触发内容挂载，持续重试到找到引用
-  const blockId = footnoteRefList.value[refIndex - 1]?.blockId;
-  const idx = blockId ? allBlocks.value.findIndex((b) => b.id === blockId) : -1;
-  if (idx >= 0 && idx >= rowQuota.value) {
-    const target = idx + 1;
-    const step = () => {
-      if (rowQuota.value >= target) return;
-      rowQuota.value = Math.min(target, rowQuota.value + 2000);
-      if (rowQuota.value < target) setTimeout(step, 0);
-    };
-    step();
-  }
-  const tryScroll = (attempts) => {
-    const el = root.querySelector(`[data-footnote-ref="${refIndex}"]`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      return;
-    }
-    if (blockId) root.querySelector(`[data-block-id="${blockId}"]`)?.scrollIntoView({ block: 'center' });
-    if (attempts > 0) setTimeout(() => tryScroll(attempts - 1), 80);
-  };
-  tryScroll(25);
-}
 
 // 拖放图片文件进编辑器：落点在编辑容器内则插到落点光标处，否则追加到文末；
 // 落盘复用 save_pasted_image（与粘贴图片同策略：偏好 image_paste_behavior）
@@ -4135,7 +2079,7 @@ async function onEditorDrop(e) {
   for (const file of files) {
     const bytes = Array.from(new Uint8Array(await file.arrayBuffer()));
     const ext = file.name.split('.').pop() || file.type.split('/')[1] || 'png';
-    const subDir = behavior === 'assets' ? 'assets' : null;
+    const subDir = imageSubDir(behavior);
     const relPath = await invoke('save_pasted_image', { bytes, baseDir, subDir, extension: ext }).catch(() => null);
     if (!relPath) continue;
     if (currentEditable()) {
@@ -4227,6 +2171,7 @@ const RAW_BLOCK_TYPES = new Set([
   'htmlBlock',
   'sectionBlock',
   'comment',
+  'conflictBlock',
   'rawMarkdown',
   'footnoteDefinition',
 ]);
@@ -4366,110 +2311,10 @@ function restoreScrollPosition() {
   });
 }
 
-provide('scrollToFootnote', (id) => scrollToFootnote(id));
-provide('scrollToFootnoteRef', (refIndex) => scrollToFootnoteRef(refIndex));
 // 内容目录（[TOC] 块）：文档块数据源与标题定位（BlockView 注入使用）
 provide('allBlocks', blocks);
-provide('scrollToBlock', (id) => scrollToBlock(id));
 
-// 滚动到指定块并短暂闪烁高亮（侧边栏目录/大纲点击定位）
-function scrollToBlock(id) {
 
-  const root = scrollRoot.value;
-  if (!root) return;
-  // 渐进挂载：目标行可能尚在配额外（只有占位条）。分批扩配额（每批 2000 行），
-  // 避免跳转大文档末尾时一次同步创建数千组件的单帧卡顿
-  const idx = allBlocks.value.findIndex((b) => b.id === id);
-  if (idx >= 0 && idx >= rowQuota.value) {
-    const target = idx + 1;
-    const step = () => {
-      if (rowQuota.value >= target) return;
-      rowQuota.value = Math.min(target, rowQuota.value + 2000);
-      if (rowQuota.value < target) setTimeout(step, 0);
-    };
-    step();
-  }
-  // 行创建/内容挂载是异步的（配额分批扩展）：找不到元素时持续重试
-  const tryScroll = (attempts) => {
-    const el = root.querySelector(`[data-block-id="${id}"]`);
-    if (!el) {
-      if (attempts > 0) setTimeout(() => tryScroll(attempts - 1), 60);
-      return;
-    }
-    el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    flashId.value = id;
-    setTimeout(() => {
-      if (flashId.value === id) flashId.value = null;
-    }, 1200);
-  };
-  tryScroll(30);
-}
-
-// 标题位置缓存（块树发布后重建，滚动停止后再校准；滚动判断零 DOM 查询）
-let headingPositions = [];
-watch(
-  renderedBlocks,
-  async () => {
-    await nextTick();
-    rebuildHeadingPositions();
-  },
-  { flush: 'post' },
-);
-
-// 滚动时同步当前标题（取滚动位置上方最近的标题块），供大纲高亮；滚动即关闭右键菜单。
-// 虚拟滚动下占位行高度随内容挂载被修正，滚动停止后重建位置缓存保持高亮准确
-let scrollTicking = false;
-let headingRebuildTimer = null;
-function onEditorScroll(e) {
-  closeCtxMenu();
-  // 滚动中显示覆盖层滑轨并更新位置
-  sbOnScroll();
-  // 查找高亮：滚动会挂载新行（虚拟滚动），防抖重扫
-  if (findVisible.value && lastKeyword) scheduleFindHighlights();
-  clearTimeout(headingRebuildTimer);
-  headingRebuildTimer = setTimeout(rebuildHeadingPositions, 250);
-  if (scrollTicking) return;
-  scrollTicking = true;
-  requestAnimationFrame(() => {
-    scrollTicking = false;
-    const top = e.target.scrollTop + 8;
-    let current = null;
-    for (const h of headingPositions) {
-      if (h.top <= top) current = h.id;
-      else break;
-    }
-    if (current !== activeHeadingId.value) {
-      activeHeadingId.value = current;
-      emit('update:active-heading', current);
-    }
-  });
-}
-
-function rebuildHeadingPositions() {
-  const root = scrollRoot.value;
-  if (!root) {
-    headingPositions = [];
-    return;
-  }
-  // 单次遍历已挂载块元素建 id→元素 表，再查表取标题位置——
-  // 逐标题 querySelector 在标题上千时是每次提交数千次全树扫描（编辑卡顿主因）
-  const mountedEls = new Map();
-  for (const el of root.querySelectorAll('[data-block-id]')) {
-    mountedEls.set(el.getAttribute('data-block-id'), el);
-  }
-  headingPositions = blocks.value
-    .filter((b) => b.type === 'heading')
-    .map((b) => ({ id: b.id, top: mountedEls.get(b.id)?.offsetTop ?? null }))
-    .filter((h) => h.top != null);
-}
-
-// 滚动条悬停揭示（自动隐藏模式）：指针进入容器右缘 16px 内显示，离开隐藏
-function onEditorMouseMove(e) {
-  sbOnMouseMove(e);
-}
-function onEditorMouseLeave(e) {
-  sbOnMouseLeave(e);
-}
 
 // 加载新文档（打开/新建文件）：替换全文并整树重解析，退出当前编辑态
 // 加载新文档（打开/新建文件）：替换全文并整树重解析，退出当前编辑态。
@@ -4478,10 +2323,8 @@ function onEditorMouseLeave(e) {
 // 尾部返回前若已发生编辑（content 引用变化），丢弃结果走全量重解析
 async function loadDocument(text, pre = null) {
   ++parseSeq; // 作废旧文档可能在途的解析结果（渐进分支不经 reparse，需手动作废）
-  loadingDoc = true; // 加载期间不写撤销历史
-  undoStack.length = 0;
-  redoStack.length = 0;
-  lastPushAt = 0;
+  setHistoryLoading(true); // 加载期间不写撤销历史
+  resetHistory();
   editingId.value = null;
   editableEl = null;
   rowQuota.value = INITIAL_ROW_QUOTA;
@@ -4513,7 +2356,7 @@ async function loadDocument(text, pre = null) {
       if (content.value === captured) await reparse();
     }
   } finally {
-    loadingDoc = false;
+    setHistoryLoading(false);
   }
 }
 
@@ -4841,236 +2684,6 @@ function onDocumentSelectionChange() {
   }
 }
 
-// 光标进入已渲染的行内样式（加粗/斜体/下划线/删除线/高亮/行内代码）时，
-// 给该元素挂 md-src 类显示其 Markdown 源标记（Typora 式源码显现）；
-// 纯 CSS 视觉标记（::before/::after），不改 DOM 结构、不参与提交。光标离开即移除。
-// 链接/字体样式不走 md-src：光标进入即展开为可编辑的源标记结构（expandLinkAtCaret/expandFontAtCaret）
-let srcRevealEl = null;
-// 光标移出字体模板（Esc 退出/方向键/点击到标记之外）：剔除淡灰标签装饰，只留样式文字
-//（渲染态）。焦点在编辑器外（菜单/RGB 输入框）或光标仍在模板内时不动作。
-// 「仍在模板内」含紧邻标签的边界位（标记 contenteditable=false，光标不会落入标记文本，
-// 只会停在其左右邻位）——移到标签位置不渲染，移出标签（进入正文）才渲染
-function collapseFontTemplateOutside(el) {
-  const marks = el.querySelectorAll('.md-font-mark');
-  if (!marks.length) return;
-  const sel = window.getSelection();
-  const anchor = sel.rangeCount ? sel.anchorNode : null;
-  const anchorEl = anchor ? (anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor) : null;
-  if (anchorEl && !el.contains(anchorEl)) return; // 焦点在编辑器外（菜单等）：保持现状
-  if (anchorEl?.closest?.('.md-font-mark, span[data-html-style], font')) return; // 光标仍在模板内
-  // 元素边界锚点：光标紧邻任一标签标记（标签左右邻位）视为仍在标签位置，不渲染
-  if (anchor && anchor.nodeType === Node.ELEMENT_NODE) {
-    const isMark = (n) => n?.nodeType === Node.ELEMENT_NODE && n.classList?.contains('md-font-mark');
-    if (isMark(anchor.childNodes[sel.anchorOffset - 1]) || isMark(anchor.childNodes[sel.anchorOffset])) return;
-  }
-  marks.forEach((m) => m.remove());
-}
-
-// 光标移出展开的链接结构（[文字](地址) 整体之外）：折叠回渲染态 <a>
-//（与字体模板折叠同触发；pre[data-raw] 原文段不参与——那是整段原文编辑形态。
-// 斜杠插入的链接模板段 p[data-raw] 参与折叠：折叠时连带摘掉 data-raw 转常规段落，
-// 否则提交走 textContent 原文回写，标记移除后括号丢失、链接退化为纯文字）
-function collapseLinkTemplateOutside(el) {
-  const sel = window.getSelection();
-  const anchor = sel.rangeCount ? sel.anchorNode : null;
-  const anchorEl = anchor ? (anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor) : null;
-  if (!anchor || (anchorEl && !el.contains(anchorEl))) return; // 焦点在编辑器外：保持现状
-  const isMark = (n, t) =>
-    n?.nodeType === Node.ELEMENT_NODE && n.classList?.contains('md-link-mark') && n.textContent === t;
-  for (const startMark of el.querySelectorAll('.md-link-mark')) {
-    if (startMark.textContent !== '[') continue;
-    // 图片模板（! 标记紧邻 [ 前）：保持原文编辑形态，不参与折叠
-    if (isMark(startMark.previousSibling, '!')) continue;
-    // 斜杠链接模板段（p[data-raw]）：折叠为渲染态 <a> 并摘除 data-raw（提交改走常规段落提取）；
-    // 其余 data-raw 宿主（pre 原子块等）不参与
-    const rawHost = startMark.closest('[data-raw]');
-    if (rawHost && rawHost.tagName !== 'P' && rawHost.tagName !== 'DIV') continue;
-    const textEl = startMark.nextSibling;
-    const m2 = textEl?.nextSibling;
-    const m3 = m2?.nextSibling;
-    const headOk =
-      textEl?.nodeType === Node.ELEMENT_NODE &&
-      textEl.classList.contains('md-link-text') &&
-      isMark(m2, ']') &&
-      isMark(m3, '(');
-    if (!headOk) continue; // 结构被改残：按普通文本保留，不折叠
-    // 地址区扫描到 ) 标记为止（容忍变形：( 后多裸文本节点、空地址 span 等——
-    // 逐位取节点会在变形时永不折叠，表现为「光标移到 ) 外也不渲染」）
-    const urlNodes = [];
-    let closeMark = null;
-    for (let n = m3.nextSibling; n; n = n.nextSibling) {
-      if (n.nodeType === Node.ELEMENT_NODE && n.classList?.contains('md-link-mark')) {
-        if (isMark(n, ')')) closeMark = n;
-        break; // 其他标记先到：结构已残
-      }
-      urlNodes.push(n);
-    }
-    if (!closeMark) continue;
-    // 「仍在结构内」= 光标落在结构节点内，或处于首标记之后、末标记之前（含之间）的
-    // 父元素边界位；末标记之后（) 外）算外部——折叠渲染（Typora 式：括号外即还原链接）
-    // 例外：Chromium 常把「移到 ) 后」的光标锚在 ) 标记文本末尾（视觉已在括号外），
-    // 这种形态必须算外部，否则永不折叠；对称地，[ 标记文本开头（视觉在 [ 前）也算外部
-    const atMarkEnd = (mark) => {
-      if (!mark.contains(anchor)) return false;
-      if (anchor.nodeType === Node.TEXT_NODE) return sel.anchorOffset >= anchor.textContent.length;
-      // 元素锚点：(mark, 子节点数) = 视觉在标记字符之后
-      return anchor === mark && sel.anchorOffset >= mark.childNodes.length;
-    };
-    const atMarkStart = (mark) => {
-      if (!mark.contains(anchor)) return false;
-      if (anchor.nodeType === Node.TEXT_NODE) return sel.anchorOffset === 0;
-      return anchor === mark && sel.anchorOffset === 0;
-    };
-    const afterClose = atMarkEnd(closeMark);
-    const beforeOpen = atMarkStart(startMark);
-    const nodes = [startMark, textEl, m2, m3, ...urlNodes, closeMark];
-    let inside = nodes.some((n) => n.contains(anchor)) && !afterClose && !beforeOpen;
-    const parent = startMark.parentNode;
-    if (!inside && anchor === parent) {
-      const kids = [...parent.childNodes];
-      const i0 = kids.indexOf(startMark);
-      const i1 = kids.indexOf(closeMark);
-      inside = i0 >= 0 && sel.anchorOffset > i0 && sel.anchorOffset <= i1;
-    }
-    if (inside) continue;
-    // 折叠回 <a>；父元素边界光标在结构起点之后、或锚在 ) 标记末尾时，
-    // 折叠后钉到新 <a> 之后（移除节点会平移偏移）；锚在 [ 标记开头则钉到 <a> 之前
-    const pinCaret =
-      afterClose ||
-      (anchor === parent && sel.anchorOffset > [...parent.childNodes].indexOf(startMark));
-    const pinBefore = !pinCaret && beforeOpen;
-    const a = document.createElement('a');
-    a.className = LINK_CLASS;
-    a.setAttribute(
-      'href',
-      urlNodes.map((n) => n.textContent).join('').replace(/\uFEFF/g, '').trim(),
-    );
-    a.textContent = textEl.textContent.replace(/\uFEFF/g, '');
-    parent.insertBefore(a, startMark);
-    for (const n of nodes) n.remove();
-    rawHost?.removeAttribute('data-raw');
-    if (pinCaret || pinBefore) {
-      const range = document.createRange();
-      if (pinCaret) range.setStartAfter(a);
-      else range.setStartBefore(a);
-      range.collapse(true);
-      sel.removeAllRanges();
-      sel.addRange(range);
-    }
-  }
-}
-
-function updateInlineSourceReveal() {
-  const el = currentEditable();
-  if (el) collapseFontTemplateOutside(el);
-  if (el) collapseLinkTemplateOutside(el);
-  let host = null;
-  if (el) {
-    const sel = window.getSelection();
-    if (sel.rangeCount && sel.isCollapsed) {
-      const anchor = sel.anchorNode;
-      const anchorEl = anchor.nodeType === Node.TEXT_NODE ? anchor.parentElement : anchor;
-      // 链接：光标进入时展开为源标记编辑形态（文字/地址都可编辑），不打 md-src
-      const a = anchorEl?.closest?.('a');
-      // 字体样式（颜色/字号 span、font 标签）：光标进入时展开 <font …> 原始标签编辑
-      const fontEl = anchorEl?.closest?.('span[data-html-style], font');
-      if (a && el.contains(a) && !a.closest('pre')) {
-        expandLinkAtCaret(a);
-      } else if (fontEl && el.contains(fontEl) && !fontEl.closest('pre')) {
-        expandFontAtCaret(fontEl);
-      } else {
-        host = anchorEl?.closest?.('strong, em, u, s, mark, code') || null;
-        // pre 内的 code（代码块）不算行内样式
-        if (host && (!el.contains(host) || host.closest('pre'))) host = null;
-      }
-    }
-  }
-  if (host === srcRevealEl) return;
-  srcRevealEl?.classList?.remove('md-src');
-  srcRevealEl = host;
-  srcRevealEl?.classList?.add('md-src');
-}
-
-// 光标进入字体样式（颜色/字号 span、font 标签）：展开为原始标签编辑形态
-//（<font …>文字</font>，标签淡灰），文字可编辑；提交时标签装饰不入内容
-//（domToInlines 跳过 .md-font-mark），样式 span 照常回写
-function expandFontAtCaret(fontEl) {
-  // 已有标签结构（刚插入的模板/已展开）不重复展开
-  const prev = fontEl.previousSibling;
-  if (prev?.nodeType === Node.ELEMENT_NODE && prev.classList?.contains('md-font-mark')) return;
-  const sel = window.getSelection();
-  const raw = fontEl.textContent;
-  // 光标在文字内的偏移（展开后恢复）；非文本锚点（元素边界）落到文字末尾
-  let caretOffset = raw.length;
-  if (sel.rangeCount && sel.isCollapsed) {
-    const anchor = sel.anchorNode;
-    if (anchor.nodeType === Node.TEXT_NODE && fontEl.contains(anchor)) {
-      caretOffset = textBeforePoint(fontEl, anchor, sel.anchorOffset).length;
-    }
-  }
-  const tag = fontEl.tagName.toLowerCase() === 'font' ? 'font' : 'span';
-  const attrs = [];
-  const color = fontEl.getAttribute('color');
-  if (color) attrs.push(`color="${color}"`);
-  const styleText = fontEl.getAttribute('style');
-  if (styleText) attrs.push(`style="${styleText}"`);
-  const mark = markSpanFactory('md-font-mark');
-  const openMark = mark(`<${tag}${attrs.length ? ' ' + attrs.join(' ') : ''}>`);
-  const closeMark = mark(`</${tag}>`);
-  // 标签仅作显示、不可编辑：否则光标可落入标签文本内，输入被当作装饰剔除（文字被吞）
-  openMark.setAttribute('contenteditable', 'false');
-  closeMark.setAttribute('contenteditable', 'false');
-  fontEl.parentNode.insertBefore(openMark, fontEl);
-  fontEl.parentNode.insertBefore(closeMark, fontEl.nextSibling);
-  // 恢复光标到文字内同一偏移
-  placeCaretAtTextOffset(fontEl, caretOffset);
-}
-
-// 光标进入链接：展开为原始标记编辑形态（[文字](url)，括号淡灰/文字与地址浅蓝），
-// 文字与地址都可编辑；提交时按标记结构折叠回链接（domToInlines 的 md-link-mark 分支）。
-// caretInUrl=true 时光标落在地址末尾（渲染链接右缘按 → 展开进入括号内用）
-function expandLinkAtCaret(a, caretInUrl = false) {
-  const sel = window.getSelection();
-  // 光标在链接文字内的偏移（展开后恢复）；非文本锚点（元素边界）落到文字末尾
-  const raw = a.textContent;
-  let caretOffset = raw.length;
-  if (sel.rangeCount && sel.isCollapsed) {
-    const anchor = sel.anchorNode;
-    if (anchor.nodeType === Node.TEXT_NODE && a.contains(anchor)) {
-      caretOffset = textBeforePoint(a, anchor, sel.anchorOffset).length;
-    }
-  }
-  const href = a.getAttribute('href') || '';
-  const mark = markSpanFactory('md-link-mark');
-  const textSpan = document.createElement('span');
-  textSpan.className = 'md-link-text';
-  textSpan.textContent = raw;
-  // 地址用 md-link-url span 包裹（浅蓝显示，与链接文字同色；提取兼容文本/元素两种形态）
-  const urlSpan = document.createElement('span');
-  urlSpan.className = 'md-link-url';
-  urlSpan.textContent = href;
-  const frag = document.createDocumentFragment();
-  frag.append(mark('['), textSpan, mark(']'), mark('('), urlSpan, mark(')'));
-  a.parentNode.replaceChild(frag, a);
-  if (caretInUrl) {
-    // 光标落地址末尾（空地址落 urlSpan 元素位——仍在结构内，不会立即折叠）
-    const r = document.createRange();
-    if (urlSpan.firstChild) r.setStart(urlSpan.firstChild, urlSpan.textContent.length);
-    else r.setStart(urlSpan, 0);
-    r.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(r);
-    return;
-  }
-  const t = textSpan.firstChild;
-  if (t) {
-    const r = document.createRange();
-    r.setStart(t, Math.min(caretOffset, t.textContent.length));
-    r.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(r);
-  }
-}
 function onDocumentMouseDown(e) {
   if (ctxMenu.value && !e.target.closest?.('.md-ctx-menu')) {
     closeCtxMenu();
@@ -5093,7 +2706,6 @@ onBeforeUnmount(() => {
   document.removeEventListener('copy', onDocumentCopy);
   document.removeEventListener('cut', onDocumentCut);
   // 全部定时器/空闲句柄一并清理（多标签/多窗口复用时防泄漏）
-  clearTimeout(headingRebuildTimer);
   clearTimeout(statsTimer);
   clearTimeout(blurCommitTimer);
   clearTimeout(editPreviewTimer);
@@ -5101,17 +2713,10 @@ onBeforeUnmount(() => {
   clearTimeout(printRestoreTimer);
   cancelAnimationFrame(keepCaretRaf);
   keepCaretRaf = 0;
-  clearTimeout(findHlTimer);
-  clearTimeout(findSearchTimer);
   if (statsIdleHandle != null) {
     cancelIdleCallback(statsIdleHandle);
     statsIdleHandle = null;
   }
-  // 断开虚拟滚动与重活懒执行的观察器
-  rowObserver?.disconnect();
-  rowObserver = null;
-  blockObserver?.disconnect();
-  blockObserver = null;
 });
 
 // 打印模式：强制所有行挂载（虚拟滚动下未挂载行不会被打印），
@@ -5145,16 +2750,24 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
 
 <template>
   <div class="relative flex h-full flex-col">
-    <textarea
-      v-if="sourceMode"
-      ref="sourceRoot"
-      class="t-root flex-1 resize-none border-none font-mono outline-none"
-      v-model="content"
-      @input="onInput"
-      @keydown="onSourceKeydown"
-      @keyup="onInput"
-      @click="onInput"
-    ></textarea>
+    <!-- 源码模式：flex 行容器（行号 gutter + textarea + Ctrl+G 跳行浮动框） -->
+    <div v-if="sourceMode" class="md-src-wrap">
+      <div v-if="lineNumbersOn" ref="gutterRoot" class="t-root font-mono md-src-gutter" aria-hidden="true"><div v-for="(line, i) in gutterLines" :key="i">{{ i + 1 }}</div></div>
+      <textarea
+        ref="sourceRoot"
+        class="t-root flex-1 resize-none border-none font-mono outline-none"
+        v-model="content"
+        @input="onInput"
+        @keydown="onSourceKeydown"
+        @keyup="onInput"
+        @click="onInput"
+      ></textarea>
+      <!-- Ctrl+G 跳行浮动框（Enter 跳行，Esc 关闭） -->
+      <div v-if="jumpOpen" class="md-src-jump">
+        <span class="md-src-jump-label">跳转到行</span>
+        <input ref="jumpInput" v-model="jumpText" type="text" inputmode="numeric" autocomplete="off" @keydown="onJumpKeydown" />
+      </div>
+    </div>
 
     <div v-else ref="scrollRoot" tabindex="0" class="t-root flex-1 overflow-y-auto outline-none" :class="{ 'md-first-indent': firstLineIndent, 'sb-auto-hide': scrollbarAutoHide, 'sb-no-autohide': !scrollbarAutoHide }" @scroll.passive="onEditorScroll" @contextmenu="onContextMenu" @mousedown="onEditorMouseDown" @mousedown.capture="onCtrlLinkMousedown" @click.capture="onCtrlLinkClick" @mousemove.passive="onEditorMouseMove" @mouseleave="onEditorMouseLeave" @dragover="onEditorDragOver" @drop="onEditorDrop">
       <div class="t-measure">
@@ -5277,6 +2890,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
             contenteditable="true"
             :spellcheck="spellcheckOn"
             @input="onEditableInput"
+            @beforeinput="onEditableBeforeInput"
             @paste="onEditablePaste"
             @keydown="onEditableKeydown"
             @dblclick="onEditableDblclick"
@@ -5319,7 +2933,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
           :class="{ 'md-flash': flashId === block.id }"
           @click="startEdit(block)"
         >
-          <BlockView :block="block" :ordinal="rootOrdinals.get(block.id) || 1" @toggle-task="toggleTask" @resize-image="onImageResize" />
+          <BlockView :block="block" :ordinal="rootOrdinals.get(block.id) || 1" @toggle-task="toggleTask" @resize-image="onImageResize" @resolve-conflict="resolveConflict" />
         </div>
         </div>
       </VRow>
@@ -5333,6 +2947,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         contenteditable="true"
         :spellcheck="spellcheckOn"
         @input="onEditableInput"
+        @beforeinput="onEditableBeforeInput"
         @paste="onEditablePaste"
         @keydown="onEditableKeydown"
         @click="onEditingClick"
@@ -5351,7 +2966,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
           :data-block-id="block.id"
           @click="startEdit(block)"
         >
-          <BlockView :block="block" :ordinal="1" @toggle-task="toggleTask" @resize-image="onImageResize" />
+          <BlockView :block="block" :ordinal="1" @toggle-task="toggleTask" @resize-image="onImageResize" @resolve-conflict="resolveConflict" />
         </div>
       </div>
       <!-- 文档末尾可滚空间：让最后一行能上移到标题栏下方（触底输入时平滑跟随不闪变） -->
@@ -5361,6 +2976,55 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
     <!-- 覆盖层滚动条：彩色可拖动滑轨（自动隐藏模式下替代原生条；滚动/右缘悬停时显示） -->
     <div v-if="!sourceMode" class="md-scrollbar" :class="{ show: sbShow, dragging: sbDragging }" aria-hidden="true" @pointerdown="sbOnTrackPointerDown">
       <div class="md-scrollbar-thumb" :style="{ top: `${sbThumb.top}px`, height: `${sbThumb.height}px` }" @pointerdown.stop="sbOnThumbPointerDown"></div>
+    </div>
+    <!-- 改动审阅概览尺：右缘竖条，按变更在全文的比例位置标色（VSCode minimap 式比例视图） -->
+    <div v-if="!sourceMode && reviewEnabled" class="md-chg-ruler" aria-hidden="true" :title="`+${changeCounts.added} ~${changeCounts.modified} -${changeCounts.deleted}`">
+      <div
+        v-for="(tick, i) in rulerTicks"
+        :key="i"
+        class="md-chg-ruler-tick"
+        :class="{ 'md-chg-ruler-modified': tick.kind === 'modified', 'md-chg-ruler-deleted': tick.kind === 'deleted' }"
+        :style="{ top: `${tick.topPct}%` }"
+      ></div>
+    </div>
+    <!-- 返回顶部浮动按钮（仅 WYSIWYG，滚动超过 600px 显示） -->
+    <button v-if="!sourceMode && backTopVisible" type="button" class="md-back-top" aria-label="返回顶部" title="返回顶部" @click="scrollToTop">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12.5v-9M3.5 7 8 2.5 12.5 7" /></svg>
+    </button>
+    <!-- 改动审阅基线菜单：右上浮动 ± 计数按钮 + 下拉（比较方式：关闭/最近保存/Git HEAD/手动快照；显示设置） -->
+    <div class="md-chg-menubox">
+      <button type="button" class="md-chg-menubtn" :class="{ 'md-chg-off': !chgReviewOn }" title="改动审阅：比较基线与计数" @click="toggleChgMenu">
+        <span class="md-chg-menubtn-icon">±</span>
+        <template v-if="chgReviewOn && reviewEnabled">+{{ changeCounts.added }} ~{{ changeCounts.modified }} -{{ changeCounts.deleted }}</template>
+        <template v-else>比较</template>
+        <span class="md-chg-menubtn-caret">▾</span>
+      </button>
+      <div v-if="chgMenuOpen" class="md-chg-backdrop" @click="chgMenuOpen = false"></div>
+      <div v-if="chgMenuOpen" class="md-chg-menu" @click.stop>
+        <div v-if="chgReviewOn && reviewEnabled" class="md-chg-menu-head">+{{ changeCounts.added }} ~{{ changeCounts.modified }} -{{ changeCounts.deleted }} · 与{{ baselineTitle }}对比</div>
+        <div class="md-chg-menu-sect">比较方式</div>
+        <button type="button" class="md-chg-menu-item" :class="{ active: !chgReviewOn }" @click="closeReview">
+          <span>关闭比较</span><span v-if="!chgReviewOn" class="md-chg-check">✓</span>
+        </button>
+        <button type="button" class="md-chg-menu-item" :class="{ active: chgReviewOn && baselineKind === 'saved' }" @click="setBaseline('saved'); chgMenuOpen = false">
+          <span>与最近保存版本比较</span><span v-if="chgReviewOn && baselineKind === 'saved'" class="md-chg-check">✓</span>
+        </button>
+        <button type="button" class="md-chg-menu-item" :class="{ active: chgReviewOn && baselineKind === 'git' }" :disabled="gitDisabled" @click="setBaseline('git'); chgMenuOpen = false">
+          <span>与 Git HEAD 比较<span class="t-dim">{{ gitSuffix }}</span></span><span v-if="chgReviewOn && baselineKind === 'git'" class="md-chg-check">✓</span>
+        </button>
+        <div class="md-chg-menu-item md-chg-manual-row" :class="{ active: chgReviewOn && baselineKind === 'manual' }">
+          <button type="button" class="md-chg-manual-main" :title="manualSnapshotAvailable ? '' : '尚无快照，点击即拍'" @click="!manualSnapshotAvailable && captureManualSnapshot(); setBaseline('manual'); chgMenuOpen = false">
+            与手动快照比较<span v-if="manualTimeLabel" class="t-dim">（{{ manualTimeLabel }}）</span>
+          </button>
+          <button type="button" class="md-chg-menu-mini" title="以当前内容重拍快照" @click.stop="captureManualSnapshot()">更新</button>
+          <span v-if="chgReviewOn && baselineKind === 'manual'" class="md-chg-check">✓</span>
+        </div>
+        <div class="md-chg-menu-sect">显示设置</div>
+        <label class="md-chg-menu-item md-chg-toggle">
+          <span>显示修改前内容</span>
+          <input type="checkbox" :checked="showOldContent" @change="setPref('change_review_show_old', $event.target.checked)" />
+        </label>
+      </div>
     </div>
   </div>
   <!-- 斜杠命令菜单 / 围栏语言补全菜单（同一面板，互斥触发）：Teleport 移出根布局（多根片段），其挂载/卸载不再引起

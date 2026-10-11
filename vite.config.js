@@ -11,6 +11,17 @@ export default defineConfig(() => ({
   // 构建目标对齐，避免 esbuild 把 mermaid 产物降级成它不认识的语法
   build: {
     target: "es2024",
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // mermaid 12 按图类型自动分包产生数十个碎 chunk：与其独占依赖归组为单文件，
+          // 减少安装包碎文件数量（本体仍是动态 import，首个图表可见时才加载）
+          if (/node_modules[\\/](mermaid|@mermaid-js|dagre|katex|cytoscape|d3|khroma|ts-dedent|stylis|uuid|marked|dompurify)/.test(id)) {
+            return 'mermaid';
+          }
+        },
+      },
+    },
   },
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`

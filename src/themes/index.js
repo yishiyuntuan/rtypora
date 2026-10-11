@@ -28,7 +28,7 @@ export const themeVersion = ref(0);
 
 const STORAGE_THEME_ID = 'tauri-editor.theme.id';
 // 上次主题的编辑器背景色：index.html 首帧防白闪脚本读取（样式加载前设色）
-export const STORAGE_THEME_BG = 'tauri-editor.theme.bg';
+const STORAGE_THEME_BG = 'tauri-editor.theme.bg';
 const STORAGE_CUSTOM = 'tauri-editor.theme.custom';
 const DEFAULT_THEME_ID = 'velotype-light';
 
@@ -107,7 +107,7 @@ function kebab(name) {
 //   }
 // 键为块类型（paragraph/heading/separator/bulletedListItem/taskListItem/numberedListItem/
 // quote/callout/footnoteDefinition/table/codeBlock/comment/htmlBlock/mathBlock/mermaidBlock/
-// plantumlBlock/rawMarkdown）；heading 的值里可再嵌 h1~h6 分级覆盖。属性名 camelCase 或 kebab 均可，
+// conflictBlock/plantumlBlock/rawMarkdown）；heading 的值里可再嵌 h1~h6 分级覆盖。属性名 camelCase 或 kebab 均可，
 // 数值自动补 px（fontWeight/lineHeight/opacity 等无单位属性除外）。
 
 const BLOCK_SELECTORS = {
@@ -127,6 +127,7 @@ const BLOCK_SELECTORS = {
   sectionBlock: '.blk-section-block',
   mathBlock: '.blk-math-block',
   mermaidBlock: '.blk-mermaid-block',
+  conflictBlock: '.blk-conflict-block',
   plantumlBlock: '.blk-plantuml-block',
   rawMarkdown: '.blk-raw-markdown',
   // 行内选择器：定制链接/行内代码/粗斜体等行内表现
@@ -323,7 +324,7 @@ export function isSystemDark() {
 }
 
 /** 按系统外观应用偏好中设置的暗/亮色主题。 */
-export function applySystemTheme() {
+function applySystemTheme() {
   const dark = systemDarkMedia.matches;
   const id = dark ? getPref('theme_dark_id') : getPref('theme_light_id');
   applyTheme(id || (dark ? 'velotype' : 'velotype-light'));
@@ -520,7 +521,7 @@ export function importThemeJson(text) {
   // JSONC 常以注释开头（如示例文件），跳过前导注释再判定格式——否则会被误判为 YAML
   const head = trimmed.replace(/^(\/\/[^\n]*\n?|\/\*[\s\S]*?\*\/\s*)+/, '');
   const pack = head.startsWith('{')
-    ? JSON.parse(stripJsonTrailingCommas(stripJsonComments(text)))
+    ? JSON.parse(stripJsonTrailingCommas(stripJsonComments(text))) // pi-lens-ignore: unchecked-throwing-call-js — 契约即「格式非法时抛错」（JSDoc 声明；调用方 StatusBar 已 catch）
     : parseYamlSubset(text);
   if (!pack || typeof pack.name !== 'string' || !pack.name.trim()) {
     throw new Error('主题包缺少必填字段 name');

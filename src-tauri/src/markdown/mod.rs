@@ -5,6 +5,7 @@ pub mod block;
 pub mod inline;
 pub mod model;
 pub mod table;
+pub mod clipboard;
 
 /// 每行的 UTF-16 码元起始偏移（`split('\n')` 与解析器一致的行切分），
 /// 以及全文的 UTF-16 总长度（同一趟扫描得出，免去第二次全文编码扫描）。
@@ -56,8 +57,10 @@ fn parse_to_dtos(markdown: &str) -> Vec<model::BlockDto> {
             continue;
         };
         // 防御性钳制：首块原文长度不应超过共享区间（解析层保证，此处兜底）
-        let mid = (out[i].start.unwrap() + first_src.encode_utf16().count())
-            .min(out[i].end.unwrap());
+        let (Some(start), Some(end)) = (out[i].start, out[i].end) else {
+            continue;
+        };
+        let mid = (start + first_src.encode_utf16().count()).min(end);
         out[i].end = Some(mid);
         out[i + 1].start = Some(mid);
     }

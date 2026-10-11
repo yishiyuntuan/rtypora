@@ -5,7 +5,7 @@
 
 use super::math::{is_math_info_string, parse_display_math_source};
 use super::mermaid::is_mermaid_info_string;
-use super::state::{BlockKind, BlockRecord, CalloutVariant, CodeFenceOpening};
+use super::state::{BlockKind, BlockRecord, CalloutVariant, CodeFenceOpening, ConflictData};
 use crate::markdown::inline::footnote::parse_footnote_definition_head;
 use crate::markdown::inline::html::{HtmlSafetyClass, is_inline_tag, parse_html_document};
 use crate::markdown::inline::image::parse_standalone_image;
@@ -957,6 +957,73 @@ fn collect_comment_block(
     Some((comment_block(lines[start..end].join("\n")), end))
 }
 
+/// Git 冲突标记行解析：顶格恰好 7 个标记字符，其后为行尾或空白+标签。
+/// 返回标签（trim 后，空为 None）；第 8 个字符仍是标记字符或紧跟非空白时不算标记行。
+fn parse_conflict_marker_line(line: &str, marker: char) -> Option<Option<String>> {
+    let prefix: String = std::iter::repeat_n(marker, 7).collect();
+    let rest = line.strip_prefix(&prefix)?;
+    if let Some(next) = rest.chars().next()
+        && next != ' '
+        && next != '\t'
+    {
+        return None;
+    }
+    let label = rest.trim();
+    Some(if label.is_empty() {
+        None
+    } else {
+        Some(label.to_string())
+    })
+}
+
+/// `=======` 分界行：顶格 7 个 `=` 且无标签（带文字的同形行视为内容行）。
+fn is_conflict_separator_line(line: &str) -> bool {
+    parse_conflict_marker_line(line, '=') == Some(None)
+}
+
+/// `|||||||` diff3 基线标记（v1 不支持）：区域内出现即整体降级为非冲突。
+fn is_conflict_base_marker_line(line: &str) -> bool {
+    parse_conflict_marker_line(line, '|').is_some()
+}
+
+/// 收集 Git 合并冲突块：`<<<<<<<`（顶格）开、首个顶格 `=======` 分界、首个顶格
+/// `>>>>>>>` 闭。未遇分界/闭合，或区域内出现 `|||||||` 基线标记时返回 None，
+/// 调用方按普通段落路径降级（原文无损）。块区间覆盖全部标记行（含终止行）。
+fn collect_conflict_block(lines: &[&str], start: usize) -> Option<(BlockNode, usize)> {
+    let current_label = parse_conflict_marker_line(&lines[start], '<')?;
+    let mut index = start + 1;
+    let mut current_lines: Vec<&str> = Vec::new();
+    loop {
+        if index >= lines.len() || is_conflict_base_marker_line(lines[index]) {
+            return None;
+        }
+        if is_conflict_separator_line(lines[index]) {
+            break;
+        }
+        current_lines.push(lines[index]);
+        index += 1;
+    }
+    index += 1; // 越过 ======= 分界行
+    let mut incoming_lines: Vec<&str> = Vec::new();
+    let incoming_label = loop {
+        if index >= lines.len() || is_conflict_base_marker_line(lines[index]) {
+            return None;
+        }
+        if let Some(label) = parse_conflict_marker_line(lines[index], '>') {
+            break label;
+        }
+        incoming_lines.push(lines[index]);
+        index += 1;
+    };
+    let data = ConflictData {
+        current_label,
+        current: current_lines.join("\n"),
+        incoming_label,
+        incoming: incoming_lines.join("\n"),
+    };
+    Some((BlockNode::leaf(BlockRecord::conflict(data)), index + 1))
+}
+
 fn native_block(
     kind: BlockKind,
     markdown: String,
@@ -1250,6 +1317,21 @@ fn build_blocks_from_lines_internal(
                     end,
                 ));
                 index = end;
+                continue;
+            }
+
+            // Git 合并冲突块（仅根级顶格 `<<<<<<<`，v1 不解析引用/列表内部）：
+            // 必须在 setext 判定之前——`<<<<<<< HEAD` 次行恰为 `=======` 时
+            // 会被抢成一级标题。未闭合/含 `|||||||` 基线标记时回退普通段落路径。
+            if depth == 0 && parse_conflict_marker_line(line, '<').is_some() {
+                if let Some((block, end)) = collect_conflict_block(lines, index) {
+                    roots.push(RootBlock::spanned(block, index, end));
+                    index = end;
+                } else {
+                    let paragraph = collect_paragraph_block(lines, index);
+                    roots.push(RootBlock::spanned(paragraph.0, index, paragraph.1));
+                    index = paragraph.1;
+                }
                 continue;
             }
 

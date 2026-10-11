@@ -42,6 +42,7 @@ fn child_kind_names(block: &BlockDto) -> Vec<&str> {
             BlockKindDto::SectionBlock => "SectionBlock",
             BlockKindDto::MathBlock => "MathBlock",
             BlockKindDto::MermaidBlock => "MermaidBlock",
+            BlockKindDto::ConflictBlock => "ConflictBlock",
             BlockKindDto::RawMarkdown => "RawMarkdown",
         })
         .collect()

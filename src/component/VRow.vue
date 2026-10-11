@@ -1,5 +1,5 @@
 <script setup vapor>
-import { ref, inject, watch, onMounted, onBeforeUnmount } from 'vue';
+import { ref, inject, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 
 // 虚拟滚动行：所有行常驻 DOM（占位保证文档总高正确、滚动位置稳定），
 // 仅视口余量（Editor 观察器 rootMargin 800px）内挂载内容；
@@ -16,6 +16,24 @@ const observeRow = inject('observeRow');
 const unobserveRow = inject('unobserveRow');
 // 打印模式：Editor 打印时强制所有行挂载（虚拟滚动下未挂载行不会被打印）
 const printMode = inject('printMode', ref(false));
+
+// 改动审阅：块级标记（新增/修改左侧条纹，删除顶部细线+徽标）；未提供时（无 Editor 装配）静默降级
+const changeMarkOf = inject('changeMarkOf', null);
+const changeVersion = inject('changeVersion', null);
+// 「显示修改前内容」开关（useChangeReview provide；ref，模板内 .value 自动解包）
+const changeShowOld = inject('changeShowOld', null);
+// 无标记时为零响应式依赖的常量 null（条纹类不挂载，零额外 DOM）
+const changeMark = computed(() => {
+  if (!changeMarkOf) return null;
+  changeVersion.value;
+  return changeMarkOf(props.block.id);
+});
+// 旧内容块：偏好开启且标记带旧文本时渲染（删除/修改前的原文，只读展示）
+const changeOldBlocks = computed(() => {
+  const m = changeMark.value;
+  if (!m || !changeShowOld?.value) return null;
+  return m.oldBlocks?.length ? m.oldBlocks : null;
+});
 
 const el = ref(null);
 const visible = ref(props.force);
@@ -68,9 +86,19 @@ onBeforeUnmount(() => {
   <div
     ref="el"
     class="md-vrow"
+    :class="{
+      'md-chg-added': changeMark?.kind === 'added',
+      'md-chg-modified': changeMark?.kind === 'modified',
+      'md-chg-run-start': changeMark?.runStart,
+      'md-chg-run-end': changeMark?.runEnd,
+      'md-chg-deleted': changeMark && changeMark.deleted !== undefined,
+    }"
     :data-block-id="block.id"
     :style="!visible ? { minHeight: `${cachedHeight}px` } : undefined"
   >
+    <span v-if="changeMark && changeMark.deleted !== undefined" class="md-chg-deleted-badge" aria-hidden="true">-{{ changeMark.deleted }}</span>
+    <!-- 修改前内容（旧文本块，只读；渲染态不挂载行内容时也不显示） -->
+    <pre v-for="(t, i) in changeOldBlocks || []" :key="i" class="md-chg-old" aria-hidden="true">{{ t }}</pre>
     <slot v-if="visible || force || printMode" />
   </div>
 </template>

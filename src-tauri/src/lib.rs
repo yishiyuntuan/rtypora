@@ -4,6 +4,7 @@ pub mod markdown;
 pub mod files;
 pub mod highlight;
 pub mod latex;
+pub mod diff;
 
 use tauri_plugin_autostart::MacosLauncher;
 
@@ -96,6 +97,12 @@ pub fn run() {
             latex::render_display_math,
             latex::render_inline_math,
             latex::set_math_unicode_font,
+            diff::diff_saved_content,
+            diff::diff_saved_content_async,
+            diff::git_head_content,
+            markdown::clipboard::table_markdown_from_clipboard,
+            markdown::clipboard::table_matrix_from_text,
+            markdown::clipboard::table_to_csv,
             set_traffic_lights_visible,
             show_main_window
         ])

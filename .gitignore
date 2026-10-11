@@ -26,3 +26,7 @@ dist-ssr
 # Rust 工作区构建产物（工作区根在仓库根部时 target/ 位于此处；
 # src-tauri/.gitignore 只覆盖非工作区布局下的 src-tauri/target/）
 /target/
+
+# 本地工具产物（pi-lens/hypa 扫描输出，非项目源码）
+.hypa/
+piolium/

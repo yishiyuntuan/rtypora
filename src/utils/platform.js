@@ -1,6 +1,6 @@
 // 平台判定与 macOS 适配工具（红绿灯避让、Cmd 快捷键提示、平台字体默认值等）。
 export const isMac = /Macintosh|Mac OS X/.test(navigator.userAgent);
-export const isWindows = /Windows/.test(navigator.userAgent);
+const isWindows = /Windows/.test(navigator.userAgent);
 
 // 路径去重键：统一分隔符为正斜杠、去尾部分隔符；Windows 路径大小写不敏感（整体小写化）。
 // 用途：最近使用文件/目录列表去重——同一路径「对话框原生反斜杠形式」与「拼接正斜杠形式」

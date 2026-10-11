@@ -4,7 +4,7 @@
 // 顶层块的编辑状态由 Editor.vue 管理，本组件只负责渲染与事件转发
 //（点击进编辑、任务勾选、图片缩放等）。列表项在模型中是独立块（嵌套经 children）。
 // 颜色全部走 style.css 语义类（--t-* 主题变量），此处只写布局类。
-import { computed, inject, provide, ref, watch, onMounted } from 'vue';
+import { computed, inject, provide, ref, watch, onMounted, onBeforeUnmount } from 'vue';
 import InlineView from './InlineView.vue';
 import MathView from './MathView.vue';
 import SectionView from './SectionView.vue';
@@ -15,6 +15,10 @@ import { renderMermaid, peekMermaid } from '../utils/mermaid.js';
 import { plantumlUrl, plantumlRenderer, renderPlantumlLocal, peekPlantuml } from '../utils/plantuml.js';
 import { themeVersion } from '../themes/index.js';
 import { getPref, renderVersion } from '../utils/prefs.js';
+import { attachTableCellSelect } from '../composables/useTableCellSelect.js';
+import { attachTableColumnWidth } from '../composables/useTableColumnWidth.js';
+import { attachTableFitWidth } from '../composables/useTableFitWidth.js';
+import { useDiagramView, DIAGRAM_MODES } from '../composables/useDiagramView.js';
 const props = defineProps({
   block: { type: Object, required: true },
   // 有序列表序号（由父级按连续 numberedListItem 兄弟计算）
@@ -23,7 +27,7 @@ const props = defineProps({
   depth: { type: Number, default: 0 },
 });
 
-const emit = defineEmits(['toggle-task', 'resize-image']);
+const emit = defineEmits(['toggle-task', 'resize-image', 'resolve-conflict']);
 
 // 列表标记按层级区分（体现父子层级）：圆点 •/◦/▪，序号 1./a./i.
 const bulletMarker = computed(() => ['•', '◦', '▪'][Math.min(props.depth, 2)]);
@@ -109,8 +113,23 @@ function escapeHtml(text) {
 const rootEl = ref(null);
 const mounted = ref(false);
 const onBlockVisible = inject('onBlockVisible', (el, cb) => cb());
+// 渲染态表格增强：Alt+拖拽矩形选区（复制 TSV）+ 表头列宽拖拽（会话内按块 id 保持）
+// + 防横向滚动自适应（ResizeObserver 监听容器，溢出切 fixed 比例分配/压缩，变宽逐步还原）
+const tableEl = ref(null);
+let detachTableEnhance = [];
 onMounted(() => {
   mounted.value = true;
+  if (props.block.type === 'table' && tableEl.value) {
+    detachTableEnhance = [
+      attachTableCellSelect(tableEl.value),
+      attachTableColumnWidth(tableEl.value, props.block.id),
+      attachTableFitWidth(tableEl.value),
+    ];
+  }
+});
+onBeforeUnmount(() => {
+  detachTableEnhance.forEach((d) => d());
+  detachTableEnhance = [];
 });
 watch(
   () => [props.block.id, props.block.language, props.block.title, renderVersion.value, mounted.value],
@@ -272,6 +291,26 @@ const mathNumbers = inject('mathNumbers', { value: new Map() });
 const mathNumberLabel = computed(() => {
   const n = mathNumbers.value.get(props.block.id);
   return n ? `(${n})` : '';
+});
+
+// Mermaid/公式块视图状态：源码|并排|预览 + 渲染区缩放（模块级 Map 按块 id 会话保持；
+// 缩放为纯视图层 transform，与渲染 SVG 无关；同一实例两分支二选一，共享一套状态/测量）
+const {
+  state: diagramView,
+  setMode: setDiagramMode,
+  zoomIn: diagramZoomIn,
+  zoomOut: diagramZoomOut,
+  resetZoom: diagramZoomReset,
+  zoomLabel: diagramZoomLabel,
+  contentRef: diagramContentRef,
+  stageStyle: diagramStageStyle,
+  contentStyle: diagramContentStyle,
+} = useDiagramView(props.block.id);
+
+// HTML 注释块显隐（偏好 render_comments，默认隐藏为占位细条；renderVersion 驱动切换即重渲染）
+const showComments = computed(() => {
+  renderVersion.value;
+  return getPref('render_comments');
 });
 
 // 向后代 InlineView 传递当前块 id，用于脚注引用全局序号匹配
@@ -494,7 +533,11 @@ function alignStyle(alignments, index) {
     </div>
   </div>
 
-  <table v-else-if="block.type === 'table' && block.table" class="blk-table my-2 border-collapse text-[13px]">
+  <table v-else-if="block.type === 'table' && block.table" ref="tableEl" class="blk-table my-2 border-collapse text-[13px]">
+    <!-- 列宽与列数对齐（alignments 长度即列数）；列宽拖拽直接改 <col> 的 px 宽度 -->
+    <colgroup>
+      <col v-for="(a, ci) in block.table.alignments" :key="ci" />
+    </colgroup>
     <thead>
       <tr>
         <th
@@ -518,26 +561,154 @@ function alignStyle(alignments, index) {
   </table>
 
   <!-- 数学公式：Rust ratex 渲染 SVG（失败回退源码占位）；渲染态不显示背景块；
-       编号按偏好 math_numbering 显示（AMS 判定在 Rust mathNumbered 字段） -->
-  <div v-else-if="block.type === 'mathBlock'" class="blk-math-block relative my-2">
-    <MathView :source="rawText" display />
+       编号按偏好 math_numbering 显示（AMS 判定在 Rust mathNumbered 字段）。
+       悬浮控制条切换 源码|并排|预览（默认预览），缩放仅作用于渲染区（纯视图层 transform） -->
+  <div v-else-if="block.type === 'mathBlock'" class="blk-math-block group relative my-2">
+    <!-- 悬浮控制条：悬停块浮现（复用 md-code-corner 浮现机制）；分段按钮 + 缩放控件 -->
+    <div class="md-code-corner md-diagram-toolbar select-none">
+      <span class="md-diagram-seg">
+        <button
+          v-for="m in DIAGRAM_MODES"
+          :key="m.id"
+          type="button"
+          class="md-diagram-seg-btn"
+          :class="{ 'md-diagram-seg-active': diagramView.mode === m.id }"
+          @click.stop="setDiagramMode(m.id)"
+        >{{ m.label }}</button>
+      </span>
+      <template v-if="diagramView.mode !== 'source'">
+        <button type="button" class="md-code-copy" title="缩小" @click.stop="diagramZoomOut">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 8h9" /></svg>
+        </button>
+        <span class="md-diagram-zoom-label">{{ diagramZoomLabel }}</span>
+        <button type="button" class="md-code-copy" title="放大" @click.stop="diagramZoomIn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9" /></svg>
+        </button>
+        <button type="button" class="md-code-copy" title="复位缩放" @click.stop="diagramZoomReset">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 8a5.2 5.2 0 1 1-1.52-3.68" /><path d="M13.4 2.8v2h-2" /></svg>
+        </button>
+      </template>
+    </div>
+    <!-- 源码态：仅等宽原文（边框块样式） -->
+    <pre
+      v-if="diagramView.mode === 'source'"
+      class="md-pre md-diagram-source overflow-x-auto rounded border p-3 font-mono text-[13px]"
+    >{{ rawText }}</pre>
+    <!-- 并排态：左源码右渲染（渲染区可缩放） -->
+    <div v-else-if="diagramView.mode === 'split'" class="md-diagram-split grid grid-cols-2 items-start gap-2">
+      <pre class="md-pre md-diagram-source min-w-0 overflow-x-auto rounded border p-3 font-mono text-[13px]">{{ rawText }}</pre>
+      <div class="md-diagram-viewport min-w-0 overflow-auto">
+        <div class="md-diagram-stage" :style="diagramStageStyle">
+          <div :ref="diagramContentRef" class="md-diagram-content" :style="diagramContentStyle"><MathView :source="rawText" display /></div>
+        </div>
+      </div>
+    </div>
+    <!-- 预览态（现状）：渲染区缩放经舞台占位保证 overflow 滚动范围正确 -->
+    <div v-else class="md-diagram-viewport overflow-auto">
+      <div class="md-diagram-stage" :style="diagramStageStyle">
+        <div :ref="diagramContentRef" class="md-diagram-content" :style="diagramContentStyle"><MathView :source="rawText" display /></div>
+      </div>
+    </div>
     <span v-if="mathNumberLabel" class="md-eq-number absolute right-2 top-1/2 -translate-y-1/2">{{ mathNumberLabel }}</span>
   </div>
 
-  <!-- Mermaid 图：Rust 渲染 SVG（加载中/失败时回退源码占位） -->
-  <div v-else-if="block.type === 'mermaidBlock'" ref="rootEl" class="md-placeholder blk-mermaid-block my-2 rounded border p-3">
-    <div v-if="mermaidSvg" class="mermaid-diagram" v-html="mermaidSvg"></div>
-    <template v-else>
-      <div class="t-dim mb-1 text-[11px] font-medium">Mermaid 图表</div>
-      <pre class="overflow-x-auto font-mono text-[13px]">{{ rawText }}</pre>
-    </template>
+  <!-- Mermaid 图：Rust 渲染 SVG（加载中/失败时回退源码占位）；
+       悬浮控制条切换 源码|并排|预览（默认预览），缩放仅作用于渲染区（纯视图层 transform） -->
+  <div v-else-if="block.type === 'mermaidBlock'" ref="rootEl" class="md-placeholder blk-mermaid-block group relative my-2 rounded border p-3">
+    <!-- 悬浮控制条：悬停块浮现（复用 md-code-corner 浮现机制）；分段按钮 + 缩放控件 -->
+    <div class="md-code-corner md-diagram-toolbar select-none">
+      <span class="md-diagram-seg">
+        <button
+          v-for="m in DIAGRAM_MODES"
+          :key="m.id"
+          type="button"
+          class="md-diagram-seg-btn"
+          :class="{ 'md-diagram-seg-active': diagramView.mode === m.id }"
+          @click.stop="setDiagramMode(m.id)"
+        >{{ m.label }}</button>
+      </span>
+      <template v-if="diagramView.mode !== 'source'">
+        <button type="button" class="md-code-copy" title="缩小" @click.stop="diagramZoomOut">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.5 8h9" /></svg>
+        </button>
+        <span class="md-diagram-zoom-label">{{ diagramZoomLabel }}</span>
+        <button type="button" class="md-code-copy" title="放大" @click.stop="diagramZoomIn">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9" /></svg>
+        </button>
+        <button type="button" class="md-code-copy" title="复位缩放" @click.stop="diagramZoomReset">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 8a5.2 5.2 0 1 1-1.52-3.68" /><path d="M13.4 2.8v2h-2" /></svg>
+        </button>
+      </template>
+    </div>
+    <!-- 源码态：仅等宽原文（外框块样式沿用占位块边框） -->
+    <pre v-if="diagramView.mode === 'source'" class="md-diagram-source overflow-x-auto font-mono text-[13px]">{{ rawText }}</pre>
+    <!-- 并排态：左源码右渲染（渲染区可缩放） -->
+    <div v-else-if="diagramView.mode === 'split'" class="md-diagram-split grid grid-cols-2 items-start gap-2">
+      <pre class="md-diagram-source min-w-0 overflow-x-auto font-mono text-[13px]">{{ rawText }}</pre>
+      <div class="md-diagram-viewport min-w-0 overflow-auto">
+        <div class="md-diagram-stage" :style="diagramStageStyle">
+          <div :ref="diagramContentRef" class="md-diagram-content" :style="diagramContentStyle">
+            <div v-if="mermaidSvg" class="mermaid-diagram" v-html="mermaidSvg"></div>
+            <pre v-else class="overflow-x-auto font-mono text-[13px]">{{ rawText }}</pre>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- 预览态（现状）：渲染区缩放经舞台占位保证 overflow 滚动范围正确 -->
+    <div v-else class="md-diagram-viewport overflow-auto">
+      <div class="md-diagram-stage" :style="diagramStageStyle">
+        <div :ref="diagramContentRef" class="md-diagram-content" :style="diagramContentStyle">
+          <div v-if="mermaidSvg" class="mermaid-diagram" v-html="mermaidSvg"></div>
+          <template v-else>
+            <div class="t-dim mb-1 text-[11px] font-medium">Mermaid 图表</div>
+            <pre class="overflow-x-auto font-mono text-[13px]">{{ rawText }}</pre>
+          </template>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <!-- 注释块（可见） -->
+  <!-- 注释块：render_comments 关闭时折叠为占位细条（点击进入编辑，事件冒泡走通用块点击链路）；
+       开启时显示注释源码块 -->
+  <div
+    v-else-if="block.type === 'comment' && !showComments"
+    class="md-comment-collapsed blk-comment my-1 cursor-pointer select-none text-[12px]"
+    title="点击编辑注释"
+  >注释</div>
   <pre
     v-else-if="block.type === 'comment'"
     class="md-pre md-comment blk-comment my-2 overflow-x-auto rounded p-3 font-mono text-[13px]"
   >{{ rawText }}</pre>
+
+  <!-- 合并冲突块：当前/传入两侧面板对照（标签行 + 原文 pre），头部三向接受按钮；
+       点击面板进入编辑走 data-raw 原子原文（wysiwyg.js blockToHtml 冲突块分支） -->
+  <div v-else-if="block.type === 'conflictBlock'" class="blk-conflict-block my-2">
+    <div class="md-conflict-actions">
+      <button
+        type="button"
+        class="md-conflict-btn"
+        @click.stop="emit('resolve-conflict', { block, choice: 'current' })"
+      >接受当前</button>
+      <button
+        type="button"
+        class="md-conflict-btn"
+        @click.stop="emit('resolve-conflict', { block, choice: 'both' })"
+      >接受双方</button>
+      <button
+        type="button"
+        class="md-conflict-btn"
+        @click.stop="emit('resolve-conflict', { block, choice: 'incoming' })"
+      >接受传入</button>
+    </div>
+    <div class="md-conflict-current">
+      <div class="md-conflict-label">{{ block.conflict?.currentLabel || '当前更改' }}</div>
+      <pre class="md-conflict-content">{{ block.conflict?.current ?? '' }}</pre>
+    </div>
+    <div class="md-conflict-incoming">
+      <div class="md-conflict-label">{{ block.conflict?.incomingLabel || '传入的更改' }}</div>
+      <pre class="md-conflict-content">{{ block.conflict?.incoming ?? '' }}</pre>
+    </div>
+  </div>
 
   <!-- section 图文排版块：grid 布局渲染（关闭渲染开关时回退源码展示） -->
   <div v-else-if="block.type === 'sectionBlock'" class="blk-section-block my-2">

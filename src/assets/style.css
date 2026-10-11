@@ -430,6 +430,99 @@
   color: var(--t-find-highlight-current-text, #ffffff);
 }
 
+/* 改动审阅（上次保存基线）：块级标记 + 概览尺。
+   色值走主题 token --t-change-added/modified/deleted（主题 colors 的 change_* 键）。
+   条纹为 ::before 绝对定位竖条：条带中间行上下渗入块间 margin 塌陷形成的间隙（同色重叠不可见），
+   只在条带首尾（runStart/runEnd）收圆角——连续改动区域视觉上是「一条贯穿竖条」（对齐 MEO），
+   且不占用布局宽度（无 border/margin hack，行内容不位移）。 */
+.md-chg-added,
+.md-chg-modified {
+  position: relative;
+}
+.md-chg-added::before,
+.md-chg-modified::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: -14px;
+  bottom: -14px;
+  width: 3px;
+  border-radius: 0;
+  background: var(--t-change-added);
+  pointer-events: none;
+}
+.md-chg-modified::before {
+  background: var(--t-change-modified);
+}
+/* 条带首尾：收回渗入量 + 圆角端头 */
+.md-chg-run-start::before {
+  top: 0;
+  border-top-left-radius: 2px;
+  border-top-right-radius: 2px;
+}
+.md-chg-run-end::before {
+  bottom: 0;
+  border-bottom-left-radius: 2px;
+  border-bottom-right-radius: 2px;
+}
+/* 修改前内容（偏好 change_review_show_old）：旧文本只读块，红底删除线，置于块内容上方 */
+.md-chg-old {
+  margin: 2px 0 0 0;
+  padding: 4px 8px;
+  border-left: 3px solid var(--t-change-deleted);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--t-change-deleted) 8%, transparent);
+  color: var(--t-text-placeholder);
+  font-size: 0.92em;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+  user-select: none;
+  pointer-events: none;
+}
+.md-chg-deleted {
+  position: relative;
+  border-top: 1px solid var(--t-change-deleted);
+}
+/* 删除行数徽标：绝对定位不占布局（不影响占位行的 minHeight 逻辑） */
+.md-chg-deleted-badge {
+  position: absolute;
+  top: 0;
+  left: 2px;
+  font-size: 10px;
+  line-height: 1.4;
+  padding: 0 3px;
+  border-radius: 0 0 3px 3px;
+  background: var(--t-change-deleted);
+  color: var(--t-editor-background);
+  pointer-events: none;
+}
+/* 概览尺：编辑区右缘 6px 竖条，每 hunk 一个 2px 色块（topPct 相对全文起点） */
+.md-chg-ruler {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 14px;
+  width: 6px;
+  pointer-events: auto;
+}
+.md-chg-ruler-tick {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--t-change-added);
+}
+.md-chg-ruler-tick.md-chg-ruler-modified {
+  background: var(--t-change-modified);
+}
+.md-chg-ruler-tick.md-chg-ruler-deleted {
+  background: var(--t-change-deleted);
+}
+
 /* 图片拖拽调宽手柄：右缘中部，悬停图片时显示 */
 .img-resize-handle {
   position: absolute;
@@ -648,6 +741,35 @@
   opacity: 1;
 }
 .md-table-btn.tbl-delete { color: #e02424; }
+
+/* 渲染态表格：Alt+拖拽矩形选区单元格高亮（半透明主题 accent 底，主题未定义 --t-accent 时回退选区色） */
+.md-cell-sel {
+  background: var(--t-accent, var(--t-selection));
+}
+/* 列宽拖拽：表头单元格右缘 6px 手柄，仅悬停表格时可见；拖拽中表格切 fixed 布局 */
+.blk-table th {
+  position: relative;
+}
+.md-col-resize {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  opacity: 0;
+  z-index: 2;
+  transition: opacity 0.1s;
+}
+.blk-table:hover .md-col-resize {
+  opacity: 1;
+}
+.md-col-resize:hover {
+  background: var(--t-accent, var(--t-selection));
+}
+.md-table-fixed {
+  table-layout: fixed;
+}
 
 /* 表格弹出层：尺寸网格选择器 / 更多操作菜单（Teleport 挂 .t-app，blocks 作用域主题规则生效） */
 .md-table-panel {
@@ -1264,6 +1386,8 @@ pre:hover .md-code-copy-edit,
   .md-table-toolbar,
   .md-table-edge-btn,
   .md-code-corner,
+  .md-back-top,
+  .md-src-jump,
   .sidebar-resizer,
   .prefs-page,
   .md-bottom-space {
@@ -1461,4 +1585,337 @@ pre:hover .md-code-copy-edit,
 }
 .t-tab:hover svg {
   transform: scale(1.18);
+}
+
+/* 返回顶部浮动按钮：编辑区右下角（避开右缘覆盖层滚动条与概览尺），仅 WYSIWYG 渲染 */
+.md-back-top {
+  position: absolute;
+  right: 26px;
+  bottom: 24px;
+  z-index: 30;
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--t-table-border);
+  border-radius: 999px;
+  background: var(--t-editor-background);
+  color: var(--t-text-placeholder);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  opacity: 0.85;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.md-back-top:hover {
+  opacity: 1;
+  color: var(--t-text-default);
+}
+.md-back-top svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* 源码模式布局：行号 gutter + textarea 的 flex 行容器（跳行浮动框的定位基准） */
+.md-src-wrap {
+  position: relative;
+  display: flex;
+  flex: 1 1 0%;
+  min-height: 0;
+}
+/* 行号 gutter：元素带 t-root font-mono 类（与 textarea 同字号/行高/字体、同 16px 上下内边距，
+   逐行对齐），此处只覆盖水平内边距与外观；overflow:hidden 下由 JS 程序同步 scrollTop */
+.md-src-gutter {
+  flex: none;
+  overflow: hidden;
+  padding-left: 12px;
+  padding-right: 10px;
+  text-align: right;
+  user-select: none;
+  color: var(--t-text-placeholder);
+  background: color-mix(in srgb, var(--t-text-default) 3%, transparent);
+  border-right: 1px solid var(--t-separator-color, var(--t-table-border));
+}
+
+/* Ctrl+G 跳行浮动框：源码区右上角 */
+.md-src-jump {
+  position: absolute;
+  top: 10px;
+  right: 18px;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  background: var(--t-editor-background);
+  border: 1px solid var(--t-table-border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+}
+.md-src-jump-label {
+  color: var(--t-text-placeholder);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.md-src-jump input {
+  width: 84px;
+  padding: 0;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--t-text-default);
+  font: inherit;
+}
+
+/* ===== F-A 图表块（Mermaid/公式）悬浮控制条：分段按钮 + 缩放（浮现复用 .md-code-corner 机制） ===== */
+.md-diagram-toolbar {
+  gap: 6px;
+  align-items: center;
+}
+.md-diagram-seg {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--t-table-border);
+  border-radius: 5px;
+  background: var(--t-editor-background);
+}
+.md-diagram-seg-btn {
+  padding: 1px 8px;
+  border: none;
+  background: transparent;
+  color: var(--t-text-placeholder);
+  font-size: 11px;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.md-diagram-seg-btn + .md-diagram-seg-btn {
+  border-left: 1px solid var(--t-table-border);
+}
+.md-diagram-seg-btn:hover {
+  color: var(--t-text-default);
+}
+.md-diagram-seg-active {
+  background: var(--t-accent, var(--t-selection));
+  color: var(--t-text-default);
+}
+.md-diagram-zoom-label {
+  min-width: 38px;
+  text-align: center;
+  color: var(--t-text-placeholder);
+  font-size: 11px;
+  user-select: none;
+}
+/* 缩放容器：溢出滚动（舞台尺寸由 useDiagramView 内联写入，保证滚动范围正确） */
+.md-diagram-viewport {
+  max-width: 100%;
+}
+
+/* ===== F-B 行内 hex 色值预览块（#rrggbb/#rrggbbaa 文本后的小色块；背景为内容数据色值，走元素内联 style） ===== */
+.md-hex-swatch {
+  display: inline-block;
+  width: 0.85em;
+  height: 0.85em;
+  margin-left: 0.2em;
+  border: 1px solid color-mix(in srgb, var(--t-text-default) 30%, transparent);
+  border-radius: 3px;
+  vertical-align: -0.08em;
+}
+
+/* ===== F-C 折叠注释占位细条（render_comments 关闭时；点击进入编辑） ===== */
+.t-root .md-comment-collapsed {
+  padding: 0 8px;
+  border-left: 3px solid var(--t-comment-bg);
+  color: var(--t-text-placeholder);
+  font-style: italic;
+  line-height: 1.5;
+}
+.t-root .md-comment-collapsed:hover {
+  background: var(--t-comment-bg);
+}
+
+/* ===== F-D 表格防横向滚动（useTableFitWidth）：容器内最大宽 + 压缩态降 padding/任意断词 ===== */
+.blk-table {
+  max-width: 100%;
+}
+.blk-table.md-table-compress th,
+.blk-table.md-table-compress td {
+  padding: 1px 4px;
+  overflow-wrap: anywhere;
+}
+
+/* ===== F-H 合并冲突块：当前/传入面板 + 头部三向接受按钮 ===== */
+.t-root .blk-conflict-block {
+  overflow: hidden;
+  border: 1px solid var(--t-table-border);
+  border-radius: 6px;
+}
+.t-root .md-conflict-actions {
+  display: flex;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--t-table-border);
+  background: var(--t-comment-bg);
+}
+.t-root .md-conflict-btn {
+  padding: 1px 10px;
+  border: 1px solid var(--t-table-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--t-text-default);
+  font-size: 12px;
+  cursor: pointer;
+}
+.t-root .md-conflict-btn:hover {
+  background: var(--t-status-bar-button-hover);
+}
+.t-root .md-conflict-label {
+  padding: 2px 8px;
+  border-bottom: 1px solid var(--t-table-border);
+  background: var(--t-comment-bg);
+  color: var(--t-text-placeholder);
+  font-size: 11px;
+  font-weight: 600;
+}
+.t-root .md-conflict-current .md-conflict-label {
+  color: var(--t-callout-tip-border);
+}
+.t-root .md-conflict-incoming {
+  border-top: 1px solid var(--t-table-border);
+}
+.t-root .md-conflict-incoming .md-conflict-label {
+  color: var(--t-callout-important-border);
+}
+.t-root .md-conflict-content {
+  min-height: 1.5em;
+  margin: 0;
+  padding: 6px 8px;
+  font-family: var(--t-code-font-family-pref, var(--t-code-font-family));
+  font-size: var(--t-code-size);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ===== 改动审阅基线菜单：右上浮动 ± 按钮 + 下拉面板（MEO 式） ===== */
+.md-chg-menubox {
+  position: absolute;
+  top: 8px;
+  right: 18px;
+  z-index: 40;
+}
+.md-chg-menubtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--t-table-border);
+  border-radius: 6px;
+  background: var(--t-editor-background);
+  color: var(--t-change-added);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  opacity: 0.92;
+}
+.md-chg-menubtn:hover {
+  opacity: 1;
+}
+.md-chg-menubtn.md-chg-off {
+  color: var(--t-text-placeholder);
+}
+.md-chg-menubtn-icon {
+  font-weight: 600;
+}
+.md-chg-menubtn-caret {
+  color: var(--t-text-placeholder);
+  font-size: 10px;
+}
+.md-chg-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 39;
+}
+.md-chg-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  min-width: 240px;
+  padding: 4px;
+  border: 1px solid var(--t-table-border);
+  border-radius: 8px;
+  background: var(--t-editor-background);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+}
+.md-chg-menu-head {
+  padding: 4px 10px 6px;
+  border-bottom: 1px solid var(--t-table-border);
+  color: var(--t-change-added);
+  font-size: 12px;
+}
+.md-chg-menu-sect {
+  padding: 6px 10px 2px;
+  color: var(--t-text-placeholder);
+  font-size: 11px;
+}
+.md-chg-menu-item {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--t-text-default);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.md-chg-menu-item:hover {
+  background: var(--t-status-bar-button-hover);
+}
+.md-chg-menu-item.active {
+  background: color-mix(in srgb, var(--t-text-link) 12%, transparent);
+}
+.md-chg-menu-item:disabled {
+  color: var(--t-text-placeholder);
+  cursor: default;
+}
+.md-chg-menu-item:disabled:hover {
+  background: transparent;
+}
+.md-chg-check {
+  color: var(--t-text-link);
+}
+.md-chg-manual-row {
+  padding: 0 4px 0 0;
+}
+.md-chg-manual-main {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 0 0 0 10px;
+  cursor: pointer;
+}
+.md-chg-menu-mini {
+  padding: 0 8px;
+  border: 1px solid var(--t-table-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--t-text-placeholder);
+  font-size: 11px;
+  cursor: pointer;
+}
+.md-chg-menu-mini:hover {
+  color: var(--t-text-default);
+  background: var(--t-status-bar-button-hover);
+}
+.md-chg-toggle input {
+  accent-color: var(--t-text-link);
 }

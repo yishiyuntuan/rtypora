@@ -7,6 +7,9 @@ on:
     branches: [master]
   workflow_dispatch:
 
+# 最小权限：仅构建并上传 Artifacts（不创建 Release、不写仓库内容）
+permissions:
+  contents: read
 jobs:
   build:
     strategy:
@@ -22,21 +25,23 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           version: 11
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
           cache: pnpm
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable
 
       # Rust 编译缓存（tree-sitter 语法为 C 构建，全量编译耗时明显）
-      - uses: swatinem/rust-cache@v2
+      - uses: swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: 安装 Linux 系统依赖（WebKitGTK 等）
         if: matrix.os == 'ubuntu-latest'
@@ -48,11 +53,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: 构建 Tauri 安装包
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
 
       - name: 上传 Windows 安装包（MSI/NSIS）
         if: matrix.os == 'windows-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-bundle
           path: |
@@ -61,14 +66,14 @@ jobs:
 
       - name: 上传 macOS 安装包（DMG）
         if: matrix.os == 'macos-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: macos-bundle
           path: src-tauri/target/release/bundle/dmg/*.dmg
 
       - name: 上传 Linux 安装包（DEB/AppImage/RPM）
         if: matrix.os == 'ubuntu-latest'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux-bundle
           path: |

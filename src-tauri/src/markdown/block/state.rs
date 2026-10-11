@@ -182,6 +182,10 @@ pub enum BlockKind {
     MathBlock,
     /// Mermaid 围栏块（渲染为 SVG）。
     MermaidBlock,
+    /// Git 合并冲突块（`<<<<<<<`/`=======`/`>>>>>>>` 标记区）。
+    /// 两侧原文与标签载荷在 [`BlockRecord::conflict`]；仅根级顶格标记解析，
+    /// 围栏/缩进代码、HTML/注释块内部与引用/列表内部的同形行不触发。
+    ConflictBlock,
     /// 原生运行时子集之外语法的原文 Markdown 回落。
     RawMarkdown,
 }
@@ -196,6 +200,52 @@ pub struct CodeFenceOpening {
     pub len: usize,
     /// 起始围栏之后的可选语言/信息串。
     pub language: Option<String>,
+}
+
+/// Git 合并冲突块载荷（diff 双侧标记区；不支持 `|||||||` diff3 基线标记）。
+///
+/// `current`/`incoming` 为各自侧原始行文本（不含标记行），保留内部换行、
+/// 末尾换行剔除；空侧为空串。label 为标记行剩余文本（trim 后），无则 None。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictData {
+    /// 当前侧标签（`<<<<<<< HEAD` 的 `HEAD`）。
+    pub current_label: Option<String>,
+    /// 当前侧原始行文本。
+    pub current: String,
+    /// 传入侧标签（`>>>>>>> feature` 的 `feature`）。
+    pub incoming_label: Option<String>,
+    /// 传入侧原始行文本。
+    pub incoming: String,
+}
+
+impl ConflictData {
+    /// 按契约精确序列化：`<<<<<<<[ label]`、当前侧原文（空侧无内容行，标记行相邻）、
+    /// `=======`、传入侧原文、`>>>>>>>[ label]`。
+    pub fn markdown(&self) -> String {
+        let mut out = String::new();
+        out.push_str("<<<<<<<");
+        if let Some(label) = &self.current_label {
+            out.push(' ');
+            out.push_str(label);
+        }
+        out.push('\n');
+        if !self.current.is_empty() {
+            out.push_str(&self.current);
+            out.push('\n');
+        }
+        out.push_str("=======\n");
+        if !self.incoming.is_empty() {
+            out.push_str(&self.incoming);
+            out.push('\n');
+        }
+        out.push_str(">>>>>>>");
+        if let Some(label) = &self.incoming_label {
+            out.push(' ');
+            out.push_str(label);
+        }
+        out
+    }
 }
 
 impl BlockKind {
@@ -235,6 +285,7 @@ impl BlockKind {
                 | Self::MermaidBlock
                 | Self::HtmlBlock
                 | Self::Comment
+                | Self::ConflictBlock
                 | Self::RawMarkdown
         )
     }
@@ -256,6 +307,7 @@ impl BlockKind {
                 | Self::MermaidBlock
                 | Self::HtmlBlock
                 | Self::Comment
+                | Self::ConflictBlock
                 | Self::RawMarkdown
         )
     }
@@ -537,6 +589,9 @@ pub struct BlockRecord {
     /// 序列化/渲染均以其为组起点递增——源序号与渲染序号保持一致（源即所见）
     #[serde(default)]
     pub list_start: Option<usize>,
+    /// Git 合并冲突块载荷（仅 ConflictBlock 有值）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<ConflictData>,
 }
 
 impl BlockRecord {
@@ -549,6 +604,7 @@ impl BlockRecord {
             html: None,
             raw_fallback: None,
             list_start: None,
+            conflict: None,
         };
         record.sync_raw_fallback();
         record
@@ -594,6 +650,7 @@ impl BlockRecord {
             html: Some(document),
             raw_fallback: Some(markdown),
             list_start: None,
+            conflict: None,
         }
     }
 
@@ -614,6 +671,13 @@ impl BlockRecord {
     pub fn table(table: TableData) -> Self {
         let mut record = Self::new(BlockKind::Table, InlineTextTree::plain(String::new()));
         record.table = Some(table);
+        record
+    }
+
+    /// Git 合并冲突块：序列化只认 `conflict` 载荷；标题镜像其规范化源码（信息性）。
+    pub fn conflict(data: ConflictData) -> Self {
+        let mut record = Self::with_plain_text(BlockKind::ConflictBlock, data.markdown());
+        record.conflict = Some(data);
         record
     }
 
@@ -687,6 +751,18 @@ impl BlockRecord {
             }
             BlockKind::Table => String::new(),
             BlockKind::CodeBlock { .. } => title_markdown,
+            BlockKind::ConflictBlock => {
+                let markdown = self
+                    .conflict
+                    .as_ref()
+                    .map(ConflictData::markdown)
+                    .unwrap_or_else(|| self.title_markdown());
+                if depth == 0 {
+                    markdown
+                } else {
+                    indent_multiline(&markdown, &indentation)
+                }
+            }
             BlockKind::RawMarkdown
             | BlockKind::Comment
             | BlockKind::HtmlBlock

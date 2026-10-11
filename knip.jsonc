@@ -1,0 +1,18 @@
+{
+  // knip 配置：正名有文档依据的误报。
+  // entry 补充回归脚本（经 node 直接运行而非 vite 构建；jsdom 由其引入）
+  "entry": ["index.html", "scripts/*.mjs"],
+  "ignoreDependencies": [
+    // vendor/ 两个工件快照的升级来源（引擎 TeaVM 产物不能走打包器导入，见 utils/plantuml.js 注释）
+    "@plantuml/core",
+    // 自启动偏好开关的 JS API 预留（Rust 侧已注册插件与 autostart:default 权限，UI 开关落地时启用）
+    "@tauri-apps/plugin-autostart"
+  ],
+  "ignoreFiles": [
+    // index.html 首帧防白闪脚本（<script src> 直引，knip 无法追踪）
+    "public/early-theme.js",
+    // PlantUML 引擎按资源名运行时加载的 emoji/openiconic 表（ff5ffaf 提交引入）
+    "public/emoji.js",
+    "public/openiconic.js"
+  ]
+}

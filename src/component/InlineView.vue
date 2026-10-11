@@ -1,9 +1,11 @@
 <script setup vapor>
 // 行内渲染器：按 fragment 样式标志递归包裹渲染（粗体/斜体/删除线/下划线/
 // 行内代码/上下标/链接/脚注引用/行内公式占位），叶子为 MathView 或纯文本。
+// 纯文本叶子按 #rrggbb/#rrggbbaa 命中切分，色值文本后紧跟预览色块（行内代码/链接除外）。
 import { computed, inject } from 'vue';
 import MathView from './MathView.vue';
 import { htmlStyleCss } from '../utils/wysiwyg.js';
+import { getPref, renderVersion } from '../utils/prefs.js';
 
 // 行内渲染器：渲染 velotype InlineTextTree 的 fragments。
 // 每个 fragment 的样式为标志位组合，通过递归逐层包裹元素（link → 粗 → 斜 → 删 → 下划线 → 代码 → 上下标）。
@@ -41,10 +43,34 @@ function strip(fragment, key) {
   };
 }
 function withoutLink(fragment) {
-  return { ...fragment, link: null };
+  // 链接片段不渲染色值预览块：_noSwatch 随 strip/withoutHtmlStyle 的对象展开逐层传播到内部叶子
+  return { ...fragment, link: null, _noSwatch: true };
 }
 function withoutHtmlStyle(fragment) {
   return { ...fragment, htmlStyle: null };
+}
+
+// 行内 hex 色值预览（对齐 MEO，仅 6/8 位）：\B# 要求 # 前非单词字符（避免词中误命中），
+// 尾部 \b 保证恰好 6/8 位（7/9 位不命中）；8 位优先于 6 位匹配。
+// 色块类名 md-hex-swatch（md-color-swatch 已被字体颜色面板的 22px 色板占用）
+const HEX_COLOR_RE = /\B#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6})\b/g;
+
+// 文本按色值命中切分为片段序列：[{ text }] 或 [{ text, color }…]（color 段渲染时紧跟色块）。
+// 偏好 render_color_swatch 关闭、链接片段（_noSwatch）时不切分原样返回；
+// 行内代码在 style.code 分支已被拦截，不会到达文本叶子
+function colorTextParts(fragment) {
+  renderVersion.value; // 模板渲染期读取版本号即建立响应依赖，切换偏好即时重渲染
+  const text = fragment.text || '';
+  if (!text || fragment._noSwatch || !getPref('render_color_swatch')) return [{ text }];
+  const parts = [];
+  let last = 0;
+  for (const m of text.matchAll(HEX_COLOR_RE)) {
+    if (m.index > last) parts.push({ text: text.slice(last, m.index) });
+    parts.push({ text: m[0], color: m[0] });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) parts.push({ text: text.slice(last) });
+  return parts.length ? parts : [{ text }];
 }
 </script>
 
@@ -82,8 +108,9 @@ function withoutHtmlStyle(fragment) {
     <mark v-else-if="fragment.style?.highlight" class="rounded px-0.5"><InlineView :fragment="strip(fragment, 'highlight')" /></mark>
     <kbd v-else-if="fragment.style?.kbd"><InlineView :fragment="strip(fragment, 'kbd')" /></kbd>
     <code v-else-if="fragment.style?.code" :class="INLINE_CODE_CLASS">{{ fragment.text }}</code>
-    <sup v-else-if="fragment.style?.script === 'superscript'">{{ fragment.text }}</sup>
-    <sub v-else-if="fragment.style?.script === 'subscript'">{{ fragment.text }}</sub>
-    <template v-else>{{ fragment.text }}</template>
+    <!-- 文本叶子（含上下标）：色值命中段文本后紧跟预览色块；无命中时 DOM 与纯文本渲染一致 -->
+    <sup v-else-if="fragment.style?.script === 'superscript'"><template v-for="(p, i) in colorTextParts(fragment)" :key="i"><span v-if="p.color">{{ p.text }}<span class="md-hex-swatch" :style="{ backgroundColor: p.color }"></span></span><template v-else>{{ p.text }}</template></template></sup>
+    <sub v-else-if="fragment.style?.script === 'subscript'"><template v-for="(p, i) in colorTextParts(fragment)" :key="i"><span v-if="p.color">{{ p.text }}<span class="md-hex-swatch" :style="{ backgroundColor: p.color }"></span></span><template v-else>{{ p.text }}</template></template></sub>
+    <template v-else><template v-for="(p, i) in colorTextParts(fragment)" :key="i"><span v-if="p.color">{{ p.text }}<span class="md-hex-swatch" :style="{ backgroundColor: p.color }"></span></span><template v-else>{{ p.text }}</template></template></template>
   </template>
 </template>

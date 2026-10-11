@@ -34,7 +34,27 @@ const DEFAULTS = {
   editor_font_family: null,
   code_font_family: null,
   // 图像
-  image_paste_behavior: 'document', // 'off' | 'document'（文档目录）| 'assets'（assets 子目录）
+  // 'off' | 'document'（文档目录）| 'assets'（assets 子目录）| 'assets-per-document'（assets/<文档名> 子目录）
+  image_paste_behavior: 'document',
+  // 改动审阅：与上次保存内容对比，块侧条纹 + 右侧概览标尺（默认开启）
+  change_review: true,
+  // 选区符号包裹：选中文字后输入成对符号（括号/引号/*_~$ 等）直接包裹选区（默认开启）
+  wrap_selection: true,
+  // 粘贴表格转换：正文粘贴 Excel/TSV/HTML 表格时转换为 Markdown 表格（默认开启；
+  // 已有表格内的矩阵覆盖粘贴不受此开关控制）
+  paste_table_convert: true,
+  // 改动审阅：比较基线 'saved'（最近保存）| 'git'（Git HEAD）| 'manual'（手动快照）
+  change_review_baseline: 'saved',
+  // 显示修改前内容：删除/修改处展示旧文本块（默认关闭）
+  change_review_show_old: false,
+  // 阅读位置记忆：重新打开文件时恢复上次滚动位置（默认开启）
+  reading_position_restore: true,
+  // 源码模式行号栏（默认开启；Ctrl+G 跳行不受开关影响）
+  source_line_numbers: true,
+  // 行内 hex 色值预览块（#rrggbb/#rrggbbaa 后显示色块，默认开启）
+  render_color_swatch: true,
+  // HTML 注释块显隐（默认隐藏为占位细条；开启后显示注释源码块；render_* 前缀保证切换即重渲染）
+  render_comments: false,
   // Markdown 渲染开关
   render_code_highlight: true,
   render_code_line_numbers: true,
@@ -179,7 +199,7 @@ function setTrafficLights(visible) {
   );
 }
 
-export function applyTrafficLightAutohide(enabled) {
+function applyTrafficLightAutohide(enabled) {
   if (!IS_MAC) return;
   if (enabled === tlState.enabled) return;
   tlState.enabled = enabled;

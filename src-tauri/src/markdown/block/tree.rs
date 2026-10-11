@@ -5,7 +5,7 @@
 //! 状态），web 端不需要，这里只保留「BlockNode 树 → 规范 Markdown」的遍历。
 
 use super::document::BlockNode;
-use super::state::{BlockKind, CalloutVariant};
+use super::state::{BlockKind, CalloutVariant, ConflictData};
 use crate::markdown::inline::image::parse_standalone_image;
 use crate::markdown::table::serialize_table_markdown_lines;
 
@@ -201,6 +201,24 @@ fn collect_single_block_markdown_lines(node: &BlockNode, list_depth: usize, line
                 .clone()
                 .unwrap_or_else(|| node.record.title_markdown());
             for line in raw_markdown.split('\n') {
+                if indentation.is_empty() {
+                    lines.push(line.to_string());
+                } else {
+                    lines.push(format!("{indentation}{line}"));
+                }
+            }
+        }
+        BlockKind::ConflictBlock => {
+            // 按契约精确还原标记区：`<<<<<<<[ label]`、各侧原文（空侧标记行相邻）、
+            // `=======`、`>>>>>>>[ label]`；缺载荷时退回标题文本（不应发生）。
+            let indentation = "  ".repeat(list_depth);
+            let markdown = node
+                .record
+                .conflict
+                .as_ref()
+                .map(ConflictData::markdown)
+                .unwrap_or_else(|| node.record.title_markdown());
+            for line in markdown.split('\n') {
                 if indentation.is_empty() {
                     lines.push(line.to_string());
                 } else {

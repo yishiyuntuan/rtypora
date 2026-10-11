@@ -83,7 +83,7 @@ export function numberedOrdinals(blocks) {
 // ---------- Block 模型 → 可编辑 HTML ----------
 
 // InlineTextTree → HTML；与 InlineView.vue 的渲染结构保持一致
-export function inlineToHtml(tree) {
+function inlineToHtml(tree) {
   return (tree?.fragments || []).map(fragmentToHtml).join('');
 }
 
@@ -235,6 +235,15 @@ export function blockToHtml(block, rawSource, depth = 0, ordinal = 1) {
       // 右上角语言输入框（输入同步到 data-language，提交时随块序列化；
       // contenteditable="false" 必须——否则 Chromium 下键入由编辑宿主接管，不产生 input 事件）
       return `<pre class="${PRE_CLASS} blk-code-block relative" data-language="${escapeHtml(block.language || '')}"><input class="md-code-lang-input" data-lang-input contenteditable="false" value="${escapeHtml(block.language || '')}" placeholder="text" spellcheck="false" />${CODE_COPY_BTN}<code>${escapeHtml(plainText(block.title))}</code></pre>`;
+    // 合并冲突块：同为原子原文编辑（提交后 Rust 重解析还原两侧面板）；
+    // 无原始切片/快照时按 DTO 契约精确序列化回标准冲突格式，保证不丢内容
+    case 'conflictBlock': {
+      const c = block.conflict;
+      const serialized = c
+        ? `<<<<<<<${c.currentLabel ? ` ${c.currentLabel}` : ''}\n${c.current}\n=======\n${c.incoming}\n>>>>>>>${c.incomingLabel ? ` ${c.incomingLabel}` : ''}`
+        : plainText(block.title);
+      return `<pre class="${PRE_CLASS}" data-raw="">${escapeHtml(rawSource ?? block.rawFallback ?? serialized)}</pre>`;
+    }
     // 原子/保留类块：编辑原始 Markdown 切片，保证不丢内容
     case 'separator':
     case 'footnoteDefinition':
@@ -599,7 +608,7 @@ export function domToBlockDtos(root) {
 
 // 代码块编辑 DOM：pre + 右上角语言输入框 + code（结构与 blockToHtml 一致；
 // 输入框 contenteditable="false" 否则 Chromium 下键入不产生 input 事件）
-export function createCodePre(language) {
+function createCodePre(language) {
   const pre = document.createElement('pre');
   pre.className = `${PRE_CLASS} relative`;
   pre.setAttribute('data-language', language || '');
@@ -614,7 +623,7 @@ export function createCodePre(language) {
   pre.append(input, codeEl);
   // 复制按钮插在 code 之前（与 blockToHtml 结构一致，placeCursorAtEnd 落在 code 末尾）
   const tpl = document.createElement('template');
-  tpl.innerHTML = CODE_COPY_BTN;
+  tpl.innerHTML = CODE_COPY_BTN; // pi-lens-ignore: no-inner-html-js — 模块常量按钮 SVG 模板，非用户输入
   pre.insertBefore(tpl.content.firstChild, codeEl);
   return pre;
 }
@@ -993,7 +1002,7 @@ export function applyMarkdownShortcuts() {
 // 输入 ** 自动补全为加粗编辑态：把刚输入的两个 * 换成空 <strong>，光标在其中。
 // 仅在样式/代码元素之外、且刚输入的是「开」标记时触发（** 计数为奇数为开、偶数为闭——
 // 闭合对交给 inline_shortcut 转换既有文本）
-export function autoCloseBoldMarker() {
+function autoCloseBoldMarker() {
   const sel = window.getSelection();
   if (!sel.rangeCount || !sel.isCollapsed) return false;
   const node = sel.anchorNode;
@@ -1744,11 +1753,11 @@ export function paragraphDtoFromTree(title) {
 export function demoteEditableToParagraph(el, dto) {
   const p = document.createElement('p');
   p.className = `blk-paragraph ${P_CLASS}`;
-  p.innerHTML = inlineToHtml(dto.title) || '<br>';
+  p.innerHTML = inlineToHtml(dto.title) || '<br>'; // pi-lens-ignore: no-inner-html-js — inlineToHtml 对用户文本全程 escapeHtml
   el.replaceChildren(p);
   const ords = numberedOrdinals(dto.children);
   for (const child of dto.children || []) {
-    el.insertAdjacentHTML('beforeend', blockToHtml(child, undefined, 0, ords.get(child.id) || 1));
+    el.insertAdjacentHTML('beforeend', blockToHtml(child, undefined, 0, ords.get(child.id) || 1)); // pi-lens-ignore: no-inner-html-js,typescript.react.security.audit.react-unsanitized-method.react-unsanitized-method — blockToHtml 对用户文本全程 escapeHtml
   }
   placeCursorAtStart(el);
 }

@@ -3144,7 +3144,9 @@ fn escape_literal_text_with_offset_map(text: &str) -> InlineMarkdownOffsetMap {
             continue;
         }
 
-        let ch = text[index..].chars().next().unwrap();
+        let Some(ch) = text[index..].chars().next() else {
+            break; // 循环条件已保证非空，此处仅为无 unwrap 的兜底
+        };
         escaped.push(ch);
         markdown_to_visible.resize(escaped.len() + 1, index);
         index += ch.len_utf8();

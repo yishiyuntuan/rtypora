@@ -62,6 +62,16 @@ const documentDir = computed(() => {
   return parts.join("/") || null;
 });
 provide("documentDir", documentDir);
+// 当前文档主名（不含扩展名，粘贴图片按文档分目录用；新建文档为 null）
+const currentFileStem = computed(() => {
+  if (!currentFilePath.value) return null;
+  const base = currentFilePath.value.split(/[\\/]/).pop() || "";
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base || null;
+});
+provide("currentFileStem", currentFileStem);
+// 当前文件完整路径（阅读位置记忆按路径键控）
+provide("currentFilePath", currentFilePath);
 // 侧边栏工作目录（打开文件时跟随其目录，也可经「打开文件夹」独立设置）
 const workspaceDir = ref(null);
 watch(currentFilePath, (path) => {

@@ -1,6 +1,6 @@
 // 链接展开/折叠行为回归（jsdom）。
 // 测的是真实代码而非重写：折叠提取走 src/utils/wysiwyg.js 的 domToBlockDtos；
-// 展开/折叠函数按名称从 src/component/Editor.vue 抽取函数文本执行。
+// 展开/折叠函数按名称从 src/composables/useInlineSourceReveal.js 抽取函数文本执行。
 // 运行：node scripts/test-link-fold.mjs
 import { JSDOM } from 'jsdom';
 import fs from 'node:fs';
@@ -24,8 +24,8 @@ fs.writeFileSync(
 );
 const W = await import(pathToFileURL(stubbed).href);
 
-// 从 Editor.vue 抽取函数文本（按函数名起、花括号配平止）
-const esrc = fs.readFileSync(path.join(root, 'src/component/Editor.vue'), 'utf8');
+// 从 composable 抽取函数文本（按函数名起、花括号配平止）
+const esrc = fs.readFileSync(path.join(root, 'src/composables/useInlineSourceReveal.js'), 'utf8');
 function extractFn(name) {
   const start = esrc.indexOf(`function ${name}(`);
   if (start < 0) throw new Error(`${name} not found`);
@@ -40,12 +40,15 @@ function extractFn(name) {
   }
   throw new Error(`${name} unclosed`);
 }
+// pi-lens-ignore: no-global-eval-js — 测试脚手架：按函数名抽取真实函数文本构建沙箱执行（非用户输入）
 const F = new Function(
   'W',
   `const { LINK_CLASS, markSpanFactory, textBeforePoint } = W;
 ${extractFn('collapseLinkTemplateOutside')}
+${extractFn('expandLinkTemplate')}
 ${extractFn('expandLinkAtCaret')}
-return { collapseLinkTemplateOutside, expandLinkAtCaret };`,
+${extractFn('expandLinkAtCaretInUrl')}
+return { collapseLinkTemplateOutside, expandLinkAtCaret, expandLinkAtCaretInUrl };`,
 )(W);
 
 let pass = 0;
@@ -73,6 +76,7 @@ function linkFrags(el) {
 // 展开结构：可带地址区变形（extra 为 ( 之后、) 之前插入的额外 HTML）
 function buildExpanded(urlExtra = '') {
   const el = document.createElement('div');
+  // pi-lens-ignore: no-inner-html-js — jsdom 测试夹具，字面量 HTML
   el.innerHTML =
     `<p>前文<span class="md-link-mark">[</span><span class="md-link-text">sfasf</span>` +
     `<span class="md-link-mark">]</span><span class="md-link-mark">(</span>${urlExtra}` +
@@ -124,6 +128,7 @@ function buildExpanded(urlExtra = '') {
 {
   // 结构真残（缺 ) 标记）：按字面量保留，不折叠不丢文本
   const el = document.createElement('div');
+  // pi-lens-ignore: no-inner-html-js — jsdom 测试夹具，字面量 HTML
   el.innerHTML =
     '<p><span class="md-link-mark">[</span><span class="md-link-text">sfasf</span>' +
     '<span class="md-link-mark">]</span><span class="md-link-mark">(</span><span class="md-link-url">xxxx</span></p>';
@@ -229,6 +234,7 @@ function buildExpanded(urlExtra = '') {
 // 与 applySlashCommand('link') 同构：p[data-raw] + \uFEFF 哨兵文字/地址
 function buildRawTemplate() {
   const el = document.createElement('div');
+  // pi-lens-ignore: no-inner-html-js — jsdom 测试夹具，字面量 HTML
   el.innerHTML =
     `<p data-raw><span class="md-link-mark">[</span><span class="md-link-text">文字</span>` +
     `<span class="md-link-mark">]</span><span class="md-link-mark">(</span>` +
@@ -306,6 +312,7 @@ function buildRawTemplate() {
 {
   // 图片模板段（! 标记紧邻 [ 前）：保持原文编辑形态，不参与折叠
   const el = document.createElement('div');
+  // pi-lens-ignore: no-inner-html-js — jsdom 测试夹具，字面量 HTML
   el.innerHTML =
     `<p data-raw><span class="md-link-mark">!</span><span class="md-link-mark">[</span>` +
     `<span class="md-link-text">alt</span><span class="md-link-mark">]</span>` +
@@ -344,7 +351,7 @@ function buildRawTemplate() {
   document.body.append(el);
   const a = el.querySelector('a');
   setCaret(el.firstElementChild, 1); // 链接之后边界位（渲染链接右缘按 → 的触发形态）
-  F.expandLinkAtCaret(a, true);
+  F.expandLinkAtCaretInUrl(a);
   const sel = window.getSelection();
   const urlText = el.querySelector('.md-link-url')?.firstChild;
   check('caretInUrl 展开光标落地址末尾', sel.anchorNode === urlText && sel.anchorOffset === 4);
