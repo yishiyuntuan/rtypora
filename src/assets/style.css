@@ -1806,13 +1806,13 @@ pre:hover .md-code-copy-edit,
 .md-chg-menubtn {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  height: 22px;
-  padding: 0 7px;
+  gap: 6px;
+  height: 25px;
+  padding: 0 10px;
   border: 1px solid var(--t-table-border);
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
-  font-size: 11px;
+  font-size: 12.5px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
@@ -1825,6 +1825,7 @@ pre:hover .md-code-copy-edit,
 .md-chg-menubtn-icon {
   color: var(--t-text-placeholder);
   font-weight: 600;
+  font-size: 13px;
 }
 /* 计数按类别着色：增绿/改蓝/删红（与条纹、概览尺同色）；关闭比较时整体转淡 */
 .md-chg-n-add {
@@ -1841,7 +1842,7 @@ pre:hover .md-code-copy-edit,
 }
 .md-chg-menubtn-caret {
   color: var(--t-text-placeholder);
-  font-size: 9px;
+  font-size: 10px;
 }
 .md-chg-backdrop {
   position: fixed;
