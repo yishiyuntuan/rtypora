@@ -1809,18 +1809,17 @@ pre:hover .md-code-copy-edit,
   gap: 6px;
   height: 25px;
   padding: 0 10px;
-  border: 1px solid var(--t-table-border);
+  border: none;
   border-radius: 7px;
   background: transparent;
   font-size: 12.5px;
   line-height: 1;
   font-variant-numeric: tabular-nums;
   cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease;
+  transition: background 0.12s ease;
 }
 .md-chg-menubtn:hover {
   background: var(--t-status-bar-button-hover);
-  border-color: var(--t-text-placeholder);
 }
 .md-chg-menubtn-icon {
   color: var(--t-text-placeholder);
