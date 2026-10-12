@@ -1837,6 +1837,15 @@ pre:hover .md-code-copy-edit,
 .md-chg-n-del {
   color: var(--t-change-deleted);
 }
+/* 「比较」文字替换为交换双箭头图标（无改动/未开启比较时）；淡色与 caret 一致 */
+.md-chg-compare-ico {
+  display: inline-flex;
+  color: var(--t-text-placeholder);
+}
+.md-chg-compare-ico svg {
+  width: 13px;
+  height: 13px;
+}
 .md-chg-menubtn.md-chg-off .md-chg-n {
   color: var(--t-text-placeholder);
 }

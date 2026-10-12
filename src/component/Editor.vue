@@ -3002,7 +3002,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
           <span class="md-chg-n md-chg-n-mod">~{{ changeCounts.modified }}</span>
           <span class="md-chg-n md-chg-n-del">-{{ changeCounts.deleted }}</span>
         </template>
-        <template v-else><span class="md-chg-n">比较</span></template>
+        <template v-else><span class="md-chg-n md-chg-compare-ico" title="比较"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 3.5 14 6.5l-3 3M14 6.5H5.5M5 12.5 2 9.5l3-3M2 9.5h8.5" /></svg></span></template>
         <span class="md-chg-menubtn-caret">▾</span>
       </button>
       <div v-if="chgMenuOpen" class="md-chg-backdrop" @click="chgMenuOpen = false"></div>
