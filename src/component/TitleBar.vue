@@ -39,6 +39,8 @@ const appWindow = new Window('main');
     <div class="flex-1 text-center text-xs text-inherit opacity-90 pointer-events-none" data-tauri-drag-region>
       {{ fileName ? `tauri-editor - ${fileName}` : 'tauri-editor' }}
     </div>
+    <!-- 改动审阅菜单锚点（macOS：标题右侧；Editor 经 Teleport 投送 ± 计数按钮） -->
+    <div id="titlebar-chg-anchor" class="inline-flex h-full shrink-0 items-center pr-1"></div>
   </div>
 
   <!-- Windows/Linux：无边框自绘标题栏 -->
@@ -60,6 +62,8 @@ const appWindow = new Window('main');
     </div>
 
     <div class="flex h-full">
+      <!-- 改动审阅菜单锚点（Editor 经 Teleport 投送 ± 计数按钮；最小化左侧） -->
+      <div id="titlebar-chg-anchor" class="inline-flex h-full items-center"></div>
       <div
         id="titlebar-minimize"
         class="inline-flex h-full w-[46px] items-center justify-center text-inherit transition-[background] duration-[0.08s] ease-in-out hover:bg-(--t-status-bar-button-hover)"

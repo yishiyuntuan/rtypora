@@ -1796,30 +1796,28 @@ pre:hover .md-code-copy-edit,
   overflow-wrap: anywhere;
 }
 
-/* ===== 改动审阅基线菜单：右上浮动 ± 按钮 + 下拉面板（MEO 式） ===== */
+/* ===== 改动审阅基线菜单：标题栏锚点内（最小化按钮左侧） ± 按钮 + 下拉面板（MEO 式） ===== */
 .md-chg-menubox {
-  position: absolute;
-  top: 8px;
-  right: 18px;
-  z-index: 40;
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 100%;
 }
 .md-chg-menubtn {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 8px;
-  border: 1px solid var(--t-table-border);
-  border-radius: 6px;
-  background: var(--t-editor-background);
+  padding: 1px 8px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
   color: var(--t-change-added);
   font-size: 12px;
   line-height: 1.6;
   cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
-  opacity: 0.92;
 }
 .md-chg-menubtn:hover {
-  opacity: 1;
+  background: var(--t-status-bar-button-hover);
 }
 .md-chg-menubtn.md-chg-off {
   color: var(--t-text-placeholder);

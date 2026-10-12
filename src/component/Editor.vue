@@ -2991,7 +2991,9 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
     <button v-if="!sourceMode && backTopVisible" type="button" class="md-back-top" aria-label="返回顶部" title="返回顶部" @click="scrollToTop">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12.5v-9M3.5 7 8 2.5 12.5 7" /></svg>
     </button>
-    <!-- 改动审阅基线菜单：右上浮动 ± 计数按钮 + 下拉（比较方式：关闭/最近保存/Git HEAD/手动快照；显示设置） -->
+    <!-- 改动审阅基线菜单：Teleport 投送到标题栏锚点（最小化按钮左侧；macOS 在标题右侧）。
+         defer 等目标挂载；状态/事件全部留在 Editor 本地，零 prop drilling -->
+    <Teleport to="#titlebar-chg-anchor" defer>
     <div class="md-chg-menubox">
       <button type="button" class="md-chg-menubtn" :class="{ 'md-chg-off': !chgReviewOn }" title="改动审阅：比较基线与计数" @click="toggleChgMenu">
         <span class="md-chg-menubtn-icon">±</span>
@@ -3026,6 +3028,7 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
         </label>
       </div>
     </div>
+    </Teleport>
   </div>
   <!-- 斜杠命令菜单 / 围栏语言补全菜单（同一面板，互斥触发）：Teleport 移出根布局（多根片段），其挂载/卸载不再引起
        布局子节点重建；.t-app 包装使主题 blocks 规则（.t-app 作用域）同样生效 -->
