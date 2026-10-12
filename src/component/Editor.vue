@@ -2997,8 +2997,12 @@ defineExpose({ scrollToBlock, loadDocument, getContent, markSaved, isDirty: () =
     <div class="md-chg-menubox">
       <button type="button" class="md-chg-menubtn" :class="{ 'md-chg-off': !chgReviewOn }" title="改动审阅：比较基线与计数" @click="toggleChgMenu">
         <span class="md-chg-menubtn-icon">±</span>
-        <template v-if="chgReviewOn && reviewEnabled">+{{ changeCounts.added }} ~{{ changeCounts.modified }} -{{ changeCounts.deleted }}</template>
-        <template v-else>比较</template>
+        <template v-if="chgReviewOn && reviewEnabled">
+          <span class="md-chg-n md-chg-n-add">+{{ changeCounts.added }}</span>
+          <span class="md-chg-n md-chg-n-mod">~{{ changeCounts.modified }}</span>
+          <span class="md-chg-n md-chg-n-del">-{{ changeCounts.deleted }}</span>
+        </template>
+        <template v-else><span class="md-chg-n">比较</span></template>
         <span class="md-chg-menubtn-caret">▾</span>
       </button>
       <div v-if="chgMenuOpen" class="md-chg-backdrop" @click="chgMenuOpen = false"></div>
