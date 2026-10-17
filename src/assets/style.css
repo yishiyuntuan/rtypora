@@ -1672,6 +1672,9 @@ pre:hover .md-code-copy-edit,
 .md-diagram-toolbar {
   gap: 6px;
   align-items: center;
+  /* 绝对定位工具条需压过后 DOM 的图表渲染层（.mermaid-diagram/MathView 等无 z-index 的流内容），
+     否则 elementFromPoint 命中图表而非按钮（真实鼠标点击无效、合成 click 测不出） */
+  z-index: 5;
 }
 .md-diagram-seg {
   display: inline-flex;
