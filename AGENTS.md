@@ -98,7 +98,7 @@ src/
     ├── wysiwyg.js     # 就地编辑转换层：Block→可编辑 HTML、DOM→BlockDto JSON、Markdown 快捷输入（判定全部经 Rust 命令，JS 只做 DOM 替换；类名与 BlockView 保持一致，需同步修改）
     ├── highlight.js   # 高亮客户端：调 Rust highlight_code 取 span 拼 HTML（结果缓存 200 条），ts-* 类名映射 code_syntax_* token
     ├── image.js       # 图片源解析：远程直出，本地经 read_image_data_url 转 data URL（缓存，FIFO 500 条上限）
-    ├── math.js        # 公式渲染客户端缓存：SVG 结果按 display|颜色|字号|源 缓存（FIFO 120 条 + 在途去重），MathView 重挂载经 peekMath 同步回填不重复发 IPC
+    ├── math.js        # 公式渲染客户端缓存：SVG 结果按 display|颜色|字号|源 缓存（FIFO 120 条 + 在途去重），MathView 重挂载经 peekMath 同步回填不重复发 IPC；编辑实时预览（renderEditPreview）同走该缓存
     ├── prefs.js       # 偏好设置存取（localStorage）：编辑器排版覆盖（仅排版覆盖键变更时重套）、图像粘贴行为、Markdown 渲染开关、prefsVersion 全局版本号、renderVersion（仅 render_* 键递增，公式/Mermaid/高亮/图文排版的 watcher 依赖它，避免非渲染偏好触发全文重渲染）
     ├── fontStyle.js    # 字体样式 DOM 助手（buildFontSpan/buildFontTemplate/caretFontSpan/mergeStyleIntoSpan，斜杠与右键菜单共用）
     ├── selectionWrap.js # 选区符号包裹（WRAP_PAIRS 11 组 ASCII+9 组中文对、反引号升级、纯空白/IME/pre/跨容器例外，偏好 wrap_selection）

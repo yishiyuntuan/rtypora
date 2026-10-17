@@ -46,6 +46,7 @@ import {
 } from '../utils/wysiwyg.js';
 import { highlightCodeHtml } from '../utils/highlight.js';
 import { renderMermaid } from '../utils/mermaid.js';
+import { peekMath, renderMath } from '../utils/math.js';
 import { renderPlantumlLocal } from '../utils/plantuml.js';
 import { formatShortcut } from '../utils/platform.js';
 import { getPref, setPref, prefsVersion, structureVersion } from '../utils/prefs.js';
@@ -1314,7 +1315,14 @@ async function renderEditPreview() {
     const style = getComputedStyle(document.documentElement);
     const color = style.getPropertyValue('--t-text-default').trim() || '#000000';
     const baseFontSize = parseFloat(style.getPropertyValue('--t-text-size')) || 16;
-    svg = await invoke('render_display_math', { raw, color, baseFontSize }).catch(() => null);
+    // 预览与 MathView 共用 math.js 缓存：同 key 时同步回填（进编辑不再额外发 IPC；
+    // 输入期间渲染结果按 主题|源 缓存并复用，避免与 MathView 重复渲染）
+    const hit = peekMath(true, raw, color, baseFontSize);
+    if (hit) {
+      if (editingBlock.value === block) editPreviewSvg.value = hit;
+      return;
+    }
+    svg = await renderMath(true, raw, color, baseFontSize).catch(() => null);
   } else if (kind === 'mermaid') {
     svg = await renderMermaid(raw).catch(() => null);
   } else {
